@@ -504,7 +504,7 @@ mod kani_proofs {
     use crate::backend::VerifiedBackend;
     use crate::dyn_shape::{
         DynDef, DynFieldDef, DynShapeDef, DynShapeHandle, DynShapeStore, DynShapeView,
-        DynStructDef, MAX_FIELDS,
+        DynStructDef, IField, IShape, IStructType, MAX_FIELDS,
     };
     use core::alloc::Layout;
 
@@ -749,5 +749,70 @@ mod kani_proofs {
 
         let result = partial.finish();
         kani::assert(result.is_ok(), "finish succeeds when complete");
+    }
+
+    /// Prove: nested struct fields are properly tracked
+    /// A struct containing another struct as a field should work correctly.
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn nested_struct_field_tracking() {
+        let mut store = DynShapeStore::new();
+
+        // Inner struct: { a: u32, b: u32 }
+        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+        let inner_def = DynShapeDef {
+            layout: Layout::from_size_align(8, 1).unwrap(),
+            def: DynDef::Struct(DynStructDef {
+                field_count: 2,
+                fields: {
+                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
+                    arr[0] = DynFieldDef::new(0, scalar_h);
+                    arr[1] = DynFieldDef::new(4, scalar_h);
+                    arr
+                },
+            }),
+        };
+        let inner_h = store.add(inner_def);
+
+        // Outer struct: { x: u32, inner: Inner }
+        let outer_def = DynShapeDef {
+            layout: Layout::from_size_align(12, 1).unwrap(),
+            def: DynDef::Struct(DynStructDef {
+                field_count: 2,
+                fields: {
+                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
+                    arr[0] = DynFieldDef::new(0, scalar_h); // x: u32
+                    arr[1] = DynFieldDef::new(4, inner_h); // inner: Inner (nested struct!)
+                    arr
+                },
+            }),
+        };
+        let outer_h = store.add(outer_def);
+        let shape = store.view(outer_h);
+
+        // Verify shape structure via IShape trait
+        kani::assert(shape.is_struct(), "outer is struct");
+        let outer_st = shape.as_struct().unwrap();
+        kani::assert(outer_st.field_count() == 2, "outer has 2 fields");
+
+        // Field 1 should be the nested struct
+        let field1 = outer_st.field(1).unwrap();
+        let field1_shape = field1.shape();
+        kani::assert(field1_shape.is_struct(), "field 1 is nested struct");
+
+        // Construct the outer struct
+        let backend = TestBackend::new();
+        let arena = TestArena::new();
+        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+
+        // Init both fields (the nested struct field is treated as one unit at this level)
+        unsafe {
+            partial.mark_field_init(0).unwrap();
+            partial.mark_field_init(1).unwrap();
+        }
+
+        kani::assert(partial.is_complete(), "outer complete after both fields");
+        let result = partial.finish();
+        kani::assert(result.is_ok(), "finish succeeds");
     }
 }

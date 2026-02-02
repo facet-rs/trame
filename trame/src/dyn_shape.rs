@@ -755,3 +755,165 @@ mod tests {
         assert_eq!(inner_st.field_count(), 2);
     }
 }
+
+// ============================================================================
+// Kani Proofs
+// ============================================================================
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// Prove: store handles are valid after adding shapes
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn store_handles_valid() {
+        let mut store = DynShapeStore::new();
+
+        let num_shapes: u8 = kani::any();
+        kani::assume(num_shapes > 0 && num_shapes <= 4);
+
+        for i in 0..num_shapes {
+            let size: usize = kani::any();
+            kani::assume(size > 0 && size <= 8);
+            let layout = Layout::from_size_align(size, 1).unwrap();
+            let h = store.add(DynShapeDef::scalar(layout));
+            kani::assert(h.0 == i, "handle matches index");
+        }
+
+        // All handles should be retrievable
+        for i in 0..num_shapes {
+            let view = store.view(DynShapeHandle(i));
+            kani::assert(
+                view.store as *const _ == &store as *const _,
+                "view borrows store",
+            );
+        }
+    }
+
+    /// Prove: nested struct field navigation works correctly
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn nested_struct_navigation() {
+        let mut store = DynShapeStore::new();
+
+        // Scalar shape
+        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+
+        // Inner struct with 2 scalar fields
+        let inner_def = DynShapeDef {
+            layout: Layout::from_size_align(8, 1).unwrap(),
+            def: DynDef::Struct(DynStructDef {
+                field_count: 2,
+                fields: {
+                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
+                    arr[0] = DynFieldDef::new(0, scalar_h);
+                    arr[1] = DynFieldDef::new(4, scalar_h);
+                    arr
+                },
+            }),
+        };
+        let inner_h = store.add(inner_def);
+
+        // Outer struct with scalar + inner struct
+        let outer_def = DynShapeDef {
+            layout: Layout::from_size_align(12, 1).unwrap(),
+            def: DynDef::Struct(DynStructDef {
+                field_count: 2,
+                fields: {
+                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
+                    arr[0] = DynFieldDef::new(0, scalar_h);
+                    arr[1] = DynFieldDef::new(4, inner_h);
+                    arr
+                },
+            }),
+        };
+        let outer_h = store.add(outer_def);
+
+        // Navigate: outer -> field[1] -> inner struct -> field[0] -> scalar
+        let outer = store.view(outer_h);
+        kani::assert(outer.is_struct(), "outer is struct");
+
+        let outer_st = outer.as_struct().unwrap();
+        kani::assert(outer_st.field_count() == 2, "outer has 2 fields");
+
+        let field0 = outer_st.field(0).unwrap();
+        kani::assert(!field0.shape().is_struct(), "field 0 is scalar");
+
+        let field1 = outer_st.field(1).unwrap();
+        kani::assert(field1.shape().is_struct(), "field 1 is struct");
+
+        let inner = field1.shape();
+        let inner_st = inner.as_struct().unwrap();
+        kani::assert(inner_st.field_count() == 2, "inner has 2 fields");
+
+        let inner_field0 = inner_st.field(0).unwrap();
+        kani::assert(!inner_field0.shape().is_struct(), "inner field 0 is scalar");
+        kani::assert(
+            inner_field0.shape().layout().size() == 4,
+            "inner field 0 is 4 bytes",
+        );
+    }
+
+    /// Prove: arbitrary store has valid structure
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn arbitrary_store_valid() {
+        let store: DynShapeStore = kani::any();
+
+        // All shapes in store should be accessible
+        for i in 0..store.shape_count {
+            let view = store.view(DynShapeHandle(i));
+            let layout = view.layout();
+            // Layout should have valid alignment (power of 2)
+            kani::assert(layout.align().is_power_of_two(), "alignment is power of 2");
+        }
+    }
+
+    /// Prove: field shape handles point to valid shapes in store
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn field_handles_valid() {
+        let mut store = DynShapeStore::new();
+
+        // Add scalars
+        let num_scalars: u8 = kani::any();
+        kani::assume(num_scalars >= 1 && num_scalars <= 3);
+
+        for _ in 0..num_scalars {
+            store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+        }
+
+        // Add a struct referencing those scalars
+        let field_count: u8 = kani::any();
+        kani::assume(field_count > 0 && field_count <= 3);
+
+        let mut fields = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
+        for i in 0..(field_count as usize) {
+            let shape_idx: u8 = kani::any();
+            kani::assume(shape_idx < num_scalars);
+            fields[i] = DynFieldDef::new(i * 4, DynShapeHandle(shape_idx));
+        }
+
+        let struct_def = DynShapeDef {
+            layout: Layout::from_size_align((field_count as usize) * 4, 1).unwrap(),
+            def: DynDef::Struct(DynStructDef {
+                field_count,
+                fields,
+            }),
+        };
+        let struct_h = store.add(struct_def);
+
+        // Navigate to each field and verify its shape is accessible
+        let view = store.view(struct_h);
+        let st = view.as_struct().unwrap();
+
+        for i in 0..(field_count as usize) {
+            let field = st.field(i).unwrap();
+            let field_shape = field.shape();
+            // Should not panic - the handle should be valid
+            let _layout = field_shape.layout();
+            kani::assert(!field_shape.is_struct(), "field points to scalar");
+        }
+    }
+}

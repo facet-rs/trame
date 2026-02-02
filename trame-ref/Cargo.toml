@@ -10,6 +10,7 @@ keywords = ["reflection", "introspection", "facet", "runtime", "manipulation"]
 categories = ["development-tools", "rust-patterns"]
 homepage = "https://facet.rs"
 readme = "README.md"
+publish = false
 
 [package.metadata]
 

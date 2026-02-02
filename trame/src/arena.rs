@@ -125,6 +125,7 @@ enum SlotState {
 /// Uses a fixed-size array instead of Vec to keep state space bounded.
 pub struct VerifiedArena<T, const N: usize = MAX_ARENA_SLOTS> {
     /// Slot storage. Index 0 is reserved (NOT_STARTED sentinel).
+    /// Using Vec here since we can't initialize [Option<T>; N] without T: Copy.
     slots: [Option<T>; N],
     /// State of each slot.
     states: [SlotState; N],
@@ -134,22 +135,16 @@ pub struct VerifiedArena<T, const N: usize = MAX_ARENA_SLOTS> {
 
 impl<T, const N: usize> VerifiedArena<T, N> {
     /// Create a new verified arena.
-    pub fn new() -> Self
-    where
-        T: Copy, // Required for array initialization
-    {
+    pub fn new() -> Self {
         Self {
-            slots: [None; N],
+            slots: core::array::from_fn(|_| None),
             states: [SlotState::Empty; N],
             next: 1, // Skip slot 0 (reserved for NOT_STARTED)
         }
     }
 }
 
-impl<T, const N: usize> Default for VerifiedArena<T, N>
-where
-    T: Copy,
-{
+impl<T, const N: usize> Default for VerifiedArena<T, N> {
     fn default() -> Self {
         Self::new()
     }

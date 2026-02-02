@@ -20,3 +20,4 @@
 mod arena;
 mod backend;
 mod dyn_shape;
+mod partial;

@@ -1,5 +1,5 @@
 use facet::Facet;
-use trame::{Op, Partial};
+use trame_ref::{Op, Partial};
 
 // =============================================================================
 // Basic Vec tests
@@ -472,7 +472,7 @@ fn push_on_non_list_errors() {
     let err = partial
         .apply(&[Op::set().append().imm(&mut val)])
         .unwrap_err();
-    assert!(matches!(err.kind, trame::ReflectErrorKind::NotAList));
+    assert!(matches!(err.kind, trame_ref::ReflectErrorKind::NotAList));
 }
 
 #[test]
@@ -487,7 +487,7 @@ fn push_wrong_element_type_errors() {
         .unwrap_err();
     assert!(matches!(
         err.kind,
-        trame::ReflectErrorKind::ShapeMismatch { .. }
+        trame_ref::ReflectErrorKind::ShapeMismatch { .. }
     ));
 }
 

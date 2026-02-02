@@ -1,5 +1,5 @@
 use facet::Facet;
-use trame::{Op, Partial, ReflectErrorKind};
+use trame_ref::{Op, Partial, ReflectErrorKind};
 
 // Regression test for double-free bug found by AFL fuzzer.
 // When setting a field on an already-INIT struct/tuple, we drop the old field

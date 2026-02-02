@@ -1,5 +1,5 @@
 use facet::Facet;
-use trame::{Op, Partial};
+use trame_ref::{Op, Partial};
 
 // =============================================================================
 // Basic array tests

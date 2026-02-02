@@ -1165,4 +1165,308 @@ mod kani_proofs {
         let result = partial.finish();
         kani::assert(result.is_ok(), "finish succeeds");
     }
+
+    /// Prove: begin_field/end_field lifecycle works correctly
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn begin_end_field_lifecycle() {
+        let mut store = DynShapeStore::new();
+
+        // Inner struct: { a: u32, b: u32 }
+        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+        let inner_def = DynShapeDef {
+            layout: Layout::from_size_align(8, 1).unwrap(),
+            def: DynDef::Struct(DynStructDef {
+                field_count: 2,
+                fields: {
+                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
+                    arr[0] = DynFieldDef::new(0, scalar_h);
+                    arr[1] = DynFieldDef::new(4, scalar_h);
+                    arr
+                },
+            }),
+        };
+        let inner_h = store.add(inner_def);
+
+        // Outer struct: { x: u32, inner: Inner }
+        let outer_def = DynShapeDef {
+            layout: Layout::from_size_align(12, 1).unwrap(),
+            def: DynDef::Struct(DynStructDef {
+                field_count: 2,
+                fields: {
+                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
+                    arr[0] = DynFieldDef::new(0, scalar_h);
+                    arr[1] = DynFieldDef::new(4, inner_h);
+                    arr
+                },
+            }),
+        };
+        let outer_h = store.add(outer_def);
+        let shape = store.view(outer_h);
+
+        let backend = TestBackend::new();
+        let arena = TestArena::new();
+        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+
+        // Verify initial state
+        kani::assert(partial.depth() == 0, "starts at depth 0");
+        kani::assert(!partial.is_complete(), "not complete initially");
+
+        // Init scalar field
+        unsafe { partial.mark_field_init(0).unwrap() };
+        kani::assert(!partial.is_complete(), "not complete with one field");
+
+        // Begin nested struct
+        let result = unsafe { partial.begin_field(1) };
+        kani::assert(result.is_ok(), "begin_field succeeds");
+        kani::assert(partial.depth() == 1, "depth is 1 after begin");
+        kani::assert(!partial.is_complete(), "inner not complete yet");
+
+        // Init inner fields
+        unsafe {
+            partial.mark_field_init(0).unwrap();
+            partial.mark_field_init(1).unwrap();
+        }
+        kani::assert(partial.is_complete(), "inner complete");
+
+        // End nested struct
+        let result = partial.end_field();
+        kani::assert(result.is_ok(), "end_field succeeds");
+        kani::assert(partial.depth() == 0, "back to depth 0");
+        kani::assert(partial.is_complete(), "outer complete");
+
+        let result = partial.finish();
+        kani::assert(result.is_ok(), "finish succeeds");
+    }
+
+    /// Prove: begin_field on already-initialized field fails
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn begin_field_already_init_fails() {
+        let mut store = DynShapeStore::new();
+        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+        let inner_def = DynShapeDef {
+            layout: Layout::from_size_align(4, 1).unwrap(),
+            def: DynDef::Struct(DynStructDef {
+                field_count: 1,
+                fields: {
+                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
+                    arr[0] = DynFieldDef::new(0, scalar_h);
+                    arr
+                },
+            }),
+        };
+        let inner_h = store.add(inner_def);
+
+        let outer_def = DynShapeDef {
+            layout: Layout::from_size_align(4, 1).unwrap(),
+            def: DynDef::Struct(DynStructDef {
+                field_count: 1,
+                fields: {
+                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
+                    arr[0] = DynFieldDef::new(0, inner_h);
+                    arr
+                },
+            }),
+        };
+        let outer_h = store.add(outer_def);
+        let shape = store.view(outer_h);
+
+        let backend = TestBackend::new();
+        let arena = TestArena::new();
+        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+
+        // Mark field 0 as init directly
+        unsafe { partial.mark_field_init(0).unwrap() };
+
+        // Now try begin_field on same field - should fail
+        let result = unsafe { partial.begin_field(0) };
+        kani::assert(result.is_err(), "begin on already init fails");
+        kani::assert(
+            matches!(result, Err(PartialError::FieldAlreadyInit { index: 0 })),
+            "error is FieldAlreadyInit",
+        );
+    }
+
+    /// Prove: end_field at root returns error
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn end_field_at_root_fails() {
+        let mut store = DynShapeStore::new();
+        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+        let struct_def = DynShapeDef {
+            layout: Layout::from_size_align(4, 1).unwrap(),
+            def: DynDef::Struct(DynStructDef {
+                field_count: 1,
+                fields: {
+                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
+                    arr[0] = DynFieldDef::new(0, scalar_h);
+                    arr
+                },
+            }),
+        };
+        let struct_h = store.add(struct_def);
+        let shape = store.view(struct_h);
+
+        let backend = TestBackend::new();
+        let arena = TestArena::new();
+        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+
+        unsafe { partial.mark_field_init(0).unwrap() };
+
+        // Try end_field at root
+        let result = partial.end_field();
+        kani::assert(result.is_err(), "end_field at root fails");
+        kani::assert(
+            matches!(result, Err(PartialError::AtRoot)),
+            "error is AtRoot",
+        );
+    }
+
+    /// Prove: end_field with incomplete inner fails
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn end_field_incomplete_inner_fails() {
+        let mut store = DynShapeStore::new();
+        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+        let inner_def = DynShapeDef {
+            layout: Layout::from_size_align(8, 1).unwrap(),
+            def: DynDef::Struct(DynStructDef {
+                field_count: 2,
+                fields: {
+                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
+                    arr[0] = DynFieldDef::new(0, scalar_h);
+                    arr[1] = DynFieldDef::new(4, scalar_h);
+                    arr
+                },
+            }),
+        };
+        let inner_h = store.add(inner_def);
+
+        let outer_def = DynShapeDef {
+            layout: Layout::from_size_align(8, 1).unwrap(),
+            def: DynDef::Struct(DynStructDef {
+                field_count: 1,
+                fields: {
+                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
+                    arr[0] = DynFieldDef::new(0, inner_h);
+                    arr
+                },
+            }),
+        };
+        let outer_h = store.add(outer_def);
+        let shape = store.view(outer_h);
+
+        let backend = TestBackend::new();
+        let arena = TestArena::new();
+        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+
+        unsafe { partial.begin_field(0).unwrap() };
+        unsafe { partial.mark_field_init(0).unwrap() }; // only one of two inner fields
+
+        // Try end_field with incomplete inner
+        let result = partial.end_field();
+        kani::assert(result.is_err(), "end_field with incomplete inner fails");
+        kani::assert(
+            matches!(result, Err(PartialError::CurrentIncomplete)),
+            "error is CurrentIncomplete",
+        );
+    }
+
+    /// Prove: drop properly cleans up nested frames (depth-first)
+    #[kani::proof]
+    #[kani::unwind(12)]
+    fn nested_drop_cleanup() {
+        let mut store = DynShapeStore::new();
+        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+        let inner_def = DynShapeDef {
+            layout: Layout::from_size_align(4, 1).unwrap(),
+            def: DynDef::Struct(DynStructDef {
+                field_count: 1,
+                fields: {
+                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
+                    arr[0] = DynFieldDef::new(0, scalar_h);
+                    arr
+                },
+            }),
+        };
+        let inner_h = store.add(inner_def);
+
+        let outer_def = DynShapeDef {
+            layout: Layout::from_size_align(4, 1).unwrap(),
+            def: DynDef::Struct(DynStructDef {
+                field_count: 1,
+                fields: {
+                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
+                    arr[0] = DynFieldDef::new(0, inner_h);
+                    arr
+                },
+            }),
+        };
+        let outer_h = store.add(outer_def);
+        let shape = store.view(outer_h);
+
+        let backend = TestBackend::new();
+        let arena = TestArena::new();
+        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+
+        // Enter nested struct
+        unsafe { partial.begin_field(0).unwrap() };
+        // Init inner field
+        unsafe { partial.mark_field_init(0).unwrap() };
+        // Don't end_field - just drop
+
+        // Drop should clean up child frame before parent
+        drop(partial);
+        // No panic = cleanup order is correct
+    }
+
+    /// Prove: depth tracking is correct through nested begin/end
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn depth_tracking_correct() {
+        let mut store = DynShapeStore::new();
+        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+        let inner_def = DynShapeDef {
+            layout: Layout::from_size_align(4, 1).unwrap(),
+            def: DynDef::Struct(DynStructDef {
+                field_count: 1,
+                fields: {
+                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
+                    arr[0] = DynFieldDef::new(0, scalar_h);
+                    arr
+                },
+            }),
+        };
+        let inner_h = store.add(inner_def);
+
+        let outer_def = DynShapeDef {
+            layout: Layout::from_size_align(4, 1).unwrap(),
+            def: DynDef::Struct(DynStructDef {
+                field_count: 1,
+                fields: {
+                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
+                    arr[0] = DynFieldDef::new(0, inner_h);
+                    arr
+                },
+            }),
+        };
+        let outer_h = store.add(outer_def);
+        let shape = store.view(outer_h);
+
+        let backend = TestBackend::new();
+        let arena = TestArena::new();
+        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+
+        kani::assert(partial.depth() == 0, "initial depth is 0");
+
+        unsafe { partial.begin_field(0).unwrap() };
+        kani::assert(partial.depth() == 1, "depth is 1 after begin");
+
+        unsafe { partial.mark_field_init(0).unwrap() };
+        kani::assert(partial.depth() == 1, "depth still 1 after inner init");
+
+        partial.end_field().unwrap();
+        kani::assert(partial.depth() == 0, "depth back to 0 after end");
+    }
 }

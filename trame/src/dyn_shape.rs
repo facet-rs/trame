@@ -68,7 +68,9 @@ pub struct DynShapeView<'a, Store: IShapeStore + ?Sized> {
 /// Implemented by:
 /// - `&'static facet_core::Shape` (real shapes)
 /// - `DynShapeView` (synthetic shapes for Kani)
-pub trait IShape: Copy {
+///
+/// The `PartialEq` bound allows the Heap to verify shapes match on dealloc/drop.
+pub trait IShape: Copy + PartialEq {
     /// The struct type returned by `as_struct()`.
     type StructType: IStructType<Field = Self::Field>;
 
@@ -83,6 +85,16 @@ pub trait IShape: Copy {
 
     /// Get struct-specific information, if this is a struct.
     fn as_struct(&self) -> Option<Self::StructType>;
+
+    /// Drop the value at the given pointer.
+    ///
+    /// For types without destructors, this is a no-op.
+    /// For `DynShapeView` (Kani verification), this is always a no-op since
+    /// we only track state, not actual values.
+    ///
+    /// # Safety
+    /// - `ptr` must point to a valid, initialized value of this shape's type
+    unsafe fn drop_in_place(&self, ptr: *mut u8);
 }
 
 /// Interface for struct type information.
@@ -254,6 +266,16 @@ pub struct DynStructView<'a> {
 // IShape implementation for DynShapeView
 // ============================================================================
 
+impl<'a> PartialEq for DynShapeView<'a, DynShapeStore> {
+    fn eq(&self, other: &Self) -> bool {
+        // Two views are equal if they point to the same store and handle.
+        // We compare store pointers and handle values.
+        core::ptr::eq(self.store, other.store) && self.handle == other.handle
+    }
+}
+
+impl<'a> Eq for DynShapeView<'a, DynShapeStore> {}
+
 impl<'a> IShape for DynShapeView<'a, DynShapeStore> {
     type StructType = DynStructView<'a>;
     type Field = DynFieldView<'a>;
@@ -277,6 +299,12 @@ impl<'a> IShape for DynShapeView<'a, DynShapeStore> {
             }),
             _ => None,
         }
+    }
+
+    #[inline]
+    unsafe fn drop_in_place(&self, _ptr: *mut u8) {
+        // No-op for DynShapeView - we only track state, not actual values.
+        // In Kani verification, we don't have real values to drop.
     }
 }
 
@@ -542,6 +570,13 @@ impl IShape for &'static Shape {
             Type::User(UserType::Struct(st)) => Some(st),
             _ => None,
         }
+    }
+
+    #[inline]
+    unsafe fn drop_in_place(&self, ptr: *mut u8) {
+        // Use the shape's call_drop_in_place method.
+        // This handles types with destructors through the vtable.
+        unsafe { self.call_drop_in_place(facet_core::PtrMut::new(ptr)) };
     }
 }
 

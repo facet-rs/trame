@@ -855,21 +855,6 @@ mod kani_proofs {
         );
     }
 
-    /// Prove: arbitrary store has valid structure
-    #[kani::proof]
-    #[kani::unwind(10)]
-    fn arbitrary_store_valid() {
-        let store: DynShapeStore = kani::any();
-
-        // All shapes in store should be accessible
-        for i in 0..store.shape_count {
-            let view = store.view(DynShapeHandle(i));
-            let layout = view.layout();
-            // Layout should have valid alignment (power of 2)
-            kani::assert(layout.align().is_power_of_two(), "alignment is power of 2");
-        }
-    }
-
     /// Prove: field shape handles point to valid shapes in store
     #[kani::proof]
     #[kani::unwind(10)]

@@ -552,4 +552,162 @@ mod kani_proofs {
         // Now should be complete
         kani::assert(partial.is_complete(), "complete with all fields");
     }
+
+    /// Prove: double init of same field returns error
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn double_init_rejected() {
+        let fields_arr = {
+            let mut arr = [DynField::new(0, Layout::new::<()>()); MAX_FIELDS];
+            arr[0] = DynField::new(0, Layout::from_size_align(4, 1).unwrap());
+            arr[1] = DynField::new(4, Layout::from_size_align(4, 1).unwrap());
+            arr
+        };
+
+        let shape = S {
+            layout: Layout::from_size_align(8, 1).unwrap(),
+            def: DynDef::Struct(DynStructType {
+                field_count: 2,
+                fields: fields_arr,
+            }),
+        };
+
+        let backend = TestBackend::new();
+        let arena = TestArena::new();
+        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+
+        let field_to_double: u8 = kani::any();
+        kani::assume(field_to_double < 2);
+
+        // First init succeeds
+        let result1 = unsafe { partial.mark_field_init(field_to_double as usize) };
+        kani::assert(result1.is_ok(), "first init succeeds");
+
+        // Second init of same field fails
+        let result2 = unsafe { partial.mark_field_init(field_to_double as usize) };
+        kani::assert(result2.is_err(), "double init fails");
+        kani::assert(
+            matches!(result2, Err(PartialError::FieldAlreadyInit { .. })),
+            "error is FieldAlreadyInit",
+        );
+    }
+
+    /// Prove: finish fails if not all fields initialized
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn incomplete_finish_fails() {
+        let field_count: u8 = kani::any();
+        kani::assume(field_count >= 2 && field_count <= 3);
+
+        let mut fields_arr = [DynField::new(0, Layout::new::<()>()); MAX_FIELDS];
+        for i in 0..(field_count as usize) {
+            fields_arr[i] = DynField::new(i * 4, Layout::from_size_align(4, 1).unwrap());
+        }
+
+        let shape = S {
+            layout: Layout::from_size_align((field_count as usize) * 4, 1).unwrap(),
+            def: DynDef::Struct(DynStructType {
+                field_count,
+                fields: fields_arr,
+            }),
+        };
+
+        let backend = TestBackend::new();
+        let arena = TestArena::new();
+        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+
+        // Init only first field
+        unsafe { partial.mark_field_init(0).unwrap() };
+
+        // finish should fail
+        let result = partial.finish();
+        kani::assert(result.is_err(), "finish fails when incomplete");
+        kani::assert(
+            matches!(result, Err(PartialError::Incomplete)),
+            "error is Incomplete",
+        );
+    }
+
+    /// Prove: field index out of bounds returns error
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn out_of_bounds_rejected() {
+        let field_count: u8 = kani::any();
+        kani::assume(field_count > 0 && field_count <= 3);
+
+        let mut fields_arr = [DynField::new(0, Layout::new::<()>()); MAX_FIELDS];
+        for i in 0..(field_count as usize) {
+            fields_arr[i] = DynField::new(i * 4, Layout::from_size_align(4, 1).unwrap());
+        }
+
+        let shape = S {
+            layout: Layout::from_size_align((field_count as usize) * 4, 1).unwrap(),
+            def: DynDef::Struct(DynStructType {
+                field_count,
+                fields: fields_arr,
+            }),
+        };
+
+        let backend = TestBackend::new();
+        let arena = TestArena::new();
+        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+
+        // Try to init field beyond bounds
+        let bad_idx: u8 = kani::any();
+        kani::assume(bad_idx >= field_count);
+        kani::assume(bad_idx < 10); // Keep bounded
+
+        let result = unsafe { partial.mark_field_init(bad_idx as usize) };
+        kani::assert(result.is_err(), "out of bounds fails");
+        kani::assert(
+            matches!(result, Err(PartialError::FieldOutOfBounds { .. })),
+            "error is FieldOutOfBounds",
+        );
+    }
+
+    /// Prove: any init order works for completion
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn any_init_order_completes() {
+        let fields_arr = {
+            let mut arr = [DynField::new(0, Layout::new::<()>()); MAX_FIELDS];
+            arr[0] = DynField::new(0, Layout::from_size_align(4, 1).unwrap());
+            arr[1] = DynField::new(4, Layout::from_size_align(4, 1).unwrap());
+            arr[2] = DynField::new(8, Layout::from_size_align(4, 1).unwrap());
+            arr
+        };
+
+        let shape = S {
+            layout: Layout::from_size_align(12, 1).unwrap(),
+            def: DynDef::Struct(DynStructType {
+                field_count: 3,
+                fields: fields_arr,
+            }),
+        };
+
+        let backend = TestBackend::new();
+        let arena = TestArena::new();
+        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+
+        // Choose arbitrary init order
+        let first: u8 = kani::any();
+        let second: u8 = kani::any();
+        let third: u8 = kani::any();
+        kani::assume(first < 3 && second < 3 && third < 3);
+        kani::assume(first != second && second != third && first != third);
+
+        unsafe {
+            partial.mark_field_init(first as usize).unwrap();
+            partial.mark_field_init(second as usize).unwrap();
+            partial.mark_field_init(third as usize).unwrap();
+        }
+
+        kani::assert(
+            partial.is_complete(),
+            "complete after all fields in any order",
+        );
+
+        let result = partial.finish();
+        kani::assert(result.is_ok(), "finish succeeds when complete");
+    }
 }

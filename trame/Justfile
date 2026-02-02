@@ -5,6 +5,7 @@ all:
     just kani
     just test
 
+# Run proofs via soteria-rust. Use `--filter substring` to run only some tests
 sote *args:
     soteria-rust cargo . --kani --summary {{ args }}
 

@@ -5,7 +5,7 @@
 
 use crate::arena::{Arena, Idx};
 use crate::backend::Backend;
-use crate::dyn_shape::{IShape, IStructType};
+use crate::dyn_shape::{IField, IShape, IStructType};
 use core::marker::PhantomData;
 
 /// Maximum fields tracked per frame (for verification).
@@ -16,52 +16,74 @@ pub const MAX_FRAME_FIELDS: usize = 8;
 // ============================================================================
 
 /// Tracks initialization state of struct fields.
+///
+/// Each field slot is either:
+/// - `Idx::NOT_STARTED` - field not touched
+/// - `Idx::COMPLETE` - field fully initialized
+/// - Valid `Idx<Frame>` - in-progress child frame
 #[derive(Debug, Clone, Copy)]
-pub struct FieldStates {
-    /// Bitmap of initialized fields (bit i = field i is initialized).
-    /// Supports up to 64 fields.
-    bits: u64,
+pub struct FieldStates<F> {
+    /// State of each field.
+    slots: [Idx<F>; MAX_FRAME_FIELDS],
     /// Number of fields in the struct.
-    count: u8,
+    pub count: u8,
 }
 
-impl FieldStates {
+impl<F> FieldStates<F> {
     /// Create field states for a struct with `count` fields.
     pub fn new(count: usize) -> Self {
-        assert!(count <= 64, "too many fields");
+        assert!(count <= MAX_FRAME_FIELDS, "too many fields");
         Self {
-            bits: 0,
+            slots: [Idx::NOT_STARTED; MAX_FRAME_FIELDS],
             count: count as u8,
         }
     }
 
-    /// Mark a field as initialized.
-    pub fn mark_init(&mut self, idx: usize) {
+    /// Mark a field as complete (initialized).
+    pub fn mark_complete(&mut self, idx: usize) {
         debug_assert!(idx < self.count as usize);
-        self.bits |= 1 << idx;
+        self.slots[idx] = Idx::COMPLETE;
     }
 
-    /// Mark a field as uninitialized.
-    pub fn mark_uninit(&mut self, idx: usize) {
+    /// Mark a field as not started.
+    pub fn mark_not_started(&mut self, idx: usize) {
         debug_assert!(idx < self.count as usize);
-        self.bits &= !(1 << idx);
+        self.slots[idx] = Idx::NOT_STARTED;
     }
 
-    /// Check if a field is initialized.
+    /// Set a field's child frame index.
+    pub fn set_child(&mut self, idx: usize, child: Idx<F>) {
+        debug_assert!(idx < self.count as usize);
+        self.slots[idx] = child;
+    }
+
+    /// Get a field's child frame index, if it has one.
+    pub fn get_child(&self, idx: usize) -> Option<Idx<F>> {
+        debug_assert!(idx < self.count as usize);
+        let slot = self.slots[idx];
+        if slot.is_valid() { Some(slot) } else { None }
+    }
+
+    /// Check if a field is complete (initialized).
     pub fn is_init(&self, idx: usize) -> bool {
         debug_assert!(idx < self.count as usize);
-        (self.bits & (1 << idx)) != 0
+        self.slots[idx].is_complete()
     }
 
-    /// Check if all fields are initialized.
+    /// Check if a field is not started.
+    pub fn is_not_started(&self, idx: usize) -> bool {
+        debug_assert!(idx < self.count as usize);
+        self.slots[idx] == Idx::NOT_STARTED
+    }
+
+    /// Check if all fields are complete.
     pub fn all_init(&self) -> bool {
-        let mask = (1u64 << self.count) - 1;
-        (self.bits & mask) == mask
+        (0..self.count as usize).all(|i| self.slots[i].is_complete())
     }
 
-    /// Iterate over initialized field indices.
+    /// Iterate over complete field indices.
     pub fn iter_init(&self) -> impl Iterator<Item = usize> + '_ {
-        (0..self.count as usize).filter(|&i| self.is_init(i))
+        (0..self.count as usize).filter(|&i| self.slots[i].is_complete())
     }
 }
 
@@ -71,25 +93,14 @@ impl FieldStates {
 
 /// What kind of value a frame is building.
 #[derive(Debug, Clone, Copy)]
-pub enum FrameKind {
+pub enum FrameKind<F> {
     /// Scalar value (no internal structure).
     Scalar { initialized: bool },
     /// Struct with tracked fields.
-    Struct { fields: FieldStates },
+    Struct { fields: FieldStates<F> },
 }
 
-impl FrameKind {
-    /// Create a frame kind for a shape.
-    pub fn for_shape<S: IShape>(shape: S) -> Self {
-        if let Some(st) = shape.as_struct() {
-            FrameKind::Struct {
-                fields: FieldStates::new(st.field_count()),
-            }
-        } else {
-            FrameKind::Scalar { initialized: false }
-        }
-    }
-
+impl<F> FrameKind<F> {
     /// Check if the frame is fully initialized.
     pub fn is_complete(&self) -> bool {
         match self {
@@ -110,7 +121,7 @@ pub struct Frame<B: Backend<S>, S: IShape> {
     /// Shape of the value being built.
     pub shape: S,
     /// What kind of value and its init state.
-    pub kind: FrameKind,
+    pub kind: FrameKind<Self>,
     /// Parent frame index (NOT_STARTED if root).
     pub parent: Idx<Self>,
     /// Field index within parent (if applicable).
@@ -118,12 +129,23 @@ pub struct Frame<B: Backend<S>, S: IShape> {
 }
 
 impl<B: Backend<S>, S: IShape> Frame<B, S> {
+    /// Create the appropriate FrameKind for a shape.
+    fn kind_for_shape(shape: S) -> FrameKind<Self> {
+        if let Some(st) = shape.as_struct() {
+            FrameKind::Struct {
+                fields: FieldStates::new(st.field_count()),
+            }
+        } else {
+            FrameKind::Scalar { initialized: false }
+        }
+    }
+
     /// Create a new root frame.
     pub fn new_root(alloc: B::Alloc, shape: S) -> Self {
         Self {
             alloc,
             shape,
-            kind: FrameKind::for_shape(shape),
+            kind: Self::kind_for_shape(shape),
             parent: Idx::NOT_STARTED,
             field_in_parent: 0,
         }
@@ -168,6 +190,10 @@ pub enum PartialError {
     Incomplete,
     /// Current frame is not a struct.
     NotAStruct,
+    /// Current frame is not complete (for end_field).
+    CurrentIncomplete,
+    /// Already at root frame (can't end_field).
+    AtRoot,
     /// Shape mismatch.
     ShapeMismatch,
 }
@@ -206,7 +232,10 @@ where
         }
     }
 
-    /// Mark a struct field as initialized.
+    /// Mark a struct field as initialized (for scalar fields).
+    ///
+    /// Use this for fields that don't need recursive construction.
+    /// For nested structs, use `begin_field` / `end_field` instead.
     ///
     /// # Safety
     /// The caller must have actually written a valid value to the field's memory.
@@ -223,7 +252,7 @@ where
                         count: fields.count as usize,
                     });
                 }
-                if fields.is_init(field_idx) {
+                if !fields.is_not_started(field_idx) {
                     return Err(PartialError::FieldAlreadyInit { index: field_idx });
                 }
 
@@ -232,10 +261,10 @@ where
                 let slot = unsafe { self.backend.slot(alloc, field_idx) };
                 unsafe { self.backend.mark_init(slot) };
 
-                // Mark in frame
+                // Mark in frame as complete
                 let frame = self.arena.get_mut(self.current);
                 if let FrameKind::Struct { fields } = &mut frame.kind {
-                    fields.mark_init(field_idx);
+                    fields.mark_complete(field_idx);
                 }
 
                 Ok(())
@@ -276,6 +305,134 @@ where
         }
     }
 
+    /// Begin constructing a struct field.
+    ///
+    /// This pushes a new frame for the field and makes it current.
+    /// The field must be a struct type. For scalar fields, use `mark_field_init` directly.
+    ///
+    /// # Safety
+    /// The caller must ensure the field is a struct type that needs recursive construction.
+    pub unsafe fn begin_field(&mut self, field_idx: usize) -> Result<(), PartialError> {
+        self.check_poisoned()?;
+
+        let frame = self.arena.get(self.current);
+
+        // Check current frame is a struct
+        let field_count = match &frame.kind {
+            FrameKind::Struct { fields } => fields.count as usize,
+            FrameKind::Scalar { .. } => return Err(PartialError::NotAStruct),
+        };
+
+        // Check field bounds
+        if field_idx >= field_count {
+            return Err(PartialError::FieldOutOfBounds {
+                index: field_idx,
+                count: field_count,
+            });
+        }
+
+        // Check field not already initialized or in-progress
+        let frame = self.arena.get(self.current);
+        if let FrameKind::Struct { fields } = &frame.kind {
+            if !fields.is_not_started(field_idx) {
+                return Err(PartialError::FieldAlreadyInit { index: field_idx });
+            }
+        }
+
+        // Get the field's shape
+        let frame = self.arena.get(self.current);
+        let parent_shape = frame.shape;
+        let field_shape = parent_shape
+            .as_struct()
+            .and_then(|st| st.field(field_idx))
+            .map(|f| f.shape())
+            .ok_or(PartialError::FieldOutOfBounds {
+                index: field_idx,
+                count: field_count,
+            })?;
+
+        // Allocate for the nested struct (or reuse parent's allocation at offset)
+        // For now, we allocate separately - in production we'd compute offset
+        let child_alloc = unsafe { self.backend.alloc(field_shape) };
+
+        // Create child frame
+        let child_frame = Frame {
+            alloc: child_alloc,
+            shape: field_shape,
+            kind: Frame::<B, S>::kind_for_shape(field_shape),
+            parent: self.current,
+            field_in_parent: field_idx as u32,
+        };
+
+        // Push onto arena
+        let child_idx = self.arena.alloc(child_frame);
+
+        // Track the child in parent's field slots
+        let frame = self.arena.get_mut(self.current);
+        if let FrameKind::Struct { fields } = &mut frame.kind {
+            fields.set_child(field_idx, child_idx);
+        }
+
+        // Update current
+        self.current = child_idx;
+
+        Ok(())
+    }
+
+    /// End constructing the current field and return to parent.
+    ///
+    /// This marks the field as initialized in the parent frame and pops back.
+    /// The current frame must be complete.
+    pub fn end_field(&mut self) -> Result<(), PartialError> {
+        self.check_poisoned()?;
+
+        let frame = self.arena.get(self.current);
+
+        // Check current frame is complete
+        if !frame.kind.is_complete() {
+            return Err(PartialError::CurrentIncomplete);
+        }
+
+        // Check we're not at root
+        let parent_idx = frame.parent;
+        if !parent_idx.is_valid() {
+            return Err(PartialError::AtRoot);
+        }
+
+        let field_in_parent = frame.field_in_parent as usize;
+
+        // Mark the field as complete in parent
+        let parent = self.arena.get_mut(parent_idx);
+        if let FrameKind::Struct { fields } = &mut parent.kind {
+            fields.mark_complete(field_in_parent);
+        }
+
+        // Mark in backend
+        let parent_alloc = parent.alloc;
+        let slot = unsafe { self.backend.slot(parent_alloc, field_in_parent) };
+        unsafe { self.backend.mark_init(slot) };
+
+        // Pop back to parent
+        self.current = parent_idx;
+
+        Ok(())
+    }
+
+    /// Get the current nesting depth (0 = root).
+    pub fn depth(&self) -> usize {
+        let mut depth = 0;
+        let mut idx = self.current;
+        while idx.is_valid() {
+            let frame = self.arena.get(idx);
+            if !frame.parent.is_valid() {
+                break;
+            }
+            depth += 1;
+            idx = frame.parent;
+        }
+        depth
+    }
+
     /// Check if the current frame is complete.
     pub fn is_complete(&self) -> bool {
         if self.poisoned {
@@ -313,34 +470,57 @@ where
         }
         self.poisoned = true;
 
-        // Walk frames and uninit any initialized slots
-        let mut idx = self.current;
-        while idx.is_valid() {
-            let frame = self.arena.get(idx);
-            let alloc = frame.alloc;
-            let parent = frame.parent;
+        // Clean up from root, depth-first (leaves before parents)
+        self.cleanup_frame(self.root);
+    }
 
-            match &frame.kind {
-                FrameKind::Scalar { initialized: true } => {
-                    let slot = unsafe { self.backend.slot(alloc, 0) };
-                    unsafe { self.backend.mark_uninit(slot) };
-                }
-                FrameKind::Struct { fields } => {
-                    for i in fields.iter_init() {
-                        let slot = unsafe { self.backend.slot(alloc, i) };
-                        unsafe { self.backend.mark_uninit(slot) };
+    /// Recursively clean up a frame and all its children (depth-first).
+    fn cleanup_frame(&mut self, idx: Idx<Frame<B, S>>) {
+        if !idx.is_valid() {
+            return;
+        }
+
+        // Collect children first to avoid borrow issues
+        let mut children = [Idx::NOT_STARTED; MAX_FRAME_FIELDS];
+        let mut child_count = 0;
+
+        {
+            let frame = self.arena.get(idx);
+            if let FrameKind::Struct { fields } = &frame.kind {
+                for i in 0..(fields.count as usize) {
+                    if let Some(child_idx) = fields.get_child(i) {
+                        children[child_count] = child_idx;
+                        child_count += 1;
                     }
                 }
-                _ => {}
             }
-
-            // Dealloc if this is root
-            if !parent.is_valid() {
-                unsafe { self.backend.dealloc(alloc) };
-            }
-
-            idx = parent;
         }
+
+        // Recursively clean up children first (depth-first)
+        for i in 0..child_count {
+            self.cleanup_frame(children[i]);
+        }
+
+        // Now clean up this frame's initialized slots
+        let frame = self.arena.get(idx);
+        let alloc = frame.alloc;
+
+        match &frame.kind {
+            FrameKind::Scalar { initialized: true } => {
+                let slot = unsafe { self.backend.slot(alloc, 0) };
+                unsafe { self.backend.mark_uninit(slot) };
+            }
+            FrameKind::Struct { fields } => {
+                for i in fields.iter_init() {
+                    let slot = unsafe { self.backend.slot(alloc, i) };
+                    unsafe { self.backend.mark_uninit(slot) };
+                }
+            }
+            _ => {}
+        }
+
+        // Dealloc this frame
+        unsafe { self.backend.dealloc(alloc) };
     }
 }
 
@@ -494,6 +674,176 @@ mod tests {
 
         // Drop should clean up without panicking
         drop(partial);
+    }
+
+    // --- Nested struct tests ---
+
+    #[test]
+    fn nested_struct_begin_end() {
+        let mut store = DynShapeStore::new();
+
+        // Inner struct: { a: u32, b: u32 }
+        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
+        let inner_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
+        let inner_h = store.add(inner_def);
+
+        // Outer struct: { x: u32, inner: Inner }
+        let outer_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, inner_h)]);
+        let outer_h = store.add(outer_def);
+        let shape = store.view(outer_h);
+
+        let backend = TestBackend::new();
+        let arena = TestArena::new();
+
+        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+
+        assert_eq!(partial.depth(), 0);
+        assert!(!partial.is_complete());
+
+        // Init scalar field x
+        unsafe { partial.mark_field_init(0).unwrap() };
+        assert!(!partial.is_complete());
+
+        // Begin nested struct field
+        unsafe { partial.begin_field(1).unwrap() };
+        assert_eq!(partial.depth(), 1);
+        assert!(!partial.is_complete()); // inner struct not complete
+
+        // Init inner struct's fields
+        unsafe { partial.mark_field_init(0).unwrap() }; // inner.a
+        unsafe { partial.mark_field_init(1).unwrap() }; // inner.b
+        assert!(partial.is_complete()); // inner struct complete
+
+        // End nested struct
+        partial.end_field().unwrap();
+        assert_eq!(partial.depth(), 0);
+        assert!(partial.is_complete()); // outer struct complete
+
+        let _ = partial.finish().unwrap();
+    }
+
+    #[test]
+    fn nested_struct_drop_cleans_up() {
+        let mut store = DynShapeStore::new();
+
+        // Inner struct: { a: u32 }
+        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
+        let inner_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h)]);
+        let inner_h = store.add(inner_def);
+
+        // Outer struct: { inner: Inner }
+        let outer_def = DynShapeDef::struct_with_fields(&store, &[(0, inner_h)]);
+        let outer_h = store.add(outer_def);
+        let shape = store.view(outer_h);
+
+        let backend = TestBackend::new();
+        let arena = TestArena::new();
+
+        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+
+        // Begin nested struct but don't finish
+        unsafe { partial.begin_field(0).unwrap() };
+        unsafe { partial.mark_field_init(0).unwrap() }; // inner.a
+
+        // Drop should clean up the child frame first, then root
+        drop(partial);
+        // No panic = success
+    }
+
+    #[test]
+    fn nested_struct_partial_inner_cleanup() {
+        let mut store = DynShapeStore::new();
+
+        // Inner struct: { a: u32, b: u32 }
+        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
+        let inner_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
+        let inner_h = store.add(inner_def);
+
+        // Outer struct: { inner: Inner }
+        let outer_def = DynShapeDef::struct_with_fields(&store, &[(0, inner_h)]);
+        let outer_h = store.add(outer_def);
+        let shape = store.view(outer_h);
+
+        let backend = TestBackend::new();
+        let arena = TestArena::new();
+
+        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+
+        // Begin nested struct, partially init
+        unsafe { partial.begin_field(0).unwrap() };
+        unsafe { partial.mark_field_init(0).unwrap() }; // inner.a only
+        // inner.b NOT initialized
+
+        // Drop should clean up correctly
+        drop(partial);
+    }
+
+    #[test]
+    fn begin_field_already_init_fails() {
+        let mut store = DynShapeStore::new();
+        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
+        let struct_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h)]);
+        let struct_h = store.add(struct_def);
+        let shape = store.view(struct_h);
+
+        let backend = TestBackend::new();
+        let arena = TestArena::new();
+
+        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+
+        // Init field 0 as scalar
+        unsafe { partial.mark_field_init(0).unwrap() };
+
+        // Now try to begin_field on it - should fail
+        let err = unsafe { partial.begin_field(0) };
+        assert_eq!(err, Err(PartialError::FieldAlreadyInit { index: 0 }));
+    }
+
+    #[test]
+    fn end_field_incomplete_fails() {
+        let mut store = DynShapeStore::new();
+
+        // Inner struct: { a: u32, b: u32 }
+        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
+        let inner_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
+        let inner_h = store.add(inner_def);
+
+        // Outer struct: { inner: Inner }
+        let outer_def = DynShapeDef::struct_with_fields(&store, &[(0, inner_h)]);
+        let outer_h = store.add(outer_def);
+        let shape = store.view(outer_h);
+
+        let backend = TestBackend::new();
+        let arena = TestArena::new();
+
+        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+
+        unsafe { partial.begin_field(0).unwrap() };
+        unsafe { partial.mark_field_init(0).unwrap() }; // only inner.a
+        // inner.b NOT initialized
+
+        // Try to end_field - should fail because inner is incomplete
+        let err = partial.end_field();
+        assert_eq!(err, Err(PartialError::CurrentIncomplete));
+    }
+
+    #[test]
+    fn end_field_at_root_fails() {
+        let mut store = DynShapeStore::new();
+        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
+        let struct_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h)]);
+        let struct_h = store.add(struct_def);
+        let shape = store.view(struct_h);
+
+        let backend = TestBackend::new();
+        let arena = TestArena::new();
+
+        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+        unsafe { partial.mark_field_init(0).unwrap() };
+
+        // Try to end_field at root - should fail
+        let err = partial.end_field();
+        assert_eq!(err, Err(PartialError::AtRoot));
     }
 }
 

@@ -1,0 +1,16 @@
+// Tracey configuration for trame
+
+specs (
+    {
+        name trame
+        prefix t
+        include (docs/**/*.md)
+        impls (
+            {
+                name rust
+                include (trame/**/*.rs)
+                exclude (target/**)
+            }
+        )
+    }
+)

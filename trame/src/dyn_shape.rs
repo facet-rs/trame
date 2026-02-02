@@ -104,7 +104,7 @@ pub struct DynStructType {
 /// Unlike `facet_core::Shape` which uses static references and can be recursive,
 /// these shapes are bounded and can implement `kani::Arbitrary`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DynShape {
+pub struct S {
     /// Layout of this type.
     pub layout: Layout,
     /// Type-specific information.
@@ -125,7 +125,7 @@ pub enum DynDef {
 // IShape implementation for DynShape
 // ============================================================================
 
-impl IShape for DynShape {
+impl IShape for S {
     type StructType = DynStructType;
     type Field = DynField;
 
@@ -167,7 +167,7 @@ impl IStructType for DynStructType {
 }
 
 impl IField for DynField {
-    type Shape = DynShape;
+    type Shape = S;
 
     #[inline]
     fn offset(&self) -> usize {
@@ -177,7 +177,7 @@ impl IField for DynField {
     #[inline]
     fn shape(&self) -> Self::Shape {
         // For now, fields are treated as scalars (no nested struct tracking)
-        DynShape {
+        S {
             layout: self.layout,
             def: DynDef::Scalar,
         }
@@ -188,7 +188,7 @@ impl IField for DynField {
 // Constructors
 // ============================================================================
 
-impl DynShape {
+impl S {
     /// Create a scalar shape with the given layout.
     pub const fn scalar(layout: Layout) -> Self {
         Self {
@@ -246,7 +246,7 @@ impl DynField {
 // ============================================================================
 
 #[cfg(kani)]
-impl kani::Arbitrary for DynShape {
+impl kani::Arbitrary for S {
     fn any() -> Self {
         let is_struct: bool = kani::any();
 
@@ -274,7 +274,7 @@ impl kani::Arbitrary for DynShape {
 
             let layout = Layout::from_size_align(offset, 1).unwrap();
 
-            DynShape {
+            S {
                 layout,
                 def: DynDef::Struct(DynStructType {
                     field_count,
@@ -291,7 +291,7 @@ impl kani::Arbitrary for DynShape {
             kani::assume(size == 0 || size % align == 0);
 
             let layout = Layout::from_size_align(size, align).unwrap();
-            DynShape::scalar(layout)
+            S::scalar(layout)
         }
     }
 }
@@ -364,7 +364,7 @@ mod tests {
 
     #[test]
     fn scalar_is_not_struct() {
-        let s = DynShape::scalar(Layout::new::<u32>());
+        let s = S::scalar(Layout::new::<u32>());
         assert!(!s.is_struct());
         assert!(s.as_struct().is_none());
     }
@@ -375,7 +375,7 @@ mod tests {
             DynField::new(0, Layout::new::<u32>()),
             DynField::new(4, Layout::new::<u32>()),
         ];
-        let s = DynShape::struct_with_fields(&fields);
+        let s = S::struct_with_fields(&fields);
         assert!(s.is_struct());
         assert!(s.as_struct().is_some());
     }
@@ -386,7 +386,7 @@ mod tests {
             DynField::new(0, Layout::new::<u32>()),
             DynField::new(8, Layout::new::<u64>()),
         ];
-        let s = DynShape::struct_with_fields(&fields);
+        let s = S::struct_with_fields(&fields);
         let st = s.as_struct().unwrap();
 
         assert_eq!(st.field_count(), 2);

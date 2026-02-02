@@ -9,7 +9,9 @@
 //! tracks state and asserts valid transitions. For production, RealBackend
 //! performs actual memory operations with zero overhead.
 
-use crate::dyn_shape::{DynShape, IShape, IStructType};
+use crate::dyn_shape::{IShape, IStructType};
+use core::alloc::Layout;
+use core::marker::PhantomData;
 
 /// Maximum number of allocations tracked by VerifiedBackend.
 pub const MAX_ALLOCS: usize = 8;
@@ -51,7 +53,7 @@ pub enum SlotState {
 /// All methods are unsafe because they have preconditions that cannot be
 /// checked at compile time. The VerifiedBackend asserts these preconditions
 /// for Kani proofs; RealBackend assumes they hold (undefined behavior otherwise).
-pub trait Backend<S: IShape> {
+pub trait Backend<S> {
     /// Handle to an allocation (a contiguous region of slots).
     type Alloc: Copy;
 
@@ -107,7 +109,7 @@ pub trait Backend<S: IShape> {
 /// This backend doesn't do any real memory operations - it just tracks
 /// the abstract state of slots and asserts that all transitions are valid.
 #[derive(Debug)]
-pub struct VerifiedBackend {
+pub struct VerifiedBackend<S> {
     /// State of each slot.
     slots: [SlotState; MAX_SLOTS],
     /// Next slot index to allocate from.
@@ -116,9 +118,11 @@ pub struct VerifiedBackend {
     allocs: [Option<(u16, u16)>; MAX_ALLOCS],
     /// Next allocation index.
     next_alloc: usize,
+    /// Marker for the shape type.
+    _marker: PhantomData<S>,
 }
 
-impl VerifiedBackend {
+impl<S> VerifiedBackend<S> {
     /// Create a new verified backend with all slots unallocated.
     pub fn new() -> Self {
         Self {
@@ -126,6 +130,7 @@ impl VerifiedBackend {
             next_slot: 0,
             allocs: [None; MAX_ALLOCS],
             next_alloc: 0,
+            _marker: PhantomData,
         }
     }
 
@@ -138,7 +143,7 @@ impl VerifiedBackend {
     }
 }
 
-impl Default for VerifiedBackend {
+impl<S> Default for VerifiedBackend<S> {
     fn default() -> Self {
         Self::new()
     }
@@ -153,11 +158,11 @@ fn slot_count<S: IShape>(shape: S) -> usize {
     }
 }
 
-impl Backend<DynShape> for VerifiedBackend {
+impl<S: IShape> Backend<S> for VerifiedBackend<S> {
     type Alloc = u8;
     type Slot = u16;
 
-    unsafe fn alloc(&mut self, shape: DynShape) -> Self::Alloc {
+    unsafe fn alloc(&mut self, shape: S) -> Self::Alloc {
         let slots = slot_count(shape);
 
         assert!(self.next_alloc < MAX_ALLOCS, "too many allocations");
@@ -243,16 +248,151 @@ impl Backend<DynShape> for VerifiedBackend {
     }
 }
 
+// ============================================================================
+// RealBackend - production memory operations
+// ============================================================================
+
+/// Real backend that performs actual memory operations.
+///
+/// This is the production backend - it allocates real memory, tracks slot
+/// states minimally (just enough to know what to drop), and has zero overhead
+/// for the state tracking itself (the slot states are just indices).
+///
+/// Unlike VerifiedBackend which tracks everything for proofs, RealBackend
+/// trusts that callers follow the contract. Violating the contract is UB.
+#[derive(Debug)]
+pub struct RealBackend<S> {
+    /// Marker for the shape type.
+    _marker: PhantomData<S>,
+}
+
+/// A real allocation - owns heap memory.
+#[derive(Debug)]
+pub struct RealAlloc {
+    /// Pointer to allocated memory (null for ZSTs).
+    ptr: *mut u8,
+    /// Layout used for allocation (needed for dealloc).
+    layout: Layout,
+    /// Number of slots in this allocation.
+    slot_count: usize,
+}
+
+impl Copy for RealAlloc {}
+impl Clone for RealAlloc {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+/// A real slot - pointer to a field within an allocation.
+#[derive(Debug, Clone, Copy)]
+pub struct RealSlot {
+    /// Pointer to the slot's memory.
+    pub ptr: *mut u8,
+    /// Layout of this slot (for potential drop operations).
+    pub layout: Layout,
+}
+
+impl<S> RealBackend<S> {
+    /// Create a new real backend.
+    pub const fn new() -> Self {
+        Self {
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S> Default for RealBackend<S> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<S: IShape> Backend<S> for RealBackend<S> {
+    type Alloc = RealAlloc;
+    type Slot = RealSlot;
+
+    unsafe fn alloc(&mut self, shape: S) -> Self::Alloc {
+        let layout = shape.layout();
+        let slot_count = slot_count(shape);
+
+        let ptr = if layout.size() == 0 {
+            // ZST - don't allocate, use dangling pointer
+            layout.align() as *mut u8
+        } else {
+            // SAFETY: layout.size() > 0, so this is valid
+            let ptr = unsafe { std::alloc::alloc(layout) };
+            if ptr.is_null() {
+                std::alloc::handle_alloc_error(layout);
+            }
+            ptr
+        };
+
+        RealAlloc {
+            ptr,
+            layout,
+            slot_count,
+        }
+    }
+
+    unsafe fn dealloc(&mut self, alloc: Self::Alloc) {
+        if alloc.layout.size() > 0 {
+            // SAFETY: caller guarantees this is a live allocation with all slots
+            // in Allocated state (not Initialized)
+            unsafe { std::alloc::dealloc(alloc.ptr, alloc.layout) };
+        }
+    }
+
+    unsafe fn slot(&self, alloc: Self::Alloc, field_idx: usize) -> Self::Slot {
+        debug_assert!(
+            field_idx < alloc.slot_count,
+            "field_idx {} out of bounds (count {})",
+            field_idx,
+            alloc.slot_count
+        );
+
+        // For now, we don't track individual field offsets in RealBackend.
+        // This is a simplified version - real usage would need the shape info
+        // to compute proper offsets.
+        //
+        // TODO: Store field offsets in RealAlloc or require shape parameter
+        RealSlot {
+            ptr: alloc.ptr, // Placeholder - real impl needs offset calculation
+            layout: alloc.layout,
+        }
+    }
+
+    unsafe fn mark_init(&mut self, _slot: Self::Slot) {
+        // No-op in production - we trust the caller
+    }
+
+    unsafe fn mark_uninit(&mut self, _slot: Self::Slot) {
+        // No-op in production - we trust the caller
+    }
+
+    unsafe fn is_init(&self, _slot: Self::Slot) -> bool {
+        // RealBackend doesn't track this - caller must know
+        // This method shouldn't really be called on RealBackend
+        panic!("RealBackend::is_init should not be called - caller must track init state")
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dyn_shape::DynField;
+    use crate::dyn_shape::{DynField, S};
     use core::alloc::Layout;
 
+    // --- VerifiedBackend tests ---
+
     #[test]
-    fn scalar_lifecycle() {
-        let mut backend = VerifiedBackend::new();
-        let shape = DynShape::scalar(Layout::new::<u32>());
+    fn verified_scalar_lifecycle() {
+        let mut backend = VerifiedBackend::<S>::new();
+        let shape = S::scalar(Layout::new::<u32>());
         let alloc = unsafe { backend.alloc(shape) };
         let slot = unsafe { backend.slot(alloc, 0) };
 
@@ -265,13 +405,13 @@ mod tests {
     }
 
     #[test]
-    fn struct_lifecycle() {
-        let mut backend = VerifiedBackend::new();
+    fn verified_struct_lifecycle() {
+        let mut backend = VerifiedBackend::<S>::new();
         let fields = [
             DynField::new(0, Layout::new::<u32>()),
             DynField::new(4, Layout::new::<u32>()),
         ];
-        let shape = DynShape::struct_with_fields(&fields);
+        let shape = S::struct_with_fields(&fields);
         let alloc = unsafe { backend.alloc(shape) };
 
         let slot0 = unsafe { backend.slot(alloc, 0) };
@@ -287,9 +427,9 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "mark_init")]
-    fn double_init_panics() {
-        let mut backend = VerifiedBackend::new();
-        let shape = DynShape::scalar(Layout::new::<u32>());
+    fn verified_double_init_panics() {
+        let mut backend = VerifiedBackend::<S>::new();
+        let shape = S::scalar(Layout::new::<u32>());
         let alloc = unsafe { backend.alloc(shape) };
         let slot = unsafe { backend.slot(alloc, 0) };
 
@@ -299,13 +439,64 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "dealloc")]
-    fn dealloc_while_init_panics() {
-        let mut backend = VerifiedBackend::new();
-        let shape = DynShape::scalar(Layout::new::<u32>());
+    fn verified_dealloc_while_init_panics() {
+        let mut backend = VerifiedBackend::<S>::new();
+        let shape = S::scalar(Layout::new::<u32>());
         let alloc = unsafe { backend.alloc(shape) };
         let slot = unsafe { backend.slot(alloc, 0) };
 
         unsafe { backend.mark_init(slot) };
+        unsafe { backend.dealloc(alloc) };
+    }
+
+    // --- RealBackend tests ---
+
+    #[test]
+    fn real_scalar_alloc_dealloc() {
+        let mut backend = RealBackend::<S>::new();
+        let shape = S::scalar(Layout::new::<u32>());
+        let alloc = unsafe { backend.alloc(shape) };
+
+        // Write something to verify memory is usable
+        unsafe {
+            std::ptr::write(alloc.ptr as *mut u32, 42);
+            assert_eq!(std::ptr::read(alloc.ptr as *const u32), 42);
+        }
+
+        unsafe { backend.dealloc(alloc) };
+    }
+
+    #[test]
+    fn real_zst_alloc_dealloc() {
+        let mut backend = RealBackend::<S>::new();
+        let shape = S::scalar(Layout::new::<()>());
+        let alloc = unsafe { backend.alloc(shape) };
+
+        // ZST should have non-null aligned pointer but no actual allocation
+        assert!(!alloc.ptr.is_null());
+
+        unsafe { backend.dealloc(alloc) };
+    }
+
+    #[test]
+    fn real_struct_alloc_dealloc() {
+        let mut backend = RealBackend::<S>::new();
+        let fields = [
+            DynField::new(0, Layout::new::<u32>()),
+            DynField::new(4, Layout::new::<u64>()),
+        ];
+        let shape = S::struct_with_fields(&fields);
+        let alloc = unsafe { backend.alloc(shape) };
+
+        // Write to both fields
+        unsafe {
+            std::ptr::write(alloc.ptr as *mut u32, 123);
+            std::ptr::write(alloc.ptr.add(4) as *mut u64, 456);
+
+            assert_eq!(std::ptr::read(alloc.ptr as *const u32), 123);
+            assert_eq!(std::ptr::read(alloc.ptr.add(4) as *const u64), 456);
+        }
+
         unsafe { backend.dealloc(alloc) };
     }
 }
@@ -313,14 +504,14 @@ mod tests {
 #[cfg(kani)]
 mod kani_proofs {
     use super::*;
-    use crate::dyn_shape::{DynDef, DynField, DynStructType, MAX_FIELDS};
+    use crate::dyn_shape::{DynDef, DynField, DynStructType, MAX_FIELDS, S};
     use core::alloc::Layout;
 
     #[kani::proof]
     #[kani::unwind(10)]
     fn scalar_lifecycle() {
-        let mut backend = VerifiedBackend::new();
-        let shape = DynShape::scalar(Layout::from_size_align(4, 4).unwrap());
+        let mut backend = VerifiedBackend::<S>::new();
+        let shape = S::scalar(Layout::from_size_align(4, 4).unwrap());
         let alloc = unsafe { backend.alloc(shape) };
         let slot = unsafe { backend.slot(alloc, 0) };
 
@@ -340,7 +531,7 @@ mod kani_proofs {
             fields[i] = DynField::new(i * 4, Layout::from_size_align(4, 1).unwrap());
         }
 
-        let shape = DynShape {
+        let shape = S {
             layout: Layout::from_size_align((field_count as usize) * 4, 1).unwrap(),
             def: DynDef::Struct(DynStructType {
                 field_count,
@@ -348,7 +539,7 @@ mod kani_proofs {
             }),
         };
 
-        let mut backend = VerifiedBackend::new();
+        let mut backend = VerifiedBackend::<S>::new();
         let alloc = unsafe { backend.alloc(shape) };
 
         // Init all fields

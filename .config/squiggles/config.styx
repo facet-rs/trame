@@ -1,0 +1,3 @@
+@schema {id crate:squiggles-config@1, cli squiggles}
+
+enabled true

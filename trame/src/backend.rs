@@ -384,15 +384,21 @@ impl<S: IShape> Backend<S> for RealBackend<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dyn_shape::{DynField, S};
+    use crate::dyn_shape::{DynShapeDef, DynShapeStore, DynShapeView};
     use core::alloc::Layout;
+
+    /// Type alias for the shape view we use in tests.
+    type S<'a> = DynShapeView<'a, DynShapeStore>;
 
     // --- VerifiedBackend tests ---
 
     #[test]
     fn verified_scalar_lifecycle() {
-        let mut backend = VerifiedBackend::<S>::new();
-        let shape = S::scalar(Layout::new::<u32>());
+        let mut store = DynShapeStore::new();
+        let h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
+        let shape = store.view(h);
+
+        let mut backend = VerifiedBackend::<S<'_>>::new();
         let alloc = unsafe { backend.alloc(shape) };
         let slot = unsafe { backend.slot(alloc, 0) };
 
@@ -406,12 +412,13 @@ mod tests {
 
     #[test]
     fn verified_struct_lifecycle() {
-        let mut backend = VerifiedBackend::<S>::new();
-        let fields = [
-            DynField::new(0, Layout::new::<u32>()),
-            DynField::new(4, Layout::new::<u32>()),
-        ];
-        let shape = S::struct_with_fields(&fields);
+        let mut store = DynShapeStore::new();
+        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
+        let struct_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
+        let struct_h = store.add(struct_def);
+        let shape = store.view(struct_h);
+
+        let mut backend = VerifiedBackend::<S<'_>>::new();
         let alloc = unsafe { backend.alloc(shape) };
 
         let slot0 = unsafe { backend.slot(alloc, 0) };
@@ -428,8 +435,11 @@ mod tests {
     #[test]
     #[should_panic(expected = "mark_init")]
     fn verified_double_init_panics() {
-        let mut backend = VerifiedBackend::<S>::new();
-        let shape = S::scalar(Layout::new::<u32>());
+        let mut store = DynShapeStore::new();
+        let h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
+        let shape = store.view(h);
+
+        let mut backend = VerifiedBackend::<S<'_>>::new();
         let alloc = unsafe { backend.alloc(shape) };
         let slot = unsafe { backend.slot(alloc, 0) };
 
@@ -440,8 +450,11 @@ mod tests {
     #[test]
     #[should_panic(expected = "dealloc")]
     fn verified_dealloc_while_init_panics() {
-        let mut backend = VerifiedBackend::<S>::new();
-        let shape = S::scalar(Layout::new::<u32>());
+        let mut store = DynShapeStore::new();
+        let h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
+        let shape = store.view(h);
+
+        let mut backend = VerifiedBackend::<S<'_>>::new();
         let alloc = unsafe { backend.alloc(shape) };
         let slot = unsafe { backend.slot(alloc, 0) };
 
@@ -453,8 +466,11 @@ mod tests {
 
     #[test]
     fn real_scalar_alloc_dealloc() {
-        let mut backend = RealBackend::<S>::new();
-        let shape = S::scalar(Layout::new::<u32>());
+        let mut store = DynShapeStore::new();
+        let h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
+        let shape = store.view(h);
+
+        let mut backend = RealBackend::<S<'_>>::new();
         let alloc = unsafe { backend.alloc(shape) };
 
         // Write something to verify memory is usable
@@ -468,8 +484,11 @@ mod tests {
 
     #[test]
     fn real_zst_alloc_dealloc() {
-        let mut backend = RealBackend::<S>::new();
-        let shape = S::scalar(Layout::new::<()>());
+        let mut store = DynShapeStore::new();
+        let h = store.add(DynShapeDef::scalar(Layout::new::<()>()));
+        let shape = store.view(h);
+
+        let mut backend = RealBackend::<S<'_>>::new();
         let alloc = unsafe { backend.alloc(shape) };
 
         // ZST should have non-null aligned pointer but no actual allocation
@@ -480,12 +499,14 @@ mod tests {
 
     #[test]
     fn real_struct_alloc_dealloc() {
-        let mut backend = RealBackend::<S>::new();
-        let fields = [
-            DynField::new(0, Layout::new::<u32>()),
-            DynField::new(4, Layout::new::<u64>()),
-        ];
-        let shape = S::struct_with_fields(&fields);
+        let mut store = DynShapeStore::new();
+        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
+        let u64_h = store.add(DynShapeDef::scalar(Layout::new::<u64>()));
+        let struct_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u64_h)]);
+        let struct_h = store.add(struct_def);
+        let shape = store.view(struct_h);
+
+        let mut backend = RealBackend::<S<'_>>::new();
         let alloc = unsafe { backend.alloc(shape) };
 
         // Write to both fields
@@ -504,15 +525,24 @@ mod tests {
 #[cfg(kani)]
 mod kani_proofs {
     use super::*;
-    use crate::dyn_shape::{DynDef, DynField, DynStructType, MAX_FIELDS, S};
+    use crate::dyn_shape::{
+        DynDef, DynFieldDef, DynShapeDef, DynShapeHandle, DynShapeStore, DynShapeView,
+        DynStructDef, MAX_FIELDS,
+    };
     use core::alloc::Layout;
+
+    /// Type alias for the shape view we use in proofs.
+    type S<'a> = DynShapeView<'a, DynShapeStore>;
 
     /// Prove: scalar alloc -> init -> uninit -> dealloc is valid
     #[kani::proof]
     #[kani::unwind(10)]
     fn scalar_lifecycle() {
-        let mut backend = VerifiedBackend::<S>::new();
-        let shape = S::scalar(Layout::from_size_align(4, 4).unwrap());
+        let mut store = DynShapeStore::new();
+        let h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 4).unwrap()));
+        let shape = store.view(h);
+
+        let mut backend = VerifiedBackend::<S<'_>>::new();
         let alloc = unsafe { backend.alloc(shape) };
         let slot = unsafe { backend.slot(alloc, 0) };
 
@@ -528,20 +558,26 @@ mod kani_proofs {
         let field_count: u8 = kani::any();
         kani::assume(field_count > 0 && field_count <= 4);
 
-        let mut fields = [DynField::new(0, Layout::new::<()>()); MAX_FIELDS];
+        // Build store with a scalar shape for fields
+        let mut store = DynShapeStore::new();
+        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+
+        let mut fields = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
         for i in 0..(field_count as usize) {
-            fields[i] = DynField::new(i * 4, Layout::from_size_align(4, 1).unwrap());
+            fields[i] = DynFieldDef::new(i * 4, scalar_h);
         }
 
-        let shape = S {
+        let struct_def = DynShapeDef {
             layout: Layout::from_size_align((field_count as usize) * 4, 1).unwrap(),
-            def: DynDef::Struct(DynStructType {
+            def: DynDef::Struct(DynStructDef {
                 field_count,
                 fields,
             }),
         };
+        let struct_h = store.add(struct_def);
+        let shape = store.view(struct_h);
 
-        let mut backend = VerifiedBackend::<S>::new();
+        let mut backend = VerifiedBackend::<S<'_>>::new();
         let alloc = unsafe { backend.alloc(shape) };
 
         // Init all fields
@@ -563,27 +599,26 @@ mod kani_proofs {
     #[kani::proof]
     #[kani::unwind(10)]
     fn struct_any_init_order() {
-        let fields = [
-            DynField::new(0, Layout::from_size_align(4, 1).unwrap()),
-            DynField::new(4, Layout::from_size_align(4, 1).unwrap()),
-            DynField::new(8, Layout::from_size_align(4, 1).unwrap()),
-        ];
+        let mut store = DynShapeStore::new();
+        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
 
-        let shape = S {
+        let struct_def = DynShapeDef {
             layout: Layout::from_size_align(12, 1).unwrap(),
-            def: DynDef::Struct(DynStructType {
+            def: DynDef::Struct(DynStructDef {
                 field_count: 3,
                 fields: {
-                    let mut arr = [DynField::new(0, Layout::new::<()>()); MAX_FIELDS];
-                    arr[0] = fields[0];
-                    arr[1] = fields[1];
-                    arr[2] = fields[2];
+                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
+                    arr[0] = DynFieldDef::new(0, scalar_h);
+                    arr[1] = DynFieldDef::new(4, scalar_h);
+                    arr[2] = DynFieldDef::new(8, scalar_h);
                     arr
                 },
             }),
         };
+        let struct_h = store.add(struct_def);
+        let shape = store.view(struct_h);
 
-        let mut backend = VerifiedBackend::<S>::new();
+        let mut backend = VerifiedBackend::<S<'_>>::new();
         let alloc = unsafe { backend.alloc(shape) };
 
         // Choose arbitrary init order via symbolic permutation
@@ -614,27 +649,26 @@ mod kani_proofs {
     #[kani::proof]
     #[kani::unwind(10)]
     fn partial_init_cleanup() {
-        let fields = [
-            DynField::new(0, Layout::from_size_align(4, 1).unwrap()),
-            DynField::new(4, Layout::from_size_align(4, 1).unwrap()),
-            DynField::new(8, Layout::from_size_align(4, 1).unwrap()),
-        ];
+        let mut store = DynShapeStore::new();
+        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
 
-        let shape = S {
+        let struct_def = DynShapeDef {
             layout: Layout::from_size_align(12, 1).unwrap(),
-            def: DynDef::Struct(DynStructType {
+            def: DynDef::Struct(DynStructDef {
                 field_count: 3,
                 fields: {
-                    let mut arr = [DynField::new(0, Layout::new::<()>()); MAX_FIELDS];
-                    arr[0] = fields[0];
-                    arr[1] = fields[1];
-                    arr[2] = fields[2];
+                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
+                    arr[0] = DynFieldDef::new(0, scalar_h);
+                    arr[1] = DynFieldDef::new(4, scalar_h);
+                    arr[2] = DynFieldDef::new(8, scalar_h);
                     arr
                 },
             }),
         };
+        let struct_h = store.add(struct_def);
+        let shape = store.view(struct_h);
 
-        let mut backend = VerifiedBackend::<S>::new();
+        let mut backend = VerifiedBackend::<S<'_>>::new();
         let alloc = unsafe { backend.alloc(shape) };
 
         // Init only some fields (0 to k where k is symbolic)
@@ -660,10 +694,14 @@ mod kani_proofs {
     #[kani::proof]
     #[kani::unwind(10)]
     fn multiple_allocations() {
-        let mut backend = VerifiedBackend::<S>::new();
+        let mut store = DynShapeStore::new();
+        let h1 = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 4).unwrap()));
+        let h2 = store.add(DynShapeDef::scalar(Layout::from_size_align(8, 8).unwrap()));
 
-        let shape1 = S::scalar(Layout::from_size_align(4, 4).unwrap());
-        let shape2 = S::scalar(Layout::from_size_align(8, 8).unwrap());
+        let shape1 = store.view(h1);
+        let shape2 = store.view(h2);
+
+        let mut backend = VerifiedBackend::<S<'_>>::new();
 
         let alloc1 = unsafe { backend.alloc(shape1) };
         let alloc2 = unsafe { backend.alloc(shape2) };

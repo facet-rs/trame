@@ -366,17 +366,21 @@ mod tests {
     use super::*;
     use crate::arena::VerifiedArena;
     use crate::backend::VerifiedBackend;
-    use crate::dyn_shape::{DynField, S};
+    use crate::dyn_shape::{DynShapeDef, DynShapeStore, DynShapeView};
     use core::alloc::Layout;
 
-    type TestBackend = VerifiedBackend<S>;
-    type TestArena = VerifiedArena<Frame<TestBackend, S>, 8>;
+    type S<'a> = DynShapeView<'a, DynShapeStore>;
+    type TestBackend<'a> = VerifiedBackend<S<'a>>;
+    type TestArena<'a> = VerifiedArena<Frame<TestBackend<'a>, S<'a>>, 8>;
 
     #[test]
     fn scalar_lifecycle() {
+        let mut store = DynShapeStore::new();
+        let h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
+        let shape = store.view(h);
+
         let backend = TestBackend::new();
         let arena = TestArena::new();
-        let shape = S::scalar(Layout::new::<u32>());
 
         let mut partial = unsafe { Partial::new(backend, arena, shape) };
 
@@ -389,13 +393,14 @@ mod tests {
 
     #[test]
     fn struct_lifecycle() {
+        let mut store = DynShapeStore::new();
+        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
+        let struct_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
+        let struct_h = store.add(struct_def);
+        let shape = store.view(struct_h);
+
         let backend = TestBackend::new();
         let arena = TestArena::new();
-        let fields = [
-            DynField::new(0, Layout::new::<u32>()),
-            DynField::new(4, Layout::new::<u32>()),
-        ];
-        let shape = S::struct_with_fields(&fields);
 
         let mut partial = unsafe { Partial::new(backend, arena, shape) };
 
@@ -412,14 +417,15 @@ mod tests {
 
     #[test]
     fn struct_any_order() {
+        let mut store = DynShapeStore::new();
+        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
+        let struct_def =
+            DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h), (8, u32_h)]);
+        let struct_h = store.add(struct_def);
+        let shape = store.view(struct_h);
+
         let backend = TestBackend::new();
         let arena = TestArena::new();
-        let fields = [
-            DynField::new(0, Layout::new::<u32>()),
-            DynField::new(4, Layout::new::<u32>()),
-            DynField::new(8, Layout::new::<u32>()),
-        ];
-        let shape = S::struct_with_fields(&fields);
 
         let mut partial = unsafe { Partial::new(backend, arena, shape) };
 
@@ -434,10 +440,14 @@ mod tests {
 
     #[test]
     fn double_init_fails() {
+        let mut store = DynShapeStore::new();
+        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
+        let struct_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h)]);
+        let struct_h = store.add(struct_def);
+        let shape = store.view(struct_h);
+
         let backend = TestBackend::new();
         let arena = TestArena::new();
-        let fields = [DynField::new(0, Layout::new::<u32>())];
-        let shape = S::struct_with_fields(&fields);
 
         let mut partial = unsafe { Partial::new(backend, arena, shape) };
 
@@ -448,13 +458,14 @@ mod tests {
 
     #[test]
     fn incomplete_finish_fails() {
+        let mut store = DynShapeStore::new();
+        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
+        let struct_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
+        let struct_h = store.add(struct_def);
+        let shape = store.view(struct_h);
+
         let backend = TestBackend::new();
         let arena = TestArena::new();
-        let fields = [
-            DynField::new(0, Layout::new::<u32>()),
-            DynField::new(4, Layout::new::<u32>()),
-        ];
-        let shape = S::struct_with_fields(&fields);
 
         let mut partial = unsafe { Partial::new(backend, arena, shape) };
 
@@ -467,13 +478,14 @@ mod tests {
 
     #[test]
     fn drop_cleans_up() {
+        let mut store = DynShapeStore::new();
+        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
+        let struct_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
+        let struct_h = store.add(struct_def);
+        let shape = store.view(struct_h);
+
         let backend = TestBackend::new();
         let arena = TestArena::new();
-        let fields = [
-            DynField::new(0, Layout::new::<u32>()),
-            DynField::new(4, Layout::new::<u32>()),
-        ];
-        let shape = S::struct_with_fields(&fields);
 
         let mut partial = unsafe { Partial::new(backend, arena, shape) };
 
@@ -490,18 +502,25 @@ mod kani_proofs {
     use super::*;
     use crate::arena::VerifiedArena;
     use crate::backend::VerifiedBackend;
-    use crate::dyn_shape::{DynDef, DynField, DynStructType, MAX_FIELDS, S};
+    use crate::dyn_shape::{
+        DynDef, DynFieldDef, DynShapeDef, DynShapeHandle, DynShapeStore, DynShapeView,
+        DynStructDef, MAX_FIELDS,
+    };
     use core::alloc::Layout;
 
-    type TestBackend = VerifiedBackend<S>;
-    type TestArena = VerifiedArena<Frame<TestBackend, S>, 4>;
+    type S<'a> = DynShapeView<'a, DynShapeStore>;
+    type TestBackend<'a> = VerifiedBackend<S<'a>>;
+    type TestArena<'a> = VerifiedArena<Frame<TestBackend<'a>, S<'a>>, 4>;
 
     #[kani::proof]
     #[kani::unwind(10)]
     fn scalar_init_complete() {
+        let mut store = DynShapeStore::new();
+        let h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 4).unwrap()));
+        let shape = store.view(h);
+
         let backend = TestBackend::new();
         let arena = TestArena::new();
-        let shape = S::scalar(Layout::from_size_align(4, 4).unwrap());
 
         let mut partial = unsafe { Partial::new(backend, arena, shape) };
 
@@ -516,18 +535,23 @@ mod kani_proofs {
         let field_count: u8 = kani::any();
         kani::assume(field_count > 0 && field_count <= 3);
 
-        let mut fields_arr = [DynField::new(0, Layout::new::<()>()); MAX_FIELDS];
+        let mut store = DynShapeStore::new();
+        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+
+        let mut fields_arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
         for i in 0..(field_count as usize) {
-            fields_arr[i] = DynField::new(i * 4, Layout::from_size_align(4, 1).unwrap());
+            fields_arr[i] = DynFieldDef::new(i * 4, scalar_h);
         }
 
-        let shape = S {
+        let struct_def = DynShapeDef {
             layout: Layout::from_size_align((field_count as usize) * 4, 1).unwrap(),
-            def: DynDef::Struct(DynStructType {
+            def: DynDef::Struct(DynStructDef {
                 field_count,
                 fields: fields_arr,
             }),
         };
+        let struct_h = store.add(struct_def);
+        let shape = store.view(struct_h);
 
         let backend = TestBackend::new();
         let arena = TestArena::new();
@@ -557,20 +581,23 @@ mod kani_proofs {
     #[kani::proof]
     #[kani::unwind(10)]
     fn double_init_rejected() {
-        let fields_arr = {
-            let mut arr = [DynField::new(0, Layout::new::<()>()); MAX_FIELDS];
-            arr[0] = DynField::new(0, Layout::from_size_align(4, 1).unwrap());
-            arr[1] = DynField::new(4, Layout::from_size_align(4, 1).unwrap());
-            arr
-        };
+        let mut store = DynShapeStore::new();
+        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
 
-        let shape = S {
+        let struct_def = DynShapeDef {
             layout: Layout::from_size_align(8, 1).unwrap(),
-            def: DynDef::Struct(DynStructType {
+            def: DynDef::Struct(DynStructDef {
                 field_count: 2,
-                fields: fields_arr,
+                fields: {
+                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
+                    arr[0] = DynFieldDef::new(0, scalar_h);
+                    arr[1] = DynFieldDef::new(4, scalar_h);
+                    arr
+                },
             }),
         };
+        let struct_h = store.add(struct_def);
+        let shape = store.view(struct_h);
 
         let backend = TestBackend::new();
         let arena = TestArena::new();
@@ -599,18 +626,23 @@ mod kani_proofs {
         let field_count: u8 = kani::any();
         kani::assume(field_count >= 2 && field_count <= 3);
 
-        let mut fields_arr = [DynField::new(0, Layout::new::<()>()); MAX_FIELDS];
+        let mut store = DynShapeStore::new();
+        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+
+        let mut fields_arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
         for i in 0..(field_count as usize) {
-            fields_arr[i] = DynField::new(i * 4, Layout::from_size_align(4, 1).unwrap());
+            fields_arr[i] = DynFieldDef::new(i * 4, scalar_h);
         }
 
-        let shape = S {
+        let struct_def = DynShapeDef {
             layout: Layout::from_size_align((field_count as usize) * 4, 1).unwrap(),
-            def: DynDef::Struct(DynStructType {
+            def: DynDef::Struct(DynStructDef {
                 field_count,
                 fields: fields_arr,
             }),
         };
+        let struct_h = store.add(struct_def);
+        let shape = store.view(struct_h);
 
         let backend = TestBackend::new();
         let arena = TestArena::new();
@@ -635,18 +667,23 @@ mod kani_proofs {
         let field_count: u8 = kani::any();
         kani::assume(field_count > 0 && field_count <= 3);
 
-        let mut fields_arr = [DynField::new(0, Layout::new::<()>()); MAX_FIELDS];
+        let mut store = DynShapeStore::new();
+        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+
+        let mut fields_arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
         for i in 0..(field_count as usize) {
-            fields_arr[i] = DynField::new(i * 4, Layout::from_size_align(4, 1).unwrap());
+            fields_arr[i] = DynFieldDef::new(i * 4, scalar_h);
         }
 
-        let shape = S {
+        let struct_def = DynShapeDef {
             layout: Layout::from_size_align((field_count as usize) * 4, 1).unwrap(),
-            def: DynDef::Struct(DynStructType {
+            def: DynDef::Struct(DynStructDef {
                 field_count,
                 fields: fields_arr,
             }),
         };
+        let struct_h = store.add(struct_def);
+        let shape = store.view(struct_h);
 
         let backend = TestBackend::new();
         let arena = TestArena::new();
@@ -669,21 +706,24 @@ mod kani_proofs {
     #[kani::proof]
     #[kani::unwind(10)]
     fn any_init_order_completes() {
-        let fields_arr = {
-            let mut arr = [DynField::new(0, Layout::new::<()>()); MAX_FIELDS];
-            arr[0] = DynField::new(0, Layout::from_size_align(4, 1).unwrap());
-            arr[1] = DynField::new(4, Layout::from_size_align(4, 1).unwrap());
-            arr[2] = DynField::new(8, Layout::from_size_align(4, 1).unwrap());
-            arr
-        };
+        let mut store = DynShapeStore::new();
+        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
 
-        let shape = S {
+        let struct_def = DynShapeDef {
             layout: Layout::from_size_align(12, 1).unwrap(),
-            def: DynDef::Struct(DynStructType {
+            def: DynDef::Struct(DynStructDef {
                 field_count: 3,
-                fields: fields_arr,
+                fields: {
+                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
+                    arr[0] = DynFieldDef::new(0, scalar_h);
+                    arr[1] = DynFieldDef::new(4, scalar_h);
+                    arr[2] = DynFieldDef::new(8, scalar_h);
+                    arr
+                },
             }),
         };
+        let struct_h = store.add(struct_def);
+        let shape = store.view(struct_h);
 
         let backend = TestBackend::new();
         let arena = TestArena::new();

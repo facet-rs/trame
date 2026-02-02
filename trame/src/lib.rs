@@ -19,5 +19,6 @@
 // about what our public interface is.
 mod arena;
 mod backend;
+mod byte_range;
 mod dyn_shape;
 mod partial;

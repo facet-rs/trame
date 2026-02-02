@@ -367,12 +367,86 @@ The `VerifiedBackend` + `ByteRangeTracker` combination verifies:
 
 Kani can prove these properties hold for all possible operation sequences within bounded parameters.
 
-## Migration Path
+## Implementation Order
 
-1. ✅ Create `ByteRangeTracker` with tests and proofs
-2. Refactor `Backend` trait to use `Ptr` and `memcpy` model
-3. Update `VerifiedBackend` to use `ByteRangeTracker`
-4. Refactor `Partial` to use `Op`/`Path`/`Source` API
-5. Remove old `begin_field`/`mark_field_init`/`end_field` API
-6. Update existing tests and proofs
-7. Add new proofs for nested struct scenarios
+1. ✅ **ByteRangeTracker** - Done. Tests and Kani proofs pass.
+
+2. **Update IShape trait**
+   - Add `PartialEq` bound
+   - Add `drop_in_place(&self, ptr: *mut u8)` method
+   - Implement for `&'static Shape` (calls vtable)
+   - Implement for `DynShapeView` (no-op for verification)
+
+3. **Ptr type** (new module `ptr.rs`)
+   - Implement `Ptr { alloc_id, offset, size }`
+   - Implement `offset(n)` with bounds checking
+   - Tests for pointer arithmetic
+
+4. **Heap trait and implementations** (replace `backend.rs`)
+   - Define `Heap<S: IShape>` trait
+   - Implement `VerifiedHeap<S>` using `ByteRangeTracker`
+   - Implement `RealHeap`
+   - Tests for each implementation
+   - Kani proofs for `VerifiedHeap`
+
+5. **Update Frame** 
+   - Change from `alloc: B::Alloc` to `data: H::Ptr`
+   - Remove allocation ownership tracking (use pointer's alloc_id)
+
+6. **Op/Path/Source API** (new module `ops.rs`)
+   - Define `PathSegment`, `Path`, `Source`, `Op`
+   - Keep it minimal for now (just `Field(n)`, `Imm`, `Stage`, `End`)
+
+7. **Refactor Partial**
+   - Replace `begin_field`/`mark_field_init`/`end_field` with `apply(Op)`
+   - Nested structs use pointer arithmetic, not allocation
+   - Tests for nested struct construction
+   - Kani proofs for nested struct scenarios
+
+## Test Success Criteria
+
+### ByteRangeTracker (✅ Done)
+- [x] Empty tracker is empty
+- [x] Single range init/uninit
+- [x] Adjacent ranges merge
+- [x] Disjoint ranges stay separate
+- [x] Middle uninit splits range
+- [x] Double init fails
+- [x] Uninit without init fails
+- [x] Kani proofs pass
+
+### Heap
+- [ ] `alloc` returns valid pointer with correct size
+- [ ] `dealloc` fails if bytes still initialized
+- [ ] `dealloc` fails with wrong shape
+- [ ] `memcpy` marks destination as initialized
+- [ ] `memcpy` fails if destination already initialized
+- [ ] `memcpy` fails if source not initialized
+- [ ] `drop_in_place` marks range as uninitialized
+- [ ] `drop_in_place` fails with wrong shape
+- [ ] Kani: alloc -> init -> uninit -> dealloc is valid
+- [ ] Kani: double init caught
+- [ ] Kani: dealloc with init bytes caught
+- [ ] Kani: shape mismatch caught
+
+### Partial with nested structs
+- [ ] Flat struct: init all fields, build succeeds
+- [ ] Nested struct: init outer.x, stage outer.inner, init inner.a, inner.b, end, build succeeds
+- [ ] **Only one allocation** for struct with inline nested struct (the fix for issue #3)
+- [ ] Overwrite: init field, drop, init again succeeds
+- [ ] Overwrite without drop: fails (caught by VerifiedHeap)
+- [ ] Kani: nested struct lifecycle is valid
+- [ ] Kani: partial init then drop cleans up correctly
+
+## Files to Create/Modify
+
+| File | Action | Description |
+|------|--------|-------------|
+| `byte_range.rs` | ✅ Done | ByteRangeTracker |
+| `dyn_shape.rs` | Modify | Add `PartialEq`, `drop_in_place` to IShape |
+| `ptr.rs` | Create | Fat pointer type |
+| `heap.rs` | Create | Heap trait, VerifiedHeap, RealHeap (replaces backend.rs) |
+| `backend.rs` | Delete | Replaced by heap.rs |
+| `ops.rs` | Create | Op, Path, Source types |
+| `partial.rs` | Rewrite | Use Heap + Op API |
+| `frame.rs` | Maybe | Extract Frame if partial.rs gets too big |

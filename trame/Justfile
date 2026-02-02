@@ -5,6 +5,9 @@ all:
     just kani
     just test
 
+sote *args:
+    soteria-rust cargo . --kani --summary {{ args }}
+
 kani *args:
     cargo kani {{ args }}
 

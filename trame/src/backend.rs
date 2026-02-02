@@ -507,6 +507,7 @@ mod kani_proofs {
     use crate::dyn_shape::{DynDef, DynField, DynStructType, MAX_FIELDS, S};
     use core::alloc::Layout;
 
+    /// Prove: scalar alloc -> init -> uninit -> dealloc is valid
     #[kani::proof]
     #[kani::unwind(10)]
     fn scalar_lifecycle() {
@@ -520,6 +521,7 @@ mod kani_proofs {
         unsafe { backend.dealloc(alloc) };
     }
 
+    /// Prove: struct with symbolic field count works correctly
     #[kani::proof]
     #[kani::unwind(10)]
     fn struct_lifecycle() {
@@ -555,5 +557,129 @@ mod kani_proofs {
         }
 
         unsafe { backend.dealloc(alloc) };
+    }
+
+    /// Prove: fields can be initialized in any order
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn struct_any_init_order() {
+        let fields = [
+            DynField::new(0, Layout::from_size_align(4, 1).unwrap()),
+            DynField::new(4, Layout::from_size_align(4, 1).unwrap()),
+            DynField::new(8, Layout::from_size_align(4, 1).unwrap()),
+        ];
+
+        let shape = S {
+            layout: Layout::from_size_align(12, 1).unwrap(),
+            def: DynDef::Struct(DynStructType {
+                field_count: 3,
+                fields: {
+                    let mut arr = [DynField::new(0, Layout::new::<()>()); MAX_FIELDS];
+                    arr[0] = fields[0];
+                    arr[1] = fields[1];
+                    arr[2] = fields[2];
+                    arr
+                },
+            }),
+        };
+
+        let mut backend = VerifiedBackend::<S>::new();
+        let alloc = unsafe { backend.alloc(shape) };
+
+        // Choose arbitrary init order via symbolic permutation
+        let first: u8 = kani::any();
+        let second: u8 = kani::any();
+        let third: u8 = kani::any();
+        kani::assume(first < 3 && second < 3 && third < 3);
+        kani::assume(first != second && second != third && first != third);
+
+        let order = [first as usize, second as usize, third as usize];
+
+        // Init in arbitrary order
+        for &i in &order {
+            let slot = unsafe { backend.slot(alloc, i) };
+            unsafe { backend.mark_init(slot) };
+        }
+
+        // Uninit in reverse order (simulating drop)
+        for &i in order.iter().rev() {
+            let slot = unsafe { backend.slot(alloc, i) };
+            unsafe { backend.mark_uninit(slot) };
+        }
+
+        unsafe { backend.dealloc(alloc) };
+    }
+
+    /// Prove: partial init then cleanup is safe (panic safety)
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn partial_init_cleanup() {
+        let fields = [
+            DynField::new(0, Layout::from_size_align(4, 1).unwrap()),
+            DynField::new(4, Layout::from_size_align(4, 1).unwrap()),
+            DynField::new(8, Layout::from_size_align(4, 1).unwrap()),
+        ];
+
+        let shape = S {
+            layout: Layout::from_size_align(12, 1).unwrap(),
+            def: DynDef::Struct(DynStructType {
+                field_count: 3,
+                fields: {
+                    let mut arr = [DynField::new(0, Layout::new::<()>()); MAX_FIELDS];
+                    arr[0] = fields[0];
+                    arr[1] = fields[1];
+                    arr[2] = fields[2];
+                    arr
+                },
+            }),
+        };
+
+        let mut backend = VerifiedBackend::<S>::new();
+        let alloc = unsafe { backend.alloc(shape) };
+
+        // Init only some fields (0 to k where k is symbolic)
+        let init_count: u8 = kani::any();
+        kani::assume(init_count <= 3);
+
+        for i in 0..(init_count as usize) {
+            let slot = unsafe { backend.slot(alloc, i) };
+            unsafe { backend.mark_init(slot) };
+        }
+
+        // "Panic" - cleanup only the initialized fields
+        for i in 0..(init_count as usize) {
+            let slot = unsafe { backend.slot(alloc, i) };
+            unsafe { backend.mark_uninit(slot) };
+        }
+
+        // Safe to dealloc - all slots are back to Allocated state
+        unsafe { backend.dealloc(alloc) };
+    }
+
+    /// Prove: multiple allocations can coexist
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn multiple_allocations() {
+        let mut backend = VerifiedBackend::<S>::new();
+
+        let shape1 = S::scalar(Layout::from_size_align(4, 4).unwrap());
+        let shape2 = S::scalar(Layout::from_size_align(8, 8).unwrap());
+
+        let alloc1 = unsafe { backend.alloc(shape1) };
+        let alloc2 = unsafe { backend.alloc(shape2) };
+
+        let slot1 = unsafe { backend.slot(alloc1, 0) };
+        let slot2 = unsafe { backend.slot(alloc2, 0) };
+
+        // Init both
+        unsafe { backend.mark_init(slot1) };
+        unsafe { backend.mark_init(slot2) };
+
+        // Uninit and dealloc in different order than alloc
+        unsafe { backend.mark_uninit(slot1) };
+        unsafe { backend.dealloc(alloc1) };
+
+        unsafe { backend.mark_uninit(slot2) };
+        unsafe { backend.dealloc(alloc2) };
     }
 }

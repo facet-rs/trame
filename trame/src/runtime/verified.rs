@@ -1,12 +1,55 @@
 //! Verified implementations of all of trame's runtime traits: storage is heavily bounded, all
 //! operations are checked, we track a lot of things.
 
+use core::cell::UnsafeCell;
 use std::alloc::Layout;
 
 mod byte_range;
 use byte_range::{ByteRangeError, ByteRangeTracker};
 
-use crate::runtime::{IArena, IField, IHeap, IPtr, IShape, IShapeStore, IStructType, Idx};
+use crate::{
+    IRuntime,
+    node::Node,
+    runtime::{IArena, IField, IHeap, IPtr, IShape, IShapeStore, IStructType, Idx},
+};
+
+/// A runtime that verifies all operations
+pub struct VRuntime;
+
+struct VShapeStoreCell(UnsafeCell<VShapeStore>);
+
+// SAFETY: Verified runtime is single-threaded. Concurrent access is undefined behavior.
+unsafe impl Sync for VShapeStoreCell {}
+
+static VSHAPE_STORE: VShapeStoreCell = VShapeStoreCell(UnsafeCell::new(VShapeStore::new()));
+
+pub(crate) fn vshape_store() -> &'static VShapeStore {
+    unsafe { &*VSHAPE_STORE.0.get() }
+}
+
+/// Register a new verified shape in the global store.
+pub(crate) fn vshape_register(shape: VShapeDef) -> VShapeHandle {
+    unsafe { (&mut *VSHAPE_STORE.0.get()).add(shape) }
+}
+
+/// View a previously registered shape from the global store.
+pub(crate) fn vshape_view(handle: VShapeHandle) -> VShapeView<'static, VShapeStore> {
+    unsafe { (&*VSHAPE_STORE.0.get()).view(handle) }
+}
+
+impl IRuntime for VRuntime {
+    type Shape = VShapeView<'static, VShapeStore>;
+
+    type Heap = VHeap<Self::Shape>;
+
+    type Arena = VArena<Node<Self::Heap, Self::Shape>, MAX_VARENA_SLOTS>;
+
+    type ShapeStore = &'static VShapeStore;
+
+    fn parts() -> (Self::ShapeStore, Self::Heap, Self::Arena) {
+        (vshape_store(), VHeap::new(), VArena::new())
+    }
+}
 
 // ==================================================================
 // Shape
@@ -152,6 +195,21 @@ impl IShapeStore for VShapeStore {
 
     fn get<'a>(&'a self, handle: Self::Handle) -> Self::View<'a> {
         self.view(handle)
+    }
+}
+
+impl IShapeStore for &'static VShapeStore {
+    type Handle = VShapeHandle;
+    type View<'a>
+        = VShapeView<'a, VShapeStore>
+    where
+        Self: 'a;
+
+    fn get<'a>(&'a self, handle: Self::Handle) -> Self::View<'a> {
+        VShapeView {
+            store: *self,
+            handle,
+        }
     }
 }
 

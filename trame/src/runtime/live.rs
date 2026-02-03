@@ -1,8 +1,23 @@
 //! Live implementations of all of trame's runtime traits: no verification involved, real memory
 //! allocations, etc.
 
-use crate::runtime::{IArena, IField, IHeap, IShape, IShapeStore, IStructType, Idx};
+use crate::node::Node;
+use crate::runtime::{IArena, IField, IHeap, IRuntime, IShape, IShapeStore, IStructType, Idx};
 use facet_core::{Field, Shape, StructType, Type, UserType};
+
+/// A "live" runtime that just peforms raw unsafe Rust operations
+pub struct LRuntime;
+
+impl IRuntime for LRuntime {
+    type Shape = &'static Shape;
+    type Heap = LHeap;
+    type Arena = LArena<Node<Self::Heap, Self::Shape>>;
+    type ShapeStore = LShapeStore;
+
+    fn parts() -> (Self::ShapeStore, Self::Heap, Self::Arena) {
+        (LShapeStore, LHeap::new(), LArena::new())
+    }
+}
 
 // ==================================================================
 // Shape

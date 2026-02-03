@@ -1,7 +1,7 @@
 //! All traits used to represent a runtime on which trame can operate.
 
-mod live;
-mod verified;
+pub(crate) mod live;
+pub(crate) mod verified;
 
 use std::{alloc::Layout, marker::PhantomData};
 
@@ -10,7 +10,7 @@ use crate::node::Node;
 /// A heap and a shape implementation, over which Trame can be parameterized
 pub trait IRuntime {
     type Shape: IShape;
-    type Heap: IHeap<Self::Shape>;
+    type Heap: IHeap<Self::Shape, Ptr: IPtr>;
     type Arena: IArena<Node<Self::Heap, Self::Shape>>;
     type ShapeStore: IShapeStore;
 

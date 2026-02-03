@@ -6,7 +6,7 @@ pub const MAX_NODE_FIELDS: usize = 8;
 // ============================================================================
 
 /// A node tracking construction of a single value.
-pub(crate) struct Node<H: IHeap<S>, S: IShape> {
+pub struct Node<H: IHeap<S>, S: IShape> {
     /// Pointer to this node's data.
     pub(crate) data: H::Ptr,
 

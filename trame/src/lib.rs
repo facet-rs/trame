@@ -24,4 +24,8 @@ mod trame;
 pub(crate) mod runtime;
 
 pub use ops::{Op, Path, PathSegment, Source};
+
+pub use runtime::IRuntime;
+pub use runtime::verified::VRuntime;
+
 pub use trame::{Trame, TrameError};

@@ -1,40 +1,33 @@
-//     use super::*;
-//     use crate::runtime::verified::VArena;
-//     use crate::runtime::verified::VHeap;
-//     use crate::runtime::verified::{
-//         IField, IShape, IStructType, MAX_FIELDS_PER_STRUCT, VDef, VFieldDef, VShapeDef,
-//         VShapeHandle, VShapeStore, VShapeView, VStructDef,
-//     };
-//     use core::alloc::Layout;
+use super::*;
+use crate::runtime::verified::{
+    MAX_FIELDS_PER_STRUCT, VDef, VFieldDef, VRuntime, VShapeDef, VShapeHandle, VStructDef,
+    vshape_register, vshape_store, vshape_view,
+};
+use core::alloc::Layout;
+use trame_runtime::{IField, IShape, IStructType};
 
-//     type S<'a> = VShapeView<'a, VShapeStore>;
-//     type TestHeap<'a> = VHeap<S<'a>>;
-//     type TestArena<'a> = VArena<Node<TestHeap<'a>, S<'a>>, 4>;
+#[kani::proof]
+#[kani::unwind(10)]
+fn scalar_init_complete() {
+    let h = vshape_register(VShapeDef::scalar(Layout::from_size_align(4, 4).unwrap()));
+    let shape = vshape_view(h);
 
-//     #[kani::proof]
-//     #[kani::unwind(10)]
-//     fn scalar_init_complete() {
-//         let mut store = VShapeStore::new();
-//         let h = store.add(VShapeDef::scalar(Layout::from_size_align(4, 4).unwrap()));
-//         let shape = store.view(h);
+    let mut heap = VRuntime::heap();
+    let src = unsafe { heap.alloc(shape) };
+    unsafe { heap.default_in_place(src, shape) };
 
-//         let mut heap = TestHeap::new();
-//         let src = unsafe { heap.alloc(shape) };
-//         heap.mark_init(src, 4);
-//         let arena = TestArena::new();
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, shape) };
 
-//         let mut trame = unsafe { Trame::new(shape) };
-
-//         kani::assert(!trame.is_complete(), "not complete initially");
-//         let root: [PathSegment; 0] = [];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &root,
-//                 src: Source::Imm(src),
-//             })
-//             .unwrap();
-//         kani::assert(trame.is_complete(), "complete after init");
-//     }
+    kani::assert(!trame.is_complete(), "not complete initially");
+    let root: [PathSegment; 0] = [];
+    trame
+        .apply(Op::Set {
+            dst: &root,
+            src: Source::Imm(src),
+        })
+        .unwrap();
+    kani::assert(trame.is_complete(), "complete after init");
+}
 
 //     #[kani::proof]
 //     #[kani::unwind(10)]

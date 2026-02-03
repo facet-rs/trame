@@ -498,7 +498,7 @@ pub struct VPtr {
 
 impl IPtr for VPtr {
     #[inline]
-    fn byte_add(self, n: usize) -> Self {
+    unsafe fn byte_add(self, n: usize) -> Self {
         VPtr::offset(self, n)
     }
 }

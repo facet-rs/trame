@@ -129,14 +129,14 @@ pub trait IHeap<S: IShape> {
 /// Pointer type
 pub trait IPtr: Copy {
     /// Compute a new pointer at a byte offset from this one.
-    fn byte_add(self, n: usize) -> Self;
+    unsafe fn byte_add(self, n: usize) -> Self;
 }
 
 impl IPtr for *mut u8 {
     #[inline]
-    fn byte_add(self, n: usize) -> Self {
+    unsafe fn byte_add(self, n: usize) -> Self {
         // SAFETY: caller ensures the resulting pointer is in-bounds.
-        unsafe { self.add(n) }
+        unsafe { self.byte_add(n) }
     }
 }
 

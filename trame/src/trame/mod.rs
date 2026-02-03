@@ -127,7 +127,7 @@ where
         );
         Ok((
             meta.shape,
-            node.data.byte_add(meta.offset),
+            unsafe { node.data.byte_add(meta.offset) },
             meta.layout.size(),
         ))
     }

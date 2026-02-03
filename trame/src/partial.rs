@@ -193,9 +193,9 @@ pub enum PartialError {
     Incomplete,
     /// Current frame is not a struct.
     NotAStruct,
-    /// Current frame is not complete (for end_field).
+    /// Current frame is not complete (for `Op::End`).
     CurrentIncomplete,
-    /// Already at root frame (can't end_field).
+    /// Already at root frame (can't end).
     AtRoot,
     /// Shape mismatch.
     ShapeMismatch,
@@ -448,7 +448,7 @@ where
         self.check_poisoned()?;
 
         match op {
-            Op::End => self.end_field(),
+            Op::End => self.end_current_frame(),
             Op::Set { dst, src } => {
                 let (target, field_idx) = self.resolve_path(dst)?;
                 if matches!(src, Source::Stage(_)) && target != self.current {
@@ -461,147 +461,11 @@ where
         }
     }
 
-    /// Mark a struct field as initialized (for scalar fields).
-    ///
-    /// Use this for fields that don't need recursive construction.
-    /// For nested structs, use `begin_field` / `end_field` instead.
-    ///
-    /// # Safety
-    /// The caller must have actually written a valid value to the field's memory.
-    pub unsafe fn mark_field_init(&mut self, field_idx: usize) -> Result<(), PartialError> {
-        self.check_poisoned()?;
-
-        let frame = self.arena.get_mut(self.current);
-
-        match &mut frame.kind {
-            FrameKind::Struct { fields } => {
-                if field_idx >= fields.count as usize {
-                    return Err(PartialError::FieldOutOfBounds {
-                        index: field_idx,
-                        count: fields.count as usize,
-                    });
-                }
-                if !fields.is_not_started(field_idx) {
-                    return Err(PartialError::FieldAlreadyInit { index: field_idx });
-                }
-
-                let frame = self.arena.get(self.current);
-                let (_shape, ptr, size) = Self::field_ptr(frame, field_idx)?;
-                self.heap.mark_init(ptr, size);
-
-                // Mark in frame as complete
-                let frame = self.arena.get_mut(self.current);
-                if let FrameKind::Struct { fields } = &mut frame.kind {
-                    fields.mark_complete(field_idx);
-                }
-
-                Ok(())
-            }
-            FrameKind::Scalar { .. } => Err(PartialError::NotAStruct),
-        }
-    }
-
-    /// Mark a scalar as initialized.
-    ///
-    /// # Safety
-    /// The caller must have actually written a valid value to the memory.
-    pub unsafe fn mark_scalar_init(&mut self) -> Result<(), PartialError> {
-        self.check_poisoned()?;
-
-        let frame = self.arena.get_mut(self.current);
-
-        match &mut frame.kind {
-            FrameKind::Scalar { initialized } => {
-                if *initialized {
-                    return Err(PartialError::FieldAlreadyInit { index: 0 });
-                }
-
-                let frame = self.arena.get(self.current);
-                let size = frame.shape.layout().size();
-                self.heap.mark_init(frame.data, size);
-
-                // Mark in frame
-                let frame = self.arena.get_mut(self.current);
-                if let FrameKind::Scalar { initialized } = &mut frame.kind {
-                    *initialized = true;
-                }
-
-                Ok(())
-            }
-            FrameKind::Struct { .. } => Err(PartialError::NotAStruct),
-        }
-    }
-
-    /// Begin constructing a struct field.
-    ///
-    /// This pushes a new frame for the field and makes it current.
-    /// The field must be a struct type. For scalar fields, use `mark_field_init` directly.
-    ///
-    /// # Safety
-    /// The caller must ensure the field is a struct type that needs recursive construction.
-    pub unsafe fn begin_field(&mut self, field_idx: usize) -> Result<(), PartialError> {
-        self.check_poisoned()?;
-
-        let frame = self.arena.get(self.current);
-
-        // Check current frame is a struct
-        let field_count = match &frame.kind {
-            FrameKind::Struct { fields } => fields.count as usize,
-            FrameKind::Scalar { .. } => return Err(PartialError::NotAStruct),
-        };
-
-        // Check field bounds
-        if field_idx >= field_count {
-            return Err(PartialError::FieldOutOfBounds {
-                index: field_idx,
-                count: field_count,
-            });
-        }
-
-        // Check field not already initialized or in-progress
-        let frame = self.arena.get(self.current);
-        if let FrameKind::Struct { fields } = &frame.kind {
-            if !fields.is_not_started(field_idx) {
-                return Err(PartialError::FieldAlreadyInit { index: field_idx });
-            }
-        }
-
-        // Get the field's shape and pointer
-        let frame = self.arena.get(self.current);
-        let (field_shape, child_ptr, _size) = Self::field_ptr(frame, field_idx)?;
-        if !field_shape.is_struct() {
-            return Err(PartialError::NotAStruct);
-        }
-
-        // Create child frame
-        let child_frame = Frame {
-            data: child_ptr,
-            shape: field_shape,
-            kind: Frame::<H, S>::kind_for_shape(field_shape),
-            parent: self.current,
-            field_in_parent: field_idx as u32,
-        };
-
-        // Push onto arena
-        let child_idx = self.arena.alloc(child_frame);
-
-        // Track the child in parent's field slots
-        let frame = self.arena.get_mut(self.current);
-        if let FrameKind::Struct { fields } = &mut frame.kind {
-            fields.set_child(field_idx, child_idx);
-        }
-
-        // Update current
-        self.current = child_idx;
-
-        Ok(())
-    }
-
-    /// End constructing the current field and return to parent.
+    /// End constructing the current frame and return to parent.
     ///
     /// This marks the field as initialized in the parent frame and pops back.
     /// The current frame must be complete.
-    pub fn end_field(&mut self) -> Result<(), PartialError> {
+    fn end_current_frame(&mut self) -> Result<(), PartialError> {
         self.check_poisoned()?;
 
         let frame = self.arena.get(self.current);
@@ -655,10 +519,10 @@ where
         frame.kind.is_complete()
     }
 
-    /// Finish building, returning ownership of heap and arena.
+    /// Build the value, returning ownership of heap and arena.
     ///
     /// Returns error if not all fields are initialized.
-    pub fn finish(self) -> Result<(H, A, H::Ptr), PartialError> {
+    pub fn build(self) -> Result<(H, A, H::Ptr), PartialError> {
         self.check_poisoned()?;
 
         let frame = self.arena.get(self.current);
@@ -773,16 +637,24 @@ mod tests {
         let h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
         let shape = store.view(h);
 
-        let heap = TestHeap::new();
-        let arena = TestArena::new();
+        let mut heap = TestHeap::new();
+        let src = heap.alloc(shape);
+        heap.mark_init(src, 4);
 
+        let arena = TestArena::new();
         let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         assert!(!partial.is_complete());
-        unsafe { partial.mark_scalar_init().unwrap() };
+        let root: [PathSegment; 0] = [];
+        partial
+            .apply(Op::Set {
+                dst: &root,
+                src: Source::Imm(src),
+            })
+            .unwrap();
         assert!(partial.is_complete());
 
-        let (_, _, _ptr) = partial.finish().unwrap();
+        let _ = partial.build().unwrap();
     }
 
     #[test]
@@ -792,21 +664,38 @@ mod tests {
         let struct_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
+        let u32_shape = store.view(u32_h);
 
-        let heap = TestHeap::new();
+        let mut heap = TestHeap::new();
+        let src0 = heap.alloc(u32_shape);
+        let src1 = heap.alloc(u32_shape);
+        heap.mark_init(src0, 4);
+        heap.mark_init(src1, 4);
+
         let arena = TestArena::new();
-
         let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         assert!(!partial.is_complete());
 
-        unsafe { partial.mark_field_init(0).unwrap() };
+        let f0 = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &f0,
+                src: Source::Imm(src0),
+            })
+            .unwrap();
         assert!(!partial.is_complete());
 
-        unsafe { partial.mark_field_init(1).unwrap() };
+        let f1 = [PathSegment::Field(1)];
+        partial
+            .apply(Op::Set {
+                dst: &f1,
+                src: Source::Imm(src1),
+            })
+            .unwrap();
         assert!(partial.is_complete());
 
-        let (_, _, _ptr) = partial.finish().unwrap();
+        let _ = partial.build().unwrap();
     }
 
     #[test]
@@ -817,56 +706,101 @@ mod tests {
             DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h), (8, u32_h)]);
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
+        let u32_shape = store.view(u32_h);
 
-        let heap = TestHeap::new();
+        let mut heap = TestHeap::new();
+        let src0 = heap.alloc(u32_shape);
+        let src1 = heap.alloc(u32_shape);
+        let src2 = heap.alloc(u32_shape);
+        heap.mark_init(src0, 4);
+        heap.mark_init(src1, 4);
+        heap.mark_init(src2, 4);
+
         let arena = TestArena::new();
-
         let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         // Init in reverse order
-        unsafe { partial.mark_field_init(2).unwrap() };
-        unsafe { partial.mark_field_init(0).unwrap() };
-        unsafe { partial.mark_field_init(1).unwrap() };
+        let f2 = [PathSegment::Field(2)];
+        partial
+            .apply(Op::Set {
+                dst: &f2,
+                src: Source::Imm(src2),
+            })
+            .unwrap();
+        let f0 = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &f0,
+                src: Source::Imm(src0),
+            })
+            .unwrap();
+        let f1 = [PathSegment::Field(1)];
+        partial
+            .apply(Op::Set {
+                dst: &f1,
+                src: Source::Imm(src1),
+            })
+            .unwrap();
 
         assert!(partial.is_complete());
-        let _ = partial.finish().unwrap();
+        let _ = partial.build().unwrap();
     }
 
     #[test]
-    fn double_init_fails() {
+    fn stage_field_twice_fails() {
         let mut store = DynShapeStore::new();
         let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
-        let struct_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h)]);
-        let struct_h = store.add(struct_def);
-        let shape = store.view(struct_h);
+        let inner_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h)]);
+        let inner_h = store.add(inner_def);
+        let outer_def = DynShapeDef::struct_with_fields(&store, &[(0, inner_h)]);
+        let outer_h = store.add(outer_def);
+        let shape = store.view(outer_h);
 
         let heap = TestHeap::new();
         let arena = TestArena::new();
 
         let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
-        unsafe { partial.mark_field_init(0).unwrap() };
-        let err = unsafe { partial.mark_field_init(0) };
+        let field0 = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &field0,
+                src: Source::Stage(None),
+            })
+            .unwrap();
+
+        let err = partial.apply(Op::Set {
+            dst: &field0,
+            src: Source::Stage(None),
+        });
         assert_eq!(err, Err(PartialError::FieldAlreadyInit { index: 0 }));
     }
 
     #[test]
-    fn incomplete_finish_fails() {
+    fn incomplete_build_fails() {
         let mut store = DynShapeStore::new();
         let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
         let struct_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
+        let u32_shape = store.view(u32_h);
 
-        let heap = TestHeap::new();
+        let mut heap = TestHeap::new();
+        let src = heap.alloc(u32_shape);
+        heap.mark_init(src, 4);
+
         let arena = TestArena::new();
-
         let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
-        unsafe { partial.mark_field_init(0).unwrap() };
-        // Don't init field 1
+        let f0 = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &f0,
+                src: Source::Imm(src),
+            })
+            .unwrap();
 
-        let err = partial.finish();
+        let err = partial.build();
         assert!(matches!(err, Err(PartialError::Incomplete)));
     }
 
@@ -877,16 +811,23 @@ mod tests {
         let struct_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
+        let u32_shape = store.view(u32_h);
 
-        let heap = TestHeap::new();
+        let mut heap = TestHeap::new();
+        let src = heap.alloc(u32_shape);
+        heap.mark_init(src, 4);
+
         let arena = TestArena::new();
-
         let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
-        // Partial init
-        unsafe { partial.mark_field_init(0).unwrap() };
+        let f0 = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &f0,
+                src: Source::Imm(src),
+            })
+            .unwrap();
 
-        // Drop should clean up without panicking
         drop(partial);
     }
 
@@ -905,35 +846,61 @@ mod tests {
         let outer_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, inner_h)]);
         let outer_h = store.add(outer_def);
         let shape = store.view(outer_h);
+        let u32_shape = store.view(u32_h);
 
-        let heap = TestHeap::new();
+        let mut heap = TestHeap::new();
+        let src_x = heap.alloc(u32_shape);
+        let src_a = heap.alloc(u32_shape);
+        let src_b = heap.alloc(u32_shape);
+        heap.mark_init(src_x, 4);
+        heap.mark_init(src_a, 4);
+        heap.mark_init(src_b, 4);
+
         let arena = TestArena::new();
-
         let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         assert_eq!(partial.depth(), 0);
         assert!(!partial.is_complete());
 
-        // Init scalar field x
-        unsafe { partial.mark_field_init(0).unwrap() };
+        let outer_x = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &outer_x,
+                src: Source::Imm(src_x),
+            })
+            .unwrap();
         assert!(!partial.is_complete());
 
-        // Begin nested struct field
-        unsafe { partial.begin_field(1).unwrap() };
+        let inner_field = [PathSegment::Field(1)];
+        partial
+            .apply(Op::Set {
+                dst: &inner_field,
+                src: Source::Stage(None),
+            })
+            .unwrap();
         assert_eq!(partial.depth(), 1);
-        assert!(!partial.is_complete()); // inner struct not complete
 
-        // Init inner struct's fields
-        unsafe { partial.mark_field_init(0).unwrap() }; // inner.a
-        unsafe { partial.mark_field_init(1).unwrap() }; // inner.b
-        assert!(partial.is_complete()); // inner struct complete
+        let inner_a = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &inner_a,
+                src: Source::Imm(src_a),
+            })
+            .unwrap();
+        let inner_b = [PathSegment::Field(1)];
+        partial
+            .apply(Op::Set {
+                dst: &inner_b,
+                src: Source::Imm(src_b),
+            })
+            .unwrap();
+        assert!(partial.is_complete());
 
-        // End nested struct
-        partial.end_field().unwrap();
+        partial.apply(Op::End).unwrap();
         assert_eq!(partial.depth(), 0);
-        assert!(partial.is_complete()); // outer struct complete
+        assert!(partial.is_complete());
 
-        let _ = partial.finish().unwrap();
+        let _ = partial.build().unwrap();
     }
 
     #[test]
@@ -949,19 +916,31 @@ mod tests {
         let outer_def = DynShapeDef::struct_with_fields(&store, &[(0, inner_h)]);
         let outer_h = store.add(outer_def);
         let shape = store.view(outer_h);
+        let u32_shape = store.view(u32_h);
 
-        let heap = TestHeap::new();
+        let mut heap = TestHeap::new();
+        let src = heap.alloc(u32_shape);
+        heap.mark_init(src, 4);
+
         let arena = TestArena::new();
-
         let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
-        // Begin nested struct but don't finish
-        unsafe { partial.begin_field(0).unwrap() };
-        unsafe { partial.mark_field_init(0).unwrap() }; // inner.a
+        let inner_field = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &inner_field,
+                src: Source::Stage(None),
+            })
+            .unwrap();
+        let inner_a = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &inner_a,
+                src: Source::Imm(src),
+            })
+            .unwrap();
 
-        // Drop should clean up the child frame first, then root
         drop(partial);
-        // No panic = success
     }
 
     #[test]
@@ -977,44 +956,35 @@ mod tests {
         let outer_def = DynShapeDef::struct_with_fields(&store, &[(0, inner_h)]);
         let outer_h = store.add(outer_def);
         let shape = store.view(outer_h);
+        let u32_shape = store.view(u32_h);
 
-        let heap = TestHeap::new();
+        let mut heap = TestHeap::new();
+        let src = heap.alloc(u32_shape);
+        heap.mark_init(src, 4);
+
         let arena = TestArena::new();
-
         let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
-        // Begin nested struct, partially init
-        unsafe { partial.begin_field(0).unwrap() };
-        unsafe { partial.mark_field_init(0).unwrap() }; // inner.a only
-        // inner.b NOT initialized
+        let inner_field = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &inner_field,
+                src: Source::Stage(None),
+            })
+            .unwrap();
+        let inner_a = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &inner_a,
+                src: Source::Imm(src),
+            })
+            .unwrap();
 
-        // Drop should clean up correctly
         drop(partial);
     }
 
     #[test]
-    fn begin_field_already_init_fails() {
-        let mut store = DynShapeStore::new();
-        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
-        let struct_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h)]);
-        let struct_h = store.add(struct_def);
-        let shape = store.view(struct_h);
-
-        let heap = TestHeap::new();
-        let arena = TestArena::new();
-
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
-
-        // Init field 0 as scalar
-        unsafe { partial.mark_field_init(0).unwrap() };
-
-        // Now try to begin_field on it - should fail
-        let err = unsafe { partial.begin_field(0) };
-        assert_eq!(err, Err(PartialError::FieldAlreadyInit { index: 0 }));
-    }
-
-    #[test]
-    fn end_field_incomplete_fails() {
+    fn end_op_incomplete_fails() {
         let mut store = DynShapeStore::new();
 
         // Inner struct: { a: u32, b: u32 }
@@ -1026,37 +996,59 @@ mod tests {
         let outer_def = DynShapeDef::struct_with_fields(&store, &[(0, inner_h)]);
         let outer_h = store.add(outer_def);
         let shape = store.view(outer_h);
+        let u32_shape = store.view(u32_h);
 
-        let heap = TestHeap::new();
+        let mut heap = TestHeap::new();
+        let src = heap.alloc(u32_shape);
+        heap.mark_init(src, 4);
+
         let arena = TestArena::new();
-
         let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
-        unsafe { partial.begin_field(0).unwrap() };
-        unsafe { partial.mark_field_init(0).unwrap() }; // only inner.a
-        // inner.b NOT initialized
+        let inner_field = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &inner_field,
+                src: Source::Stage(None),
+            })
+            .unwrap();
+        let inner_a = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &inner_a,
+                src: Source::Imm(src),
+            })
+            .unwrap();
 
-        // Try to end_field - should fail because inner is incomplete
-        let err = partial.end_field();
+        let err = partial.apply(Op::End);
         assert_eq!(err, Err(PartialError::CurrentIncomplete));
     }
 
     #[test]
-    fn end_field_at_root_fails() {
+    fn end_op_at_root_fails() {
         let mut store = DynShapeStore::new();
         let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
         let struct_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h)]);
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
+        let u32_shape = store.view(u32_h);
 
-        let heap = TestHeap::new();
+        let mut heap = TestHeap::new();
+        let src = heap.alloc(u32_shape);
+        heap.mark_init(src, 4);
+
         let arena = TestArena::new();
-
         let mut partial = unsafe { Partial::new(heap, arena, shape) };
-        unsafe { partial.mark_field_init(0).unwrap() };
 
-        // Try to end_field at root - should fail
-        let err = partial.end_field();
+        let f0 = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &f0,
+                src: Source::Imm(src),
+            })
+            .unwrap();
+
+        let err = partial.apply(Op::End);
         assert_eq!(err, Err(PartialError::AtRoot));
     }
 
@@ -1085,7 +1077,7 @@ mod tests {
             .unwrap();
 
         assert!(partial.is_complete());
-        let _ = partial.finish().unwrap();
+        let _ = partial.build().unwrap();
     }
 
     #[test]
@@ -1145,7 +1137,7 @@ mod tests {
 
         partial.apply(Op::End).unwrap();
         assert!(partial.is_complete());
-        let _ = partial.finish().unwrap();
+        let _ = partial.build().unwrap();
     }
 }
 
@@ -1171,13 +1163,21 @@ mod kani_proofs {
         let h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 4).unwrap()));
         let shape = store.view(h);
 
-        let heap = TestHeap::new();
+        let mut heap = TestHeap::new();
+        let src = heap.alloc(shape);
+        heap.mark_init(src, 4);
         let arena = TestArena::new();
 
         let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         kani::assert(!partial.is_complete(), "not complete initially");
-        unsafe { partial.mark_scalar_init().unwrap() };
+        let root: [PathSegment; 0] = [];
+        partial
+            .apply(Op::Set {
+                dst: &root,
+                src: Source::Imm(src),
+            })
+            .unwrap();
         kani::assert(partial.is_complete(), "complete after init");
     }
 
@@ -1205,7 +1205,10 @@ mod kani_proofs {
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
 
-        let heap = TestHeap::new();
+        let mut heap = TestHeap::new();
+        let scalar_shape = store.view(scalar_h);
+        let src = heap.alloc(scalar_shape);
+        heap.mark_init(src, 4);
         let arena = TestArena::new();
         let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
@@ -1215,7 +1218,13 @@ mod kani_proofs {
 
         for i in 0..(field_count as usize) {
             if i != skip_field as usize {
-                unsafe { partial.mark_field_init(i).unwrap() };
+                let path = [PathSegment::Field(i as u32)];
+                partial
+                    .apply(Op::Set {
+                        dst: &path,
+                        src: Source::Imm(src),
+                    })
+                    .unwrap();
             }
         }
 
@@ -1223,55 +1232,75 @@ mod kani_proofs {
         kani::assert(!partial.is_complete(), "incomplete without all fields");
 
         // Init the skipped field
-        unsafe { partial.mark_field_init(skip_field as usize).unwrap() };
+        let path = [PathSegment::Field(skip_field as u32)];
+        partial
+            .apply(Op::Set {
+                dst: &path,
+                src: Source::Imm(src),
+            })
+            .unwrap();
 
         // Now should be complete
         kani::assert(partial.is_complete(), "complete with all fields");
     }
 
-    /// Prove: double init of same field returns error
+    /// Prove: staging the same field twice returns error
     #[kani::proof]
     #[kani::unwind(10)]
     fn double_init_rejected() {
         let mut store = DynShapeStore::new();
         let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
 
-        let struct_def = DynShapeDef {
-            layout: Layout::from_size_align(8, 1).unwrap(),
+        let inner_def = DynShapeDef {
+            layout: Layout::from_size_align(4, 1).unwrap(),
             def: DynDef::Struct(DynStructDef {
-                field_count: 2,
+                field_count: 1,
                 fields: {
                     let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
                     arr[0] = DynFieldDef::new(0, scalar_h);
-                    arr[1] = DynFieldDef::new(4, scalar_h);
                     arr
                 },
             }),
         };
-        let struct_h = store.add(struct_def);
-        let shape = store.view(struct_h);
+        let inner_h = store.add(inner_def);
+        let outer_def = DynShapeDef {
+            layout: Layout::from_size_align(4, 1).unwrap(),
+            def: DynDef::Struct(DynStructDef {
+                field_count: 1,
+                fields: {
+                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
+                    arr[0] = DynFieldDef::new(0, inner_h);
+                    arr
+                },
+            }),
+        };
+        let outer_h = store.add(outer_def);
+        let shape = store.view(outer_h);
 
         let heap = TestHeap::new();
         let arena = TestArena::new();
         let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
-        let field_to_double: u8 = kani::any();
-        kani::assume(field_to_double < 2);
+        let path = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &path,
+                src: Source::Stage(None),
+            })
+            .unwrap();
 
-        // First init succeeds
-        let result1 = unsafe { partial.mark_field_init(field_to_double as usize) };
-        kani::assert(result1.is_ok(), "first init succeeds");
-
-        // Second init of same field fails
-        let result2 = unsafe { partial.mark_field_init(field_to_double as usize) };
-        kani::assert(result2.is_err(), "double init fails");
+        let result2 = partial.apply(Op::Set {
+            dst: &path,
+            src: Source::Stage(None),
+        });
+        kani::assert(result2.is_err(), "double stage fails");
         kani::assert(
             matches!(result2, Err(PartialError::FieldAlreadyInit { .. })),
             "error is FieldAlreadyInit",
         );
     }
 
-    /// Prove: finish fails if not all fields initialized
+    /// Prove: build fails if not all fields initialized
     #[kani::proof]
     #[kani::unwind(10)]
     fn incomplete_finish_fails() {
@@ -1296,16 +1325,25 @@ mod kani_proofs {
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
 
-        let heap = TestHeap::new();
+        let mut heap = TestHeap::new();
+        let scalar_shape = store.view(scalar_h);
+        let src = heap.alloc(scalar_shape);
+        heap.mark_init(src, 4);
         let arena = TestArena::new();
         let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         // Init only first field
-        unsafe { partial.mark_field_init(0).unwrap() };
+        let f0 = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &f0,
+                src: Source::Imm(src),
+            })
+            .unwrap();
 
-        // finish should fail
-        let result = partial.finish();
-        kani::assert(result.is_err(), "finish fails when incomplete");
+        // build should fail
+        let result = partial.build();
+        kani::assert(result.is_err(), "build fails when incomplete");
         kani::assert(
             matches!(result, Err(PartialError::Incomplete)),
             "error is Incomplete",
@@ -1337,7 +1375,10 @@ mod kani_proofs {
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
 
-        let heap = TestHeap::new();
+        let mut heap = TestHeap::new();
+        let scalar_shape = store.view(scalar_h);
+        let src = heap.alloc(scalar_shape);
+        heap.mark_init(src, 4);
         let arena = TestArena::new();
         let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
@@ -1346,7 +1387,11 @@ mod kani_proofs {
         kani::assume(bad_idx >= field_count);
         kani::assume(bad_idx < 10); // Keep bounded
 
-        let result = unsafe { partial.mark_field_init(bad_idx as usize) };
+        let path = [PathSegment::Field(bad_idx as u32)];
+        let result = partial.apply(Op::Set {
+            dst: &path,
+            src: Source::Imm(src),
+        });
         kani::assert(result.is_err(), "out of bounds fails");
         kani::assert(
             matches!(result, Err(PartialError::FieldOutOfBounds { .. })),
@@ -1377,7 +1422,14 @@ mod kani_proofs {
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
 
-        let heap = TestHeap::new();
+        let mut heap = TestHeap::new();
+        let scalar_shape = store.view(scalar_h);
+        let src0 = heap.alloc(scalar_shape);
+        let src1 = heap.alloc(scalar_shape);
+        let src2 = heap.alloc(scalar_shape);
+        heap.mark_init(src0, 4);
+        heap.mark_init(src1, 4);
+        heap.mark_init(src2, 4);
         let arena = TestArena::new();
         let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
@@ -1388,10 +1440,20 @@ mod kani_proofs {
         kani::assume(first < 3 && second < 3 && third < 3);
         kani::assume(first != second && second != third && first != third);
 
-        unsafe {
-            partial.mark_field_init(first as usize).unwrap();
-            partial.mark_field_init(second as usize).unwrap();
-            partial.mark_field_init(third as usize).unwrap();
+        let paths = [
+            [PathSegment::Field(0)],
+            [PathSegment::Field(1)],
+            [PathSegment::Field(2)],
+        ];
+        let srcs = [src0, src1, src2];
+        let order = [first as usize, second as usize, third as usize];
+        for idx in order {
+            partial
+                .apply(Op::Set {
+                    dst: &paths[idx],
+                    src: Source::Imm(srcs[idx]),
+                })
+                .unwrap();
         }
 
         kani::assert(
@@ -1399,8 +1461,8 @@ mod kani_proofs {
             "complete after all fields in any order",
         );
 
-        let result = partial.finish();
-        kani::assert(result.is_ok(), "finish succeeds when complete");
+        let result = partial.build();
+        kani::assert(result.is_ok(), "build succeeds when complete");
     }
 
     /// Prove: nested struct fields are properly tracked
@@ -1453,22 +1515,53 @@ mod kani_proofs {
         kani::assert(field1_shape.is_struct(), "field 1 is nested struct");
 
         // Construct the outer struct
-        let heap = TestHeap::new();
+        let mut heap = TestHeap::new();
+        let scalar_shape = store.view(scalar_h);
+        let src_x = heap.alloc(scalar_shape);
+        let src_a = heap.alloc(scalar_shape);
+        let src_b = heap.alloc(scalar_shape);
+        heap.mark_init(src_x, 4);
+        heap.mark_init(src_a, 4);
+        heap.mark_init(src_b, 4);
         let arena = TestArena::new();
         let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
-        // Init both fields (the nested struct field is treated as one unit at this level)
-        unsafe {
-            partial.mark_field_init(0).unwrap();
-            partial.mark_field_init(1).unwrap();
-        }
+        let outer_x = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &outer_x,
+                src: Source::Imm(src_x),
+            })
+            .unwrap();
+        let inner_field = [PathSegment::Field(1)];
+        partial
+            .apply(Op::Set {
+                dst: &inner_field,
+                src: Source::Stage(None),
+            })
+            .unwrap();
+        let inner_a = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &inner_a,
+                src: Source::Imm(src_a),
+            })
+            .unwrap();
+        let inner_b = [PathSegment::Field(1)];
+        partial
+            .apply(Op::Set {
+                dst: &inner_b,
+                src: Source::Imm(src_b),
+            })
+            .unwrap();
+        partial.apply(Op::End).unwrap();
 
         kani::assert(partial.is_complete(), "outer complete after both fields");
-        let result = partial.finish();
-        kani::assert(result.is_ok(), "finish succeeds");
+        let result = partial.build();
+        kani::assert(result.is_ok(), "build succeeds");
     }
 
-    /// Prove: begin_field/end_field lifecycle works correctly
+    /// Prove: Stage/End lifecycle works correctly
     #[kani::proof]
     #[kani::unwind(10)]
     fn begin_end_field_lifecycle() {
@@ -1506,7 +1599,14 @@ mod kani_proofs {
         let outer_h = store.add(outer_def);
         let shape = store.view(outer_h);
 
-        let heap = TestHeap::new();
+        let mut heap = TestHeap::new();
+        let scalar_shape = store.view(scalar_h);
+        let src_x = heap.alloc(scalar_shape);
+        let src_a = heap.alloc(scalar_shape);
+        let src_b = heap.alloc(scalar_shape);
+        heap.mark_init(src_x, 4);
+        heap.mark_init(src_a, 4);
+        heap.mark_init(src_b, 4);
         let arena = TestArena::new();
         let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
@@ -1515,33 +1615,53 @@ mod kani_proofs {
         kani::assert(!partial.is_complete(), "not complete initially");
 
         // Init scalar field
-        unsafe { partial.mark_field_init(0).unwrap() };
+        let outer_x = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &outer_x,
+                src: Source::Imm(src_x),
+            })
+            .unwrap();
         kani::assert(!partial.is_complete(), "not complete with one field");
 
-        // Begin nested struct
-        let result = unsafe { partial.begin_field(1) };
-        kani::assert(result.is_ok(), "begin_field succeeds");
+        // Stage nested struct
+        let inner_field = [PathSegment::Field(1)];
+        let result = partial.apply(Op::Set {
+            dst: &inner_field,
+            src: Source::Stage(None),
+        });
+        kani::assert(result.is_ok(), "stage succeeds");
         kani::assert(partial.depth() == 1, "depth is 1 after begin");
         kani::assert(!partial.is_complete(), "inner not complete yet");
 
         // Init inner fields
-        unsafe {
-            partial.mark_field_init(0).unwrap();
-            partial.mark_field_init(1).unwrap();
-        }
+        let inner_a = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &inner_a,
+                src: Source::Imm(src_a),
+            })
+            .unwrap();
+        let inner_b = [PathSegment::Field(1)];
+        partial
+            .apply(Op::Set {
+                dst: &inner_b,
+                src: Source::Imm(src_b),
+            })
+            .unwrap();
         kani::assert(partial.is_complete(), "inner complete");
 
         // End nested struct
-        let result = partial.end_field();
-        kani::assert(result.is_ok(), "end_field succeeds");
+        let result = partial.apply(Op::End);
+        kani::assert(result.is_ok(), "end succeeds");
         kani::assert(partial.depth() == 0, "back to depth 0");
         kani::assert(partial.is_complete(), "outer complete");
 
-        let result = partial.finish();
-        kani::assert(result.is_ok(), "finish succeeds");
+        let result = partial.build();
+        kani::assert(result.is_ok(), "build succeeds");
     }
 
-    /// Prove: begin_field on already-initialized field fails
+    /// Prove: staging a field twice fails
     #[kani::proof]
     #[kani::unwind(10)]
     fn begin_field_already_init_fails() {
@@ -1578,19 +1698,26 @@ mod kani_proofs {
         let arena = TestArena::new();
         let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
-        // Mark field 0 as init directly
-        unsafe { partial.mark_field_init(0).unwrap() };
+        let path = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &path,
+                src: Source::Stage(None),
+            })
+            .unwrap();
 
-        // Now try begin_field on same field - should fail
-        let result = unsafe { partial.begin_field(0) };
-        kani::assert(result.is_err(), "begin on already init fails");
+        let result = partial.apply(Op::Set {
+            dst: &path,
+            src: Source::Stage(None),
+        });
+        kani::assert(result.is_err(), "stage on already in-progress fails");
         kani::assert(
             matches!(result, Err(PartialError::FieldAlreadyInit { index: 0 })),
             "error is FieldAlreadyInit",
         );
     }
 
-    /// Prove: end_field at root returns error
+    /// Prove: Op::End at root returns error
     #[kani::proof]
     #[kani::unwind(10)]
     fn end_field_at_root_fails() {
@@ -1610,22 +1737,31 @@ mod kani_proofs {
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
 
-        let heap = TestHeap::new();
+        let mut heap = TestHeap::new();
+        let scalar_shape = store.view(scalar_h);
+        let src = heap.alloc(scalar_shape);
+        heap.mark_init(src, 4);
         let arena = TestArena::new();
         let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
-        unsafe { partial.mark_field_init(0).unwrap() };
+        let f0 = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &f0,
+                src: Source::Imm(src),
+            })
+            .unwrap();
 
-        // Try end_field at root
-        let result = partial.end_field();
-        kani::assert(result.is_err(), "end_field at root fails");
+        // Try End at root
+        let result = partial.apply(Op::End);
+        kani::assert(result.is_err(), "end at root fails");
         kani::assert(
             matches!(result, Err(PartialError::AtRoot)),
             "error is AtRoot",
         );
     }
 
-    /// Prove: end_field with incomplete inner fails
+    /// Prove: End with incomplete inner fails
     #[kani::proof]
     #[kani::unwind(10)]
     fn end_field_incomplete_inner_fails() {
@@ -1659,16 +1795,31 @@ mod kani_proofs {
         let outer_h = store.add(outer_def);
         let shape = store.view(outer_h);
 
-        let heap = TestHeap::new();
+        let mut heap = TestHeap::new();
+        let scalar_shape = store.view(scalar_h);
+        let src = heap.alloc(scalar_shape);
+        heap.mark_init(src, 4);
         let arena = TestArena::new();
         let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
-        unsafe { partial.begin_field(0).unwrap() };
-        unsafe { partial.mark_field_init(0).unwrap() }; // only one of two inner fields
+        let inner_field = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &inner_field,
+                src: Source::Stage(None),
+            })
+            .unwrap();
+        let inner_a = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &inner_a,
+                src: Source::Imm(src),
+            })
+            .unwrap();
 
-        // Try end_field with incomplete inner
-        let result = partial.end_field();
-        kani::assert(result.is_err(), "end_field with incomplete inner fails");
+        // Try End with incomplete inner
+        let result = partial.apply(Op::End);
+        kani::assert(result.is_err(), "end with incomplete inner fails");
         kani::assert(
             matches!(result, Err(PartialError::CurrentIncomplete)),
             "error is CurrentIncomplete",
@@ -1708,15 +1859,30 @@ mod kani_proofs {
         let outer_h = store.add(outer_def);
         let shape = store.view(outer_h);
 
-        let heap = TestHeap::new();
+        let mut heap = TestHeap::new();
+        let scalar_shape = store.view(scalar_h);
+        let src = heap.alloc(scalar_shape);
+        heap.mark_init(src, 4);
         let arena = TestArena::new();
         let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         // Enter nested struct
-        unsafe { partial.begin_field(0).unwrap() };
+        let inner_field = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &inner_field,
+                src: Source::Stage(None),
+            })
+            .unwrap();
         // Init inner field
-        unsafe { partial.mark_field_init(0).unwrap() };
-        // Don't end_field - just drop
+        let inner_a = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &inner_a,
+                src: Source::Imm(src),
+            })
+            .unwrap();
+        // Don't end - just drop
 
         // Drop should clean up child frame before parent
         drop(partial);
@@ -1756,23 +1922,38 @@ mod kani_proofs {
         let outer_h = store.add(outer_def);
         let shape = store.view(outer_h);
 
-        let heap = TestHeap::new();
+        let mut heap = TestHeap::new();
+        let scalar_shape = store.view(scalar_h);
+        let src = heap.alloc(scalar_shape);
+        heap.mark_init(src, 4);
         let arena = TestArena::new();
         let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         kani::assert(partial.depth() == 0, "initial depth is 0");
 
-        unsafe { partial.begin_field(0).unwrap() };
+        let inner_field = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &inner_field,
+                src: Source::Stage(None),
+            })
+            .unwrap();
         kani::assert(partial.depth() == 1, "depth is 1 after begin");
 
-        unsafe { partial.mark_field_init(0).unwrap() };
+        let inner_a = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &inner_a,
+                src: Source::Imm(src),
+            })
+            .unwrap();
         kani::assert(partial.depth() == 1, "depth still 1 after inner init");
 
-        partial.end_field().unwrap();
+        partial.apply(Op::End).unwrap();
         kani::assert(partial.depth() == 0, "depth back to 0 after end");
     }
 
-    /// Prove: begin_field uses the same allocation as the parent.
+    /// Prove: Stage uses the same allocation as the parent.
     #[kani::proof]
     #[kani::unwind(8)]
     fn begin_field_same_alloc_id() {
@@ -1788,7 +1969,13 @@ mod kani_proofs {
         let arena = TestArena::new();
         let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
-        unsafe { partial.begin_field(1).unwrap() };
+        let inner_field = [PathSegment::Field(1)];
+        partial
+            .apply(Op::Set {
+                dst: &inner_field,
+                src: Source::Stage(None),
+            })
+            .unwrap();
 
         let child = partial.current;
         let child_frame = partial.arena.get(child);

@@ -554,19 +554,19 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arena::VerifiedArena;
-    use crate::heap::VerifiedHeap;
-    use crate::shape::{DynShapeDef, DynShapeStore, DynShapeView};
+    use crate::runtime::verified::VArena;
+    use crate::runtime::verified::VHeap;
+    use crate::runtime::verified::{VShapeDef, VShapeStore, VShapeView};
     use core::alloc::Layout;
 
-    type S<'a> = DynShapeView<'a, DynShapeStore>;
-    type TestHeap<'a> = VerifiedHeap<S<'a>>;
-    type TestArena<'a> = VerifiedArena<Node<TestHeap<'a>, S<'a>>, 8>;
+    type S<'a> = VShapeView<'a, VShapeStore>;
+    type TestHeap<'a> = VHeap<S<'a>>;
+    type TestArena<'a> = VArena<Node<TestHeap<'a>, S<'a>>, 8>;
 
     #[test]
     fn scalar_lifecycle() {
-        let mut store = DynShapeStore::new();
-        let h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
+        let mut store = VShapeStore::new();
+        let h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
         let shape = store.view(h);
 
         let mut heap = TestHeap::new();
@@ -591,9 +591,9 @@ mod tests {
 
     #[test]
     fn struct_lifecycle() {
-        let mut store = DynShapeStore::new();
-        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
-        let struct_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
+        let mut store = VShapeStore::new();
+        let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
+        let struct_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
         let u32_shape = store.view(u32_h);
@@ -632,10 +632,10 @@ mod tests {
 
     #[test]
     fn struct_any_order() {
-        let mut store = DynShapeStore::new();
-        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
+        let mut store = VShapeStore::new();
+        let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
         let struct_def =
-            DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h), (8, u32_h)]);
+            VShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h), (8, u32_h)]);
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
         let u32_shape = store.view(u32_h);
@@ -680,11 +680,11 @@ mod tests {
 
     #[test]
     fn stage_field_twice_reenters() {
-        let mut store = DynShapeStore::new();
-        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
-        let inner_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h)]);
+        let mut store = VShapeStore::new();
+        let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
+        let inner_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h)]);
         let inner_h = store.add(inner_def);
-        let outer_def = DynShapeDef::struct_with_fields(&store, &[(0, inner_h)]);
+        let outer_def = VShapeDef::struct_with_fields(&store, &[(0, inner_h)]);
         let outer_h = store.add(outer_def);
         let shape = store.view(outer_h);
 
@@ -723,9 +723,9 @@ mod tests {
 
     #[test]
     fn incomplete_build_fails() {
-        let mut store = DynShapeStore::new();
-        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
-        let struct_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
+        let mut store = VShapeStore::new();
+        let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
+        let struct_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
         let u32_shape = store.view(u32_h);
@@ -751,9 +751,9 @@ mod tests {
 
     #[test]
     fn drop_cleans_up() {
-        let mut store = DynShapeStore::new();
-        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
-        let struct_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
+        let mut store = VShapeStore::new();
+        let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
+        let struct_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
         let u32_shape = store.view(u32_h);
@@ -780,15 +780,15 @@ mod tests {
 
     #[test]
     fn nested_struct_begin_end() {
-        let mut store = DynShapeStore::new();
+        let mut store = VShapeStore::new();
 
         // Inner struct: { a: u32, b: u32 }
-        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
-        let inner_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
+        let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
+        let inner_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
         let inner_h = store.add(inner_def);
 
         // Outer struct: { x: u32, inner: Inner }
-        let outer_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, inner_h)]);
+        let outer_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, inner_h)]);
         let outer_h = store.add(outer_def);
         let shape = store.view(outer_h);
         let u32_shape = store.view(u32_h);
@@ -850,15 +850,15 @@ mod tests {
 
     #[test]
     fn nested_struct_drop_cleans_up() {
-        let mut store = DynShapeStore::new();
+        let mut store = VShapeStore::new();
 
         // Inner struct: { a: u32 }
-        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
-        let inner_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h)]);
+        let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
+        let inner_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h)]);
         let inner_h = store.add(inner_def);
 
         // Outer struct: { inner: Inner }
-        let outer_def = DynShapeDef::struct_with_fields(&store, &[(0, inner_h)]);
+        let outer_def = VShapeDef::struct_with_fields(&store, &[(0, inner_h)]);
         let outer_h = store.add(outer_def);
         let shape = store.view(outer_h);
         let u32_shape = store.view(u32_h);
@@ -890,15 +890,15 @@ mod tests {
 
     #[test]
     fn nested_struct_trame_inner_cleanup() {
-        let mut store = DynShapeStore::new();
+        let mut store = VShapeStore::new();
 
         // Inner struct: { a: u32, b: u32 }
-        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
-        let inner_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
+        let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
+        let inner_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
         let inner_h = store.add(inner_def);
 
         // Outer struct: { inner: Inner }
-        let outer_def = DynShapeDef::struct_with_fields(&store, &[(0, inner_h)]);
+        let outer_def = VShapeDef::struct_with_fields(&store, &[(0, inner_h)]);
         let outer_h = store.add(outer_def);
         let shape = store.view(outer_h);
         let u32_shape = store.view(u32_h);
@@ -930,15 +930,15 @@ mod tests {
 
     #[test]
     fn end_op_incomplete_fails() {
-        let mut store = DynShapeStore::new();
+        let mut store = VShapeStore::new();
 
         // Inner struct: { a: u32, b: u32 }
-        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
-        let inner_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
+        let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
+        let inner_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
         let inner_h = store.add(inner_def);
 
         // Outer struct: { inner: Inner }
-        let outer_def = DynShapeDef::struct_with_fields(&store, &[(0, inner_h)]);
+        let outer_def = VShapeDef::struct_with_fields(&store, &[(0, inner_h)]);
         let outer_h = store.add(outer_def);
         let shape = store.view(outer_h);
         let u32_shape = store.view(u32_h);
@@ -971,9 +971,9 @@ mod tests {
 
     #[test]
     fn end_op_at_root_fails() {
-        let mut store = DynShapeStore::new();
-        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
-        let struct_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h)]);
+        let mut store = VShapeStore::new();
+        let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
+        let struct_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h)]);
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
         let u32_shape = store.view(u32_h);
@@ -999,9 +999,9 @@ mod tests {
 
     #[test]
     fn apply_set_imm_field() {
-        let mut store = DynShapeStore::new();
-        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
-        let struct_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h)]);
+        let mut store = VShapeStore::new();
+        let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
+        let struct_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h)]);
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
         let u32_shape = store.view(u32_h);
@@ -1027,11 +1027,11 @@ mod tests {
 
     #[test]
     fn apply_stage_and_end() {
-        let mut store = DynShapeStore::new();
-        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
-        let inner_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
+        let mut store = VShapeStore::new();
+        let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
+        let inner_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
         let inner_h = store.add(inner_def);
-        let outer_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, inner_h)]);
+        let outer_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, inner_h)]);
         let outer_h = store.add(outer_def);
 
         let shape = store.view(outer_h);
@@ -1089,23 +1089,23 @@ mod tests {
 #[cfg(kani)]
 mod kani_proofs {
     use super::*;
-    use crate::arena::VerifiedArena;
-    use crate::heap::VerifiedHeap;
-    use crate::shape::{
-        DynDef, DynFieldDef, DynShapeDef, DynShapeHandle, DynShapeStore, DynShapeView,
-        DynStructDef, IField, IShape, IStructType, MAX_FIELDS,
+    use crate::runtime::verified::VArena;
+    use crate::runtime::verified::VHeap;
+    use crate::runtime::verified::{
+        VDef, VFieldDef, VShapeDef, VShapeHandle, VShapeStore, VShapeView,
+        VStructDef, IField, IShape, IStructType, MAX_FIELDS_PER_STRUCT,
     };
     use core::alloc::Layout;
 
-    type S<'a> = DynShapeView<'a, DynShapeStore>;
-    type TestHeap<'a> = VerifiedHeap<S<'a>>;
-    type TestArena<'a> = VerifiedArena<Node<TestHeap<'a>, S<'a>>, 4>;
+    type S<'a> = VShapeView<'a, VShapeStore>;
+    type TestHeap<'a> = VHeap<S<'a>>;
+    type TestArena<'a> = VArena<Node<TestHeap<'a>, S<'a>>, 4>;
 
     #[kani::proof]
     #[kani::unwind(10)]
     fn scalar_init_complete() {
-        let mut store = DynShapeStore::new();
-        let h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 4).unwrap()));
+        let mut store = VShapeStore::new();
+        let h = store.add(VShapeDef::scalar(Layout::from_size_align(4, 4).unwrap()));
         let shape = store.view(h);
 
         let mut heap = TestHeap::new();
@@ -1132,17 +1132,17 @@ mod kani_proofs {
         let field_count: u8 = kani::any();
         kani::assume(field_count > 0 && field_count <= 3);
 
-        let mut store = DynShapeStore::new();
-        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+        let mut store = VShapeStore::new();
+        let scalar_h = store.add(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
 
-        let mut fields_arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
+        let mut fields_arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
         for i in 0..(field_count as usize) {
-            fields_arr[i] = DynFieldDef::new(i * 4, scalar_h);
+            fields_arr[i] = VFieldDef::new(i * 4, scalar_h);
         }
 
-        let struct_def = DynShapeDef {
+        let struct_def = VShapeDef {
             layout: Layout::from_size_align((field_count as usize) * 4, 1).unwrap(),
-            def: DynDef::Struct(DynStructDef {
+            def: VDef::Struct(VStructDef {
                 field_count,
                 fields: fields_arr,
             }),
@@ -1193,28 +1193,28 @@ mod kani_proofs {
     #[kani::proof]
     #[kani::unwind(10)]
     fn double_init_rejected() {
-        let mut store = DynShapeStore::new();
-        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+        let mut store = VShapeStore::new();
+        let scalar_h = store.add(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
 
-        let inner_def = DynShapeDef {
+        let inner_def = VShapeDef {
             layout: Layout::from_size_align(4, 1).unwrap(),
-            def: DynDef::Struct(DynStructDef {
+            def: VDef::Struct(VStructDef {
                 field_count: 1,
                 fields: {
-                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
-                    arr[0] = DynFieldDef::new(0, scalar_h);
+                    let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
+                    arr[0] = VFieldDef::new(0, scalar_h);
                     arr
                 },
             }),
         };
         let inner_h = store.add(inner_def);
-        let outer_def = DynShapeDef {
+        let outer_def = VShapeDef {
             layout: Layout::from_size_align(4, 1).unwrap(),
-            def: DynDef::Struct(DynStructDef {
+            def: VDef::Struct(VStructDef {
                 field_count: 1,
                 fields: {
-                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
-                    arr[0] = DynFieldDef::new(0, inner_h);
+                    let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
+                    arr[0] = VFieldDef::new(0, inner_h);
                     arr
                 },
             }),
@@ -1262,17 +1262,17 @@ mod kani_proofs {
         let field_count: u8 = kani::any();
         kani::assume(field_count >= 2 && field_count <= 3);
 
-        let mut store = DynShapeStore::new();
-        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+        let mut store = VShapeStore::new();
+        let scalar_h = store.add(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
 
-        let mut fields_arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
+        let mut fields_arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
         for i in 0..(field_count as usize) {
-            fields_arr[i] = DynFieldDef::new(i * 4, scalar_h);
+            fields_arr[i] = VFieldDef::new(i * 4, scalar_h);
         }
 
-        let struct_def = DynShapeDef {
+        let struct_def = VShapeDef {
             layout: Layout::from_size_align((field_count as usize) * 4, 1).unwrap(),
-            def: DynDef::Struct(DynStructDef {
+            def: VDef::Struct(VStructDef {
                 field_count,
                 fields: fields_arr,
             }),
@@ -1312,17 +1312,17 @@ mod kani_proofs {
         let field_count: u8 = kani::any();
         kani::assume(field_count > 0 && field_count <= 3);
 
-        let mut store = DynShapeStore::new();
-        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+        let mut store = VShapeStore::new();
+        let scalar_h = store.add(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
 
-        let mut fields_arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
+        let mut fields_arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
         for i in 0..(field_count as usize) {
-            fields_arr[i] = DynFieldDef::new(i * 4, scalar_h);
+            fields_arr[i] = VFieldDef::new(i * 4, scalar_h);
         }
 
-        let struct_def = DynShapeDef {
+        let struct_def = VShapeDef {
             layout: Layout::from_size_align((field_count as usize) * 4, 1).unwrap(),
-            def: DynDef::Struct(DynStructDef {
+            def: VDef::Struct(VStructDef {
                 field_count,
                 fields: fields_arr,
             }),
@@ -1358,18 +1358,18 @@ mod kani_proofs {
     #[kani::proof]
     #[kani::unwind(10)]
     fn any_init_order_completes() {
-        let mut store = DynShapeStore::new();
-        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+        let mut store = VShapeStore::new();
+        let scalar_h = store.add(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
 
-        let struct_def = DynShapeDef {
+        let struct_def = VShapeDef {
             layout: Layout::from_size_align(12, 1).unwrap(),
-            def: DynDef::Struct(DynStructDef {
+            def: VDef::Struct(VStructDef {
                 field_count: 3,
                 fields: {
-                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
-                    arr[0] = DynFieldDef::new(0, scalar_h);
-                    arr[1] = DynFieldDef::new(4, scalar_h);
-                    arr[2] = DynFieldDef::new(8, scalar_h);
+                    let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
+                    arr[0] = VFieldDef::new(0, scalar_h);
+                    arr[1] = VFieldDef::new(4, scalar_h);
+                    arr[2] = VFieldDef::new(8, scalar_h);
                     arr
                 },
             }),
@@ -1425,18 +1425,18 @@ mod kani_proofs {
     #[kani::proof]
     #[kani::unwind(10)]
     fn nested_struct_field_tracking() {
-        let mut store = DynShapeStore::new();
+        let mut store = VShapeStore::new();
 
         // Inner struct: { a: u32, b: u32 }
-        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
-        let inner_def = DynShapeDef {
+        let scalar_h = store.add(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+        let inner_def = VShapeDef {
             layout: Layout::from_size_align(8, 1).unwrap(),
-            def: DynDef::Struct(DynStructDef {
+            def: VDef::Struct(VStructDef {
                 field_count: 2,
                 fields: {
-                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
-                    arr[0] = DynFieldDef::new(0, scalar_h);
-                    arr[1] = DynFieldDef::new(4, scalar_h);
+                    let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
+                    arr[0] = VFieldDef::new(0, scalar_h);
+                    arr[1] = VFieldDef::new(4, scalar_h);
                     arr
                 },
             }),
@@ -1444,14 +1444,14 @@ mod kani_proofs {
         let inner_h = store.add(inner_def);
 
         // Outer struct: { x: u32, inner: Inner }
-        let outer_def = DynShapeDef {
+        let outer_def = VShapeDef {
             layout: Layout::from_size_align(12, 1).unwrap(),
-            def: DynDef::Struct(DynStructDef {
+            def: VDef::Struct(VStructDef {
                 field_count: 2,
                 fields: {
-                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
-                    arr[0] = DynFieldDef::new(0, scalar_h); // x: u32
-                    arr[1] = DynFieldDef::new(4, inner_h); // inner: Inner (nested struct!)
+                    let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
+                    arr[0] = VFieldDef::new(0, scalar_h); // x: u32
+                    arr[1] = VFieldDef::new(4, inner_h); // inner: Inner (nested struct!)
                     arr
                 },
             }),
@@ -1520,18 +1520,18 @@ mod kani_proofs {
     #[kani::proof]
     #[kani::unwind(10)]
     fn stage_end_lifecycle() {
-        let mut store = DynShapeStore::new();
+        let mut store = VShapeStore::new();
 
         // Inner struct: { a: u32, b: u32 }
-        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
-        let inner_def = DynShapeDef {
+        let scalar_h = store.add(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+        let inner_def = VShapeDef {
             layout: Layout::from_size_align(8, 1).unwrap(),
-            def: DynDef::Struct(DynStructDef {
+            def: VDef::Struct(VStructDef {
                 field_count: 2,
                 fields: {
-                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
-                    arr[0] = DynFieldDef::new(0, scalar_h);
-                    arr[1] = DynFieldDef::new(4, scalar_h);
+                    let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
+                    arr[0] = VFieldDef::new(0, scalar_h);
+                    arr[1] = VFieldDef::new(4, scalar_h);
                     arr
                 },
             }),
@@ -1539,14 +1539,14 @@ mod kani_proofs {
         let inner_h = store.add(inner_def);
 
         // Outer struct: { x: u32, inner: Inner }
-        let outer_def = DynShapeDef {
+        let outer_def = VShapeDef {
             layout: Layout::from_size_align(12, 1).unwrap(),
-            def: DynDef::Struct(DynStructDef {
+            def: VDef::Struct(VStructDef {
                 field_count: 2,
                 fields: {
-                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
-                    arr[0] = DynFieldDef::new(0, scalar_h);
-                    arr[1] = DynFieldDef::new(4, inner_h);
+                    let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
+                    arr[0] = VFieldDef::new(0, scalar_h);
+                    arr[1] = VFieldDef::new(4, inner_h);
                     arr
                 },
             }),
@@ -1620,28 +1620,28 @@ mod kani_proofs {
     #[kani::proof]
     #[kani::unwind(10)]
     fn stage_reenter_root_ok() {
-        let mut store = DynShapeStore::new();
-        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
-        let inner_def = DynShapeDef {
+        let mut store = VShapeStore::new();
+        let scalar_h = store.add(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+        let inner_def = VShapeDef {
             layout: Layout::from_size_align(4, 1).unwrap(),
-            def: DynDef::Struct(DynStructDef {
+            def: VDef::Struct(VStructDef {
                 field_count: 1,
                 fields: {
-                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
-                    arr[0] = DynFieldDef::new(0, scalar_h);
+                    let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
+                    arr[0] = VFieldDef::new(0, scalar_h);
                     arr
                 },
             }),
         };
         let inner_h = store.add(inner_def);
 
-        let outer_def = DynShapeDef {
+        let outer_def = VShapeDef {
             layout: Layout::from_size_align(4, 1).unwrap(),
-            def: DynDef::Struct(DynStructDef {
+            def: VDef::Struct(VStructDef {
                 field_count: 1,
                 fields: {
-                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
-                    arr[0] = DynFieldDef::new(0, inner_h);
+                    let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
+                    arr[0] = VFieldDef::new(0, inner_h);
                     arr
                 },
             }),
@@ -1686,15 +1686,15 @@ mod kani_proofs {
     #[kani::proof]
     #[kani::unwind(10)]
     fn end_op_at_root_fails() {
-        let mut store = DynShapeStore::new();
-        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
-        let struct_def = DynShapeDef {
+        let mut store = VShapeStore::new();
+        let scalar_h = store.add(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+        let struct_def = VShapeDef {
             layout: Layout::from_size_align(4, 1).unwrap(),
-            def: DynDef::Struct(DynStructDef {
+            def: VDef::Struct(VStructDef {
                 field_count: 1,
                 fields: {
-                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
-                    arr[0] = DynFieldDef::new(0, scalar_h);
+                    let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
+                    arr[0] = VFieldDef::new(0, scalar_h);
                     arr
                 },
             }),
@@ -1730,29 +1730,29 @@ mod kani_proofs {
     #[kani::proof]
     #[kani::unwind(10)]
     fn end_op_incomplete_inner_fails() {
-        let mut store = DynShapeStore::new();
-        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
-        let inner_def = DynShapeDef {
+        let mut store = VShapeStore::new();
+        let scalar_h = store.add(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+        let inner_def = VShapeDef {
             layout: Layout::from_size_align(8, 1).unwrap(),
-            def: DynDef::Struct(DynStructDef {
+            def: VDef::Struct(VStructDef {
                 field_count: 2,
                 fields: {
-                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
-                    arr[0] = DynFieldDef::new(0, scalar_h);
-                    arr[1] = DynFieldDef::new(4, scalar_h);
+                    let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
+                    arr[0] = VFieldDef::new(0, scalar_h);
+                    arr[1] = VFieldDef::new(4, scalar_h);
                     arr
                 },
             }),
         };
         let inner_h = store.add(inner_def);
 
-        let outer_def = DynShapeDef {
+        let outer_def = VShapeDef {
             layout: Layout::from_size_align(8, 1).unwrap(),
-            def: DynDef::Struct(DynStructDef {
+            def: VDef::Struct(VStructDef {
                 field_count: 1,
                 fields: {
-                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
-                    arr[0] = DynFieldDef::new(0, inner_h);
+                    let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
+                    arr[0] = VFieldDef::new(0, inner_h);
                     arr
                 },
             }),
@@ -1795,28 +1795,28 @@ mod kani_proofs {
     #[kani::proof]
     #[kani::unwind(12)]
     fn nested_drop_cleanup() {
-        let mut store = DynShapeStore::new();
-        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
-        let inner_def = DynShapeDef {
+        let mut store = VShapeStore::new();
+        let scalar_h = store.add(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+        let inner_def = VShapeDef {
             layout: Layout::from_size_align(4, 1).unwrap(),
-            def: DynDef::Struct(DynStructDef {
+            def: VDef::Struct(VStructDef {
                 field_count: 1,
                 fields: {
-                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
-                    arr[0] = DynFieldDef::new(0, scalar_h);
+                    let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
+                    arr[0] = VFieldDef::new(0, scalar_h);
                     arr
                 },
             }),
         };
         let inner_h = store.add(inner_def);
 
-        let outer_def = DynShapeDef {
+        let outer_def = VShapeDef {
             layout: Layout::from_size_align(4, 1).unwrap(),
-            def: DynDef::Struct(DynStructDef {
+            def: VDef::Struct(VStructDef {
                 field_count: 1,
                 fields: {
-                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
-                    arr[0] = DynFieldDef::new(0, inner_h);
+                    let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
+                    arr[0] = VFieldDef::new(0, inner_h);
                     arr
                 },
             }),
@@ -1858,28 +1858,28 @@ mod kani_proofs {
     #[kani::proof]
     #[kani::unwind(10)]
     fn depth_tracking_correct() {
-        let mut store = DynShapeStore::new();
-        let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
-        let inner_def = DynShapeDef {
+        let mut store = VShapeStore::new();
+        let scalar_h = store.add(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+        let inner_def = VShapeDef {
             layout: Layout::from_size_align(4, 1).unwrap(),
-            def: DynDef::Struct(DynStructDef {
+            def: VDef::Struct(VStructDef {
                 field_count: 1,
                 fields: {
-                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
-                    arr[0] = DynFieldDef::new(0, scalar_h);
+                    let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
+                    arr[0] = VFieldDef::new(0, scalar_h);
                     arr
                 },
             }),
         };
         let inner_h = store.add(inner_def);
 
-        let outer_def = DynShapeDef {
+        let outer_def = VShapeDef {
             layout: Layout::from_size_align(4, 1).unwrap(),
-            def: DynDef::Struct(DynStructDef {
+            def: VDef::Struct(VStructDef {
                 field_count: 1,
                 fields: {
-                    let mut arr = [DynFieldDef::new(0, DynShapeHandle(0)); MAX_FIELDS];
-                    arr[0] = DynFieldDef::new(0, inner_h);
+                    let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
+                    arr[0] = VFieldDef::new(0, inner_h);
                     arr
                 },
             }),
@@ -1922,11 +1922,11 @@ mod kani_proofs {
     #[kani::proof]
     #[kani::unwind(8)]
     fn stage_same_alloc_id() {
-        let mut store = DynShapeStore::new();
-        let u32_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
-        let inner_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
+        let mut store = VShapeStore::new();
+        let u32_h = store.add(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+        let inner_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
         let inner_h = store.add(inner_def);
-        let outer_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, inner_h)]);
+        let outer_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, inner_h)]);
         let outer_h = store.add(outer_def);
         let shape = store.view(outer_h);
 

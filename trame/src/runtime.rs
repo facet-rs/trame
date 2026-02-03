@@ -213,3 +213,48 @@ impl<T> Idx<T> {
         }
     }
 }
+
+// ==================================================================
+// Tests
+// ==================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::Idx;
+
+    #[test]
+    fn idx_sentinels() {
+        assert!(Idx::<u32>::NOT_STARTED.is_not_started());
+        assert!(!Idx::<u32>::NOT_STARTED.is_complete());
+        assert!(!Idx::<u32>::NOT_STARTED.is_valid());
+
+        assert!(!Idx::<u32>::COMPLETE.is_not_started());
+        assert!(Idx::<u32>::COMPLETE.is_complete());
+        assert!(!Idx::<u32>::COMPLETE.is_valid());
+    }
+}
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::Idx;
+
+    #[kani::proof]
+    fn idx_sentinels_are_distinct() {
+        let not_started: Idx<u32> = Idx::NOT_STARTED;
+        let complete: Idx<u32> = Idx::COMPLETE;
+
+        kani::assert(not_started.raw != complete.raw, "sentinels must differ");
+        kani::assert(!not_started.is_valid(), "NOT_STARTED is not valid");
+        kani::assert(!complete.is_valid(), "COMPLETE is not valid");
+    }
+
+    #[kani::proof]
+    fn is_valid_excludes_sentinels() {
+        let raw: u32 = kani::any();
+
+        let idx: Idx<u32> = Idx::from_raw(raw);
+
+        let expected_valid = raw != 0 && raw != u32::MAX;
+        kani::assert(idx.is_valid() == expected_valid, "is_valid correctness");
+    }
+}

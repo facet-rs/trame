@@ -5,7 +5,7 @@ use std::alloc::Layout;
 
 use crate::byte_range::{ByteRangeError, ByteRangeTracker};
 use crate::ptr::PtrAsMut;
-use crate::runtime::{IField, IHeap, IPtr, IShape, IShapeStore, IStructType};
+use crate::runtime::{IArena, IField, IHeap, IPtr, IShape, IShapeStore, IStructType, Idx};
 
 // ==================================================================
 // Shape
@@ -58,12 +58,12 @@ pub struct VShapeDef {
     pub layout: Layout,
     ///
     /// Type-specific information.
-    pub def: DynDef,
+    pub def: VDef,
 }
 
-/// Type-specific definition for DynShape.
+/// Type-specific definition for verified shapes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DynDef {
+pub enum VDef {
     /// A scalar type (no internal structure to track).
     Scalar,
     /// A struct with indexed fields.
@@ -101,7 +101,7 @@ impl VShapeStore {
             shape_count: 0,
             shapes: [VShapeDef {
                 layout: Layout::new::<()>(),
-                def: DynDef::Scalar,
+                def: VDef::Scalar,
             }; MAX_SHAPES_PER_STORE],
         }
     }
@@ -189,13 +189,13 @@ impl<'a> IShape for VShapeView<'a, VShapeStore> {
 
     #[inline]
     fn is_struct(&self) -> bool {
-        matches!(self.store.get_def(self.handle).def, DynDef::Struct(_))
+        matches!(self.store.get_def(self.handle).def, VDef::Struct(_))
     }
 
     #[inline]
     fn as_struct(&self) -> Option<Self::StructType> {
         match &self.store.get_def(self.handle).def {
-            DynDef::Struct(s) => Some(VStructView {
+            VDef::Struct(s) => Some(VStructView {
                 store: self.store,
                 def: s,
             }),
@@ -261,7 +261,7 @@ impl VShapeDef {
     pub const fn scalar(layout: Layout) -> Self {
         Self {
             layout,
-            def: DynDef::Scalar,
+            def: VDef::Scalar,
         }
     }
 
@@ -301,7 +301,7 @@ impl VShapeDef {
 
         Self {
             layout,
-            def: DynDef::Struct(VStructDef {
+            def: VDef::Struct(VStructDef {
                 field_count: fields.len() as u8,
                 fields: field_array,
             }),
@@ -355,7 +355,7 @@ impl kani::Arbitrary for VShapeDef {
 
             VShapeDef {
                 layout,
-                def: DynDef::Struct(VStructDef {
+                def: VDef::Struct(VStructDef {
                     field_count,
                     fields,
                 }),
@@ -419,7 +419,7 @@ impl kani::Arbitrary for VShapeStore {
             let layout = Layout::from_size_align(offset, 1).unwrap();
             store.add(VShapeDef {
                 layout,
-                def: DynDef::Struct(VStructDef {
+                def: VDef::Struct(VStructDef {
                     field_count,
                     fields,
                 }),
@@ -787,7 +787,109 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
 // Arena
 // ==================================================================
 
-// TODO: import from arena.rs, rename to VArena
+/// Maximum number of arena slots for verification.
+pub const MAX_VARENA_SLOTS: usize = 16;
+
+/// Slot state for verified arena.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VSlotState {
+    Empty,
+    Occupied,
+}
+
+/// Fixed-size arena for Kani verification.
+///
+/// Uses a fixed-size array instead of Vec to keep state space bounded.
+pub struct VArena<T, const N: usize = MAX_VARENA_SLOTS> {
+    /// Slot storage. Index 0 is reserved (NOT_STARTED sentinel).
+    slots: [Option<T>; N],
+    /// State of each slot.
+    states: [VSlotState; N],
+    /// Next slot to try allocating from.
+    next: usize,
+}
+
+impl<T, const N: usize> VArena<T, N> {
+    /// Create a new verified arena.
+    pub fn new() -> Self {
+        Self {
+            slots: core::array::from_fn(|_| None),
+            states: [VSlotState::Empty; N],
+            next: 1, // Skip slot 0 (reserved for NOT_STARTED)
+        }
+    }
+}
+
+impl<T, const N: usize> Default for VArena<T, N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T, const N: usize> IArena<T> for VArena<T, N> {
+    fn alloc(&mut self, value: T) -> Idx<T> {
+        // Find an empty slot starting from next
+        for i in self.next..N {
+            if self.states[i] == VSlotState::Empty {
+                self.slots[i] = Some(value);
+                self.states[i] = VSlotState::Occupied;
+                self.next = i + 1;
+                return Idx::from_raw(i as u32);
+            }
+        }
+        // Wrap around and search from beginning (skip slot 0)
+        for i in 1..self.next {
+            if self.states[i] == VSlotState::Empty {
+                self.slots[i] = Some(value);
+                self.states[i] = VSlotState::Occupied;
+                self.next = i + 1;
+                return Idx::from_raw(i as u32);
+            }
+        }
+        panic!("arena full");
+    }
+
+    fn free(&mut self, id: Idx<T>) -> T {
+        assert!(id.is_valid(), "cannot free sentinel index");
+        let idx = id.index();
+        assert!(idx < N, "index out of bounds");
+        assert!(
+            self.states[idx] == VSlotState::Occupied,
+            "double-free or freeing empty slot"
+        );
+
+        self.states[idx] = VSlotState::Empty;
+        self.slots[idx].take().expect("slot was occupied but empty")
+    }
+
+    fn get(&self, id: Idx<T>) -> &T {
+        assert!(id.is_valid(), "cannot get sentinel index");
+        let idx = id.index();
+        assert!(idx < N, "index out of bounds");
+        assert!(
+            self.states[idx] == VSlotState::Occupied,
+            "slot is not occupied"
+        );
+
+        self.slots[idx]
+            .as_ref()
+            .expect("slot was occupied but empty")
+    }
+
+    fn get_mut(&mut self, id: Idx<T>) -> &mut T {
+        assert!(id.is_valid(), "cannot get sentinel index");
+        let idx = id.index();
+        assert!(idx < N, "index out of bounds");
+        assert!(
+            self.states[idx] == VSlotState::Occupied,
+            "slot is not occupied"
+        );
+
+        self.slots[idx]
+            .as_mut()
+            .expect("slot was occupied but empty")
+    }
+}
 
 // ==================================================================
 // Tests
@@ -1207,6 +1309,51 @@ mod tests {
         let inner_st = inner_field.shape().as_struct().unwrap();
         assert_eq!(inner_st.field_count(), 2);
     }
+
+    // --- VArena tests ---
+
+    #[test]
+    fn verified_arena_alloc_and_get() {
+        let mut arena = VArena::<u32, 8>::new();
+        let id = arena.alloc(42);
+
+        assert!(id.is_valid());
+        assert_eq!(*arena.get(id), 42);
+    }
+
+    #[test]
+    fn verified_arena_free_and_reuse() {
+        let mut arena = VArena::<u32, 8>::new();
+
+        let id1 = arena.alloc(1);
+        let _id2 = arena.alloc(2);
+
+        let val = arena.free(id1);
+        assert_eq!(val, 1);
+
+        // Next alloc can reuse freed slot (or use a new one)
+        let id3 = arena.alloc(3);
+        assert!(id3.is_valid());
+        assert_eq!(*arena.get(id3), 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "double-free")]
+    fn verified_arena_double_free_panics() {
+        let mut arena = VArena::<u32, 8>::new();
+        let id = arena.alloc(1);
+        arena.free(id);
+        arena.free(id);
+    }
+
+    #[test]
+    fn verified_arena_get_mut() {
+        let mut arena = VArena::<u32, 8>::new();
+        let id = arena.alloc(1);
+
+        *arena.get_mut(id) = 99;
+        assert_eq!(*arena.get(id), 99);
+    }
 }
 
 // ==================================================================
@@ -1512,7 +1659,7 @@ mod kani_proofs {
         // Inner struct with 2 scalar fields
         let inner_def = VShapeDef {
             layout: Layout::from_size_align(8, 1).unwrap(),
-            def: DynDef::Struct(VStructDef {
+            def: VDef::Struct(VStructDef {
                 field_count: 2,
                 fields: {
                     let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
@@ -1527,7 +1674,7 @@ mod kani_proofs {
         // Outer struct with scalar + inner struct
         let outer_def = VShapeDef {
             layout: Layout::from_size_align(12, 1).unwrap(),
-            def: DynDef::Struct(VStructDef {
+            def: VDef::Struct(VStructDef {
                 field_count: 2,
                 fields: {
                     let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
@@ -1591,7 +1738,7 @@ mod kani_proofs {
 
         let struct_def = VShapeDef {
             layout: Layout::from_size_align((field_count as usize) * 4, 1).unwrap(),
-            def: DynDef::Struct(VStructDef {
+            def: VDef::Struct(VStructDef {
                 field_count,
                 fields,
             }),
@@ -1609,5 +1756,32 @@ mod kani_proofs {
             let _layout = field_shape.layout().unwrap();
             kani::assert(!field_shape.is_struct(), "field points to scalar");
         }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn verified_arena_alloc_free() {
+        let mut arena = VArena::<u32, 4>::new();
+
+        let id1 = arena.alloc(1);
+        let id2 = arena.alloc(2);
+
+        kani::assert(id1.is_valid(), "id1 is valid");
+        kani::assert(id2.is_valid(), "id2 is valid");
+        kani::assert(id1 != id2, "ids are distinct");
+
+        kani::assert(*arena.get(id1) == 1, "id1 holds 1");
+        kani::assert(*arena.get(id2) == 2, "id2 holds 2");
+
+        let v1 = arena.free(id1);
+        kani::assert(v1 == 1, "freed value is 1");
+
+        // Can still access id2
+        kani::assert(*arena.get(id2) == 2, "id2 still holds 2");
+
+        // Can alloc again (may reuse id1's slot)
+        let id3 = arena.alloc(3);
+        kani::assert(id3.is_valid(), "id3 is valid");
+        kani::assert(*arena.get(id3) == 3, "id3 holds 3");
     }
 }

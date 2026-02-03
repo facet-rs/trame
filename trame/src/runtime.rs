@@ -1,7 +1,7 @@
 //! All traits used to represent a runtime on which trame can operate.
 
-pub(crate) mod live;
-pub(crate) mod verified;
+pub mod live;
+pub mod verified;
 
 use std::{alloc::Layout, marker::PhantomData};
 

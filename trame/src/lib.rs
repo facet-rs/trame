@@ -21,11 +21,14 @@ mod node;
 mod ops;
 mod trame;
 
-pub(crate) mod runtime;
+pub mod runtime;
 
 pub use ops::{Op, Path, PathSegment, Source};
 
-pub use runtime::IRuntime;
-pub use runtime::verified::VRuntime;
+pub use runtime::live::LRuntime;
+pub use runtime::verified::{
+    VRuntime, VShapeDef, VShapeHandle, VShapeStore, vshape_register, vshape_view,
+};
+pub use runtime::{IRuntime, LiveRuntime};
 
-pub use trame::{Trame, TrameError};
+pub use trame::{HeapValue, Trame, TrameError};

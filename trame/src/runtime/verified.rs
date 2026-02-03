@@ -23,17 +23,17 @@ unsafe impl Sync for VShapeStoreCell {}
 
 static VSHAPE_STORE: VShapeStoreCell = VShapeStoreCell(UnsafeCell::new(VShapeStore::new()));
 
-pub(crate) fn vshape_store() -> &'static VShapeStore {
+pub fn vshape_store() -> &'static VShapeStore {
     unsafe { &*VSHAPE_STORE.0.get() }
 }
 
 /// Register a new verified shape in the global store.
-pub(crate) fn vshape_register(shape: VShapeDef) -> VShapeHandle {
+pub fn vshape_register(shape: VShapeDef) -> VShapeHandle {
     unsafe { (&mut *VSHAPE_STORE.0.get()).add(shape) }
 }
 
 /// View a previously registered shape from the global store.
-pub(crate) fn vshape_view(handle: VShapeHandle) -> VShapeView<'static, VShapeStore> {
+pub fn vshape_view(handle: VShapeHandle) -> VShapeView<'static, VShapeStore> {
     unsafe { (&*VSHAPE_STORE.0.get()).view(handle) }
 }
 

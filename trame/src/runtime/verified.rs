@@ -3,7 +3,9 @@
 
 use std::alloc::Layout;
 
-use crate::byte_range::{ByteRangeError, ByteRangeTracker};
+mod byte_range;
+use byte_range::{ByteRangeError, ByteRangeTracker};
+
 use crate::runtime::{IArena, IField, IHeap, IPtr, IShape, IShapeStore, IStructType, Idx};
 
 // ==================================================================

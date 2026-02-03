@@ -530,17 +530,40 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::live::*;
     use crate::runtime::verified::*;
     use core::alloc::Layout;
+    use facet_core::Facet;
 
     #[test]
-    fn scalar_lifecycle() {
+    fn scalar_lifecycle_verified() {
         let h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
         let shape = vshape_view(h);
         let mut heap = VRuntime::heap();
         let src = unsafe { heap.alloc(shape) };
         unsafe { heap.default_in_place(src, shape) };
         let mut trame = unsafe { Trame::<VRuntime>::new(heap, shape) };
+
+        assert!(!trame.is_complete());
+        let root: [PathSegment; 0] = [];
+        trame
+            .apply(Op::Set {
+                dst: &root,
+                src: Source::Imm(src),
+            })
+            .unwrap();
+        assert!(trame.is_complete());
+
+        let _ = trame.build().unwrap();
+    }
+
+    #[test]
+    fn scalar_lifecycle_live() {
+        let shape = u32::SHAPE;
+        let mut heap = LRuntime::heap();
+        let src = unsafe { heap.alloc(shape) };
+        unsafe { heap.default_in_place(src, shape) };
+        let mut trame = unsafe { Trame::<LRuntime>::new(heap, shape) };
 
         assert!(!trame.is_complete());
         let root: [PathSegment; 0] = [];

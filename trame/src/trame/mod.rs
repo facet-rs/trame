@@ -11,6 +11,7 @@ pub use heap_value::HeapValue;
 use crate::{
     Op, Path, PathSegment, Source,
     node::{FieldSlot, MAX_NODE_FIELDS, Node, NodeKind, NodeState},
+    ops::SourceKind,
     runtime::{IArena, IField, IHeap, IPtr, IRuntime, IShape, IStructType, Idx, LiveRuntime},
 };
 use core::marker::PhantomData;
@@ -175,7 +176,7 @@ where
         &mut self,
         target_idx: NodeIdx<R>,
         field_idx: Option<usize>,
-        src: Source<Ptr<R>>,
+        src: Source<Ptr<R>, Shape<R>>,
     ) -> Result<(), TrameError> {
         let node = self.arena.get(target_idx);
 
@@ -194,17 +195,23 @@ where
                         unsafe { self.heap.drop_in_place(dst, node.shape) };
                     }
 
-                    match src {
-                        Source::Imm(src_ptr) => {
+                    match src.kind {
+                        SourceKind::Imm {
+                            ptr: src_ptr,
+                            shape: src_shape,
+                        } => {
+                            if src_shape != node.shape {
+                                return Err(TrameError::ShapeMismatch);
+                            }
                             unsafe { self.heap.memcpy(dst, src_ptr, size) };
                         }
-                        Source::Default => {
+                        SourceKind::Default => {
                             let ok = unsafe { self.heap.default_in_place(dst, node.shape) };
                             if !ok {
                                 return Err(TrameError::DefaultUnavailable);
                             }
                         }
-                        Source::Stage(_) => return Err(TrameError::UnsupportedSource),
+                        SourceKind::Stage(_) => return Err(TrameError::UnsupportedSource),
                     }
 
                     let node = self.arena.get_mut(target_idx);
@@ -232,7 +239,7 @@ where
                 let (field_shape, dst, size) = Self::field_ptr(node, field_idx)?;
 
                 if let Some(child) = child_idx {
-                    if matches!(src, Source::Imm(_) | Source::Default) {
+                    if matches!(src.kind, SourceKind::Imm { .. } | SourceKind::Default) {
                         // We are overwriting a staged field: drop any initialized subfields.
                         self.cleanup_node(child);
                         if self.current_in_subtree(child) {
@@ -255,8 +262,14 @@ where
                     }
                 }
 
-                match src {
-                    Source::Imm(src_ptr) => {
+                match src.kind {
+                    SourceKind::Imm {
+                        ptr: src_ptr,
+                        shape: src_shape,
+                    } => {
+                        if src_shape != field_shape {
+                            return Err(TrameError::ShapeMismatch);
+                        }
                         unsafe { self.heap.memcpy(dst, src_ptr, size) };
                         if let NodeKind::Struct { fields } =
                             &mut self.arena.get_mut(target_idx).kind
@@ -265,7 +278,7 @@ where
                         }
                         Ok(())
                     }
-                    Source::Default => {
+                    SourceKind::Default => {
                         let ok = unsafe { self.heap.default_in_place(dst, field_shape) };
                         if !ok {
                             return Err(TrameError::DefaultUnavailable);
@@ -277,7 +290,7 @@ where
                         }
                         Ok(())
                     }
-                    Source::Stage(_cap) => {
+                    SourceKind::Stage(_cap) => {
                         if !field_shape.is_struct() {
                             return Err(TrameError::NotAStruct);
                         }
@@ -358,7 +371,7 @@ where
         }
     }
 
-    pub fn apply(&mut self, op: Op<'_, Ptr<R>>) -> Result<(), TrameError> {
+    pub fn apply(&mut self, op: Op<'_, Ptr<R>, Shape<R>>) -> Result<(), TrameError> {
         self.check_poisoned()?;
 
         match op {

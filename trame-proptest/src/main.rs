@@ -82,30 +82,30 @@ fn apply_ops(shape_h: VShapeHandle, scalar_h: VShapeHandle, ops: Vec<TestOp>) {
                 let path = [PathSegment::Field(field as u32)];
                 trame.apply(Op::Set {
                     dst: &path,
-                    src: Source::Imm(src),
+                    src: unsafe { Source::from_vptr(src, scalar_shape) },
                 })
             }
             TestOp::SetFieldDefault { field } => {
                 let path = [PathSegment::Field(field as u32)];
                 trame.apply(Op::Set {
                     dst: &path,
-                    src: Source::Default,
+                    src: Source::default_value(),
                 })
             }
             TestOp::SetFieldStage { field } => {
                 let path = [PathSegment::Field(field as u32)];
                 trame.apply(Op::Set {
                     dst: &path,
-                    src: Source::Stage(None),
+                    src: Source::stage(None),
                 })
             }
             TestOp::SetRootImm => trame.apply(Op::Set {
                 dst: &[],
-                src: Source::Imm(src),
+                src: unsafe { Source::from_vptr(src, scalar_shape) },
             }),
             TestOp::SetRootDefault => trame.apply(Op::Set {
                 dst: &[],
-                src: Source::Default,
+                src: Source::default_value(),
             }),
             TestOp::End => trame.apply(Op::End),
         };

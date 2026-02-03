@@ -257,9 +257,9 @@ macro_rules! fuzz_types {
         }
 
         impl FuzzValue {
-            fn as_ptr(&mut self) -> *mut u8 {
+            fn as_ptr_and_shape(&mut self) -> (*mut u8, &'static Shape) {
                 match self {
-                    $( FuzzValue::$val_variant(v) => v as *mut $val_type as *mut u8, )*
+                    $( FuzzValue::$val_variant(v) => (v as *mut $val_type as *mut u8, <$val_type>::SHAPE), )*
                 }
             }
         }
@@ -449,18 +449,25 @@ fn run_fuzz(input: FuzzInput) {
         match op {
             FuzzOp::Set { path, mut source } => {
                 let path_buf: Vec<PathSegment> = path.into_iter().map(Into::into).collect();
-                let src = match &mut source {
-                    FuzzSource::Imm(value) => Source::Imm(value.as_ptr()),
-                    FuzzSource::Default => Source::Default,
-                    FuzzSource::Stage { len_hint } => Source::Stage(len_hint.map(|n| n as usize)),
-                };
-                if trame
-                    .apply(Op::Set {
+                let result = match &mut source {
+                    FuzzSource::Imm(value) => {
+                        // Get the shape from the FuzzValue
+                        let (ptr, shape) = value.as_ptr_and_shape();
+                        trame.apply(Op::Set {
+                            dst: &path_buf,
+                            src: unsafe { Source::from_ptr_shape(ptr, shape) },
+                        })
+                    }
+                    FuzzSource::Default => trame.apply(Op::Set {
                         dst: &path_buf,
-                        src,
-                    })
-                    .is_err()
-                {
+                        src: Source::default_value(),
+                    }),
+                    FuzzSource::Stage { len_hint } => trame.apply(Op::Set {
+                        dst: &path_buf,
+                        src: Source::stage(len_hint.map(|n| n as usize)),
+                    }),
+                };
+                if result.is_err() {
                     return;
                 }
             }

@@ -578,6 +578,28 @@ mod tests {
         let _ = trame.build().unwrap();
     }
 
+    #[test]
+    fn scalar_lifecycle_live_stack_src() {
+        let shape = u32::SHAPE;
+        let heap = LRuntime::heap();
+        let mut trame = unsafe { Trame::<LRuntime>::new(heap, shape) };
+
+        let mut value: u32 = 123;
+        let src = (&mut value as *mut u32).cast::<u8>();
+
+        assert!(!trame.is_complete());
+        let root: [PathSegment; 0] = [];
+        trame
+            .apply(Op::Set {
+                dst: &root,
+                src: Source::Imm(src),
+            })
+            .unwrap();
+        assert!(trame.is_complete());
+
+        let _ = trame.build().unwrap();
+    }
+
     //     #[test]
     //     fn struct_lifecycle() {
     //         let mut store = VShapeStore::new();

@@ -679,68 +679,67 @@ fn end_op_incomplete_inner_fails() {
     );
 }
 
-//     /// Prove: drop properly cleans up nested Nodes (depth-first)
-//     #[kani::proof]
-//     #[kani::unwind(12)]
-//     fn nested_drop_cleanup() {
-//         let mut store = VShapeStore::new();
-//         let scalar_h = store.add(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
-//         let inner_def = VShapeDef {
-//             layout: Layout::from_size_align(4, 1).unwrap(),
-//             def: VDef::Struct(VStructDef {
-//                 field_count: 1,
-//                 fields: {
-//                     let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
-//                     arr[0] = VFieldDef::new(0, scalar_h);
-//                     arr
-//                 },
-//             }),
-//         };
-//         let inner_h = store.add(inner_def);
+/// Prove: drop properly cleans up nested Nodes (depth-first)
+#[kani::proof]
+#[kani::unwind(12)]
+fn nested_drop_cleanup() {
+    let scalar_h = vshape_register(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+    let inner_def = VShapeDef {
+        layout: Layout::from_size_align(4, 1).unwrap(),
+        def: VDef::Struct(VStructDef {
+            field_count: 1,
+            fields: {
+                let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
+                arr[0] = VFieldDef::new(0, scalar_h);
+                arr
+            },
+        }),
+    };
+    let inner_h = vshape_register(inner_def);
 
-//         let outer_def = VShapeDef {
-//             layout: Layout::from_size_align(4, 1).unwrap(),
-//             def: VDef::Struct(VStructDef {
-//                 field_count: 1,
-//                 fields: {
-//                     let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
-//                     arr[0] = VFieldDef::new(0, inner_h);
-//                     arr
-//                 },
-//             }),
-//         };
-//         let outer_h = store.add(outer_def);
-//         let shape = store.view(outer_h);
+    let outer_def = VShapeDef {
+        layout: Layout::from_size_align(4, 1).unwrap(),
+        def: VDef::Struct(VStructDef {
+            field_count: 1,
+            fields: {
+                let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
+                arr[0] = VFieldDef::new(0, inner_h);
+                arr
+            },
+        }),
+    };
+    let outer_h = vshape_register(outer_def);
+    let shape = vshape_view(outer_h);
+    let scalar_shape = vshape_view(scalar_h);
 
-//         let mut heap = TestHeap::new();
-//         let scalar_shape = store.view(scalar_h);
-//         let src = unsafe { heap.alloc(scalar_shape) };
-//         heap.mark_init(src, 4);
-//         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(shape) };
+    let mut heap = VRuntime::heap();
+    let src = unsafe { heap.alloc(scalar_shape) };
+    unsafe { heap.default_in_place(src, scalar_shape) };
 
-//         // Enter nested struct
-//         let inner_field = [PathSegment::Field(0)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &inner_field,
-//                 src: Source::Stage(None),
-//             })
-//             .unwrap();
-//         // Init inner field
-//         let inner_a = [PathSegment::Field(0)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &inner_a,
-//                 src: Source::Imm(src),
-//             })
-//             .unwrap();
-//         // Don't end - just drop
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, shape) };
 
-//         // Drop should clean up child Node before parent
-//         drop(trame);
-//         // No panic = cleanup order is correct
-//     }
+    // Enter nested struct
+    let inner_field = [PathSegment::Field(0)];
+    trame
+        .apply(Op::Set {
+            dst: &inner_field,
+            src: Source::Stage(None),
+        })
+        .unwrap();
+    // Init inner field
+    let inner_a = [PathSegment::Field(0)];
+    trame
+        .apply(Op::Set {
+            dst: &inner_a,
+            src: Source::Imm(src),
+        })
+        .unwrap();
+    // Don't end - just drop
+
+    // Drop should clean up child Node before parent
+    drop(trame);
+    // No panic = cleanup order is correct
+}
 
 //     /// Prove: depth tracking is correct through nested begin/end
 //     #[kani::proof]

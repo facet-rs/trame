@@ -19,7 +19,6 @@
 // about what our public interface is.
 mod arena;
 mod byte_range;
-mod heap;
 mod node;
 mod ops;
 mod ptr;
@@ -28,7 +27,5 @@ mod trame;
 
 pub(crate) mod runtime;
 
-pub use arena::RealArena;
-pub use heap::RealHeap;
 pub use ops::{Op, Path, PathSegment, Source};
 pub use trame::{Trame, TrameError};

@@ -1,4 +1,4 @@
-use crate::{arena::Idx, heap::IHeap, shape::IShape};
+use crate::runtime::{IHeap, IShape, Idx};
 
 /// Maximum fields tracked per node (for verification).
 pub const MAX_NODE_FIELDS: usize = 8;

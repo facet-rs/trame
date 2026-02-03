@@ -181,8 +181,8 @@ impl<'a> IShape for VShapeView<'a, VShapeStore> {
     type Field = VFieldView<'a>;
 
     #[inline]
-    fn layout(&self) -> Layout {
-        self.store.get_def(self.handle).layout
+    fn layout(&self) -> Option<Layout> {
+        Some(self.store.get_def(self.handle).layout)
     }
 
     #[inline]
@@ -432,7 +432,7 @@ impl kani::Arbitrary for VShapeStore {
 // Heap
 // ==================================================================
 
-// TODO: import from arena.rs, rename to VHeap
+// TODO: import from arena.rs + ptr.rs, rename to VHeap
 
 // ==================================================================
 // Arena

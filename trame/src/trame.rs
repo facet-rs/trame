@@ -3,11 +3,11 @@
 //! `Trame` manages incremental construction of a value, tracking which
 //! fields have been initialized and ensuring proper cleanup on failure.
 
-use crate::arena::{IArena, Idx};
-use crate::heap::IHeap;
-use crate::ops::{Op, Path, PathSegment, Source};
-use crate::ptr::{IPtr, PtrAsMut};
-use crate::shape::{IField, IShape, IStructType};
+use crate::{
+    PathSegment,
+    node::Node,
+    runtime::{IRuntime, IShape, Idx},
+};
 use core::marker::PhantomData;
 
 // ============================================================================
@@ -15,31 +15,30 @@ use core::marker::PhantomData;
 // ============================================================================
 
 /// Manages incremental construction of a value.
-pub struct Trame<H, A, S>
+pub struct Trame<R>
 where
-    H: IHeap<S>,
-    H::Ptr: IPtr + PtrAsMut,
-    A: IArena<Node<H, S>>,
-    S: IShape,
+    R: IRuntime,
 {
     /// The heap for memory operations.
-    heap: H,
+    heap: R::Heap,
+
     /// Arena holding Nodes.
-    arena: A,
+    arena: R::Arena,
+
     /// Root Node index.
-    root: Idx<Node<H, S>>,
+    root: Idx<Node<R::Heap, R::Shape>>,
+
     /// Current Node we're building.
-    current: Idx<Node<H, S>>,
+    current: Idx<Node<R::Heap, R::Shape>>,
+
     /// Whether we've been poisoned (error occurred).
     poisoned: bool,
-    /// Marker for shape type.
-    _marker: PhantomData<S>,
 }
 
-/// Error during partial construction.
+/// Error during trame construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PartialError {
-    /// Tried to operate on a poisoned Partial.
+pub enum TrameError {
+    /// Tried to operate on a poisoned trame.
     Poisoned,
     /// Field index out of bounds.
     FieldOutOfBounds { index: usize, count: usize },
@@ -77,7 +76,7 @@ where
     A: IArena<Node<H, S>>,
     S: IShape,
 {
-    /// Create a new Partial for the given shape.
+    /// Create a new Trame for the given shape.
     ///
     /// # Safety
     /// The caller must ensure the shape is valid and sized.
@@ -97,28 +96,28 @@ where
     }
 
     /// Check if poisoned, return error if so.
-    fn check_poisoned(&self) -> Result<(), PartialError> {
+    fn check_poisoned(&self) -> Result<(), TrameError> {
         if self.poisoned {
-            Err(PartialError::Poisoned)
+            Err(TrameError::Poisoned)
         } else {
             Ok(())
         }
     }
 
-    fn struct_type(shape: S) -> Result<S::StructType, PartialError> {
-        shape.as_struct().ok_or(PartialError::NotAStruct)
+    fn struct_type(shape: S) -> Result<S::StructType, TrameError> {
+        shape.as_struct().ok_or(TrameError::NotAStruct)
     }
 
-    fn field_meta(shape: S, field_idx: usize) -> Result<FieldMeta<S>, PartialError> {
+    fn field_meta(shape: S, field_idx: usize) -> Result<FieldMeta<S>, TrameError> {
         let st = Self::struct_type(shape)?;
         let field_count = st.field_count();
-        let field = st.field(field_idx).ok_or(PartialError::FieldOutOfBounds {
+        let field = st.field(field_idx).ok_or(TrameError::FieldOutOfBounds {
             index: field_idx,
             count: field_count,
         })?;
         let field_shape = field.shape();
         let offset = field.offset();
-        let layout = field_shape.layout();
+        let layout = field_shape.layout().expect("IShape requires sized types");
         Ok(FieldMeta {
             shape: field_shape,
             offset,
@@ -126,9 +125,13 @@ where
         })
     }
 
-    fn field_ptr(Node: &Node<H, S>, field_idx: usize) -> Result<(S, H::Ptr, usize), PartialError> {
+    fn field_ptr(Node: &Node<H, S>, field_idx: usize) -> Result<(S, H::Ptr, usize), TrameError> {
         let meta = Self::field_meta(Node.shape, field_idx)?;
-        let Node_size = Node.shape.layout().size();
+        let Node_size = Node
+            .shape
+            .layout()
+            .expect("IShape requires sized types")
+            .size();
         assert!(
             meta.offset + meta.layout.size() <= Node_size,
             "field out of bounds: {} + {} > {}",
@@ -146,7 +149,7 @@ where
     fn resolve_path(
         &mut self,
         path: Path<'_>,
-    ) -> Result<(Idx<Node<H, S>>, Option<usize>), PartialError> {
+    ) -> Result<(Idx<Node<H, S>>, Option<usize>), TrameError> {
         if path.is_empty() {
             return Ok((self.current, None));
         }
@@ -164,21 +167,21 @@ where
         }
 
         if segs.len() != 1 {
-            return Err(PartialError::UnsupportedPath { segment: segs[0] });
+            return Err(TrameError::UnsupportedPath { segment: segs[0] });
         }
 
         match segs[0] {
             PathSegment::Field(n) => Ok((idx, Some(n as usize))),
-            PathSegment::Append => Err(PartialError::UnsupportedPath {
+            PathSegment::Append => Err(TrameError::UnsupportedPath {
                 segment: PathSegment::Append,
             }),
-            PathSegment::Root => Err(PartialError::UnsupportedPath {
+            PathSegment::Root => Err(TrameError::UnsupportedPath {
                 segment: PathSegment::Root,
             }),
         }
     }
 
-    fn ascend_to_root(&mut self) -> Result<Idx<Node<H, S>>, PartialError> {
+    fn ascend_to_root(&mut self) -> Result<Idx<Node<H, S>>, TrameError> {
         while self.current != self.root {
             self.end_current_Node()?;
         }
@@ -190,13 +193,17 @@ where
         target_idx: Idx<Node<H, S>>,
         field_idx: Option<usize>,
         src: Source<H::Ptr>,
-    ) -> Result<(), PartialError> {
+    ) -> Result<(), TrameError> {
         let Node = self.arena.get(target_idx);
 
         match field_idx {
             None => match Node.kind {
                 NodeKind::Scalar { .. } => {
-                    let size = Node.shape.layout().size();
+                    let size = Node
+                        .shape
+                        .layout()
+                        .expect("IShape requires sized types")
+                        .size();
                     let dst = Node.data;
                     let already_init = matches!(Node.kind, NodeKind::Scalar { initialized: true });
 
@@ -212,12 +219,12 @@ where
                             if let Some(raw) = dst.as_mut_ptr() {
                                 let ok = unsafe { Node.shape.default_in_place(raw) };
                                 if !ok {
-                                    return Err(PartialError::DefaultUnavailable);
+                                    return Err(TrameError::DefaultUnavailable);
                                 }
                             }
                             self.heap.mark_init(dst, size);
                         }
-                        Source::Stage(_) => return Err(PartialError::UnsupportedSource),
+                        Source::Stage(_) => return Err(TrameError::UnsupportedSource),
                     }
 
                     let Node = self.arena.get_mut(target_idx);
@@ -226,20 +233,20 @@ where
                     }
                     Ok(())
                 }
-                NodeKind::Struct { .. } => Err(PartialError::NotAStruct),
+                NodeKind::Struct { .. } => Err(TrameError::NotAStruct),
             },
             Some(field_idx) => {
                 let (mut child_idx, mut already_init) = match &Node.kind {
                     NodeKind::Struct { fields } => {
                         if field_idx >= fields.count as usize {
-                            return Err(PartialError::FieldOutOfBounds {
+                            return Err(TrameError::FieldOutOfBounds {
                                 index: field_idx,
                                 count: fields.count as usize,
                             });
                         }
                         (fields.get_child(field_idx), fields.is_init(field_idx))
                     }
-                    NodeKind::Scalar { .. } => return Err(PartialError::NotAStruct),
+                    NodeKind::Scalar { .. } => return Err(TrameError::NotAStruct),
                 };
 
                 let (field_shape, dst, size) = Self::field_ptr(Node, field_idx)?;
@@ -282,7 +289,7 @@ where
                         if let Some(raw) = dst.as_mut_ptr() {
                             let ok = unsafe { field_shape.default_in_place(raw) };
                             if !ok {
-                                return Err(PartialError::DefaultUnavailable);
+                                return Err(TrameError::DefaultUnavailable);
                             }
                         }
                         self.heap.mark_init(dst, size);
@@ -295,7 +302,7 @@ where
                     }
                     Source::Stage(_cap) => {
                         if !field_shape.is_struct() {
-                            return Err(PartialError::NotAStruct);
+                            return Err(TrameError::NotAStruct);
                         }
 
                         if let Some(child) = child_idx {
@@ -374,7 +381,7 @@ where
         }
     }
 
-    pub fn apply(&mut self, op: Op<'_, H::Ptr>) -> Result<(), PartialError> {
+    pub fn apply(&mut self, op: Op<'_, H::Ptr>) -> Result<(), TrameError> {
         self.check_poisoned()?;
 
         match op {
@@ -390,20 +397,20 @@ where
     ///
     /// This marks the field as initialized in the parent Node and pops back.
     /// The current Node must be complete.
-    fn end_current_Node(&mut self) -> Result<(), PartialError> {
+    fn end_current_Node(&mut self) -> Result<(), TrameError> {
         self.check_poisoned()?;
 
         let Node = self.arena.get(self.current);
 
         // Check current Node is complete
         if !self.Node_is_complete(self.current) {
-            return Err(PartialError::CurrentIncomplete);
+            return Err(TrameError::CurrentIncomplete);
         }
 
         // Check we're not at root
         let parent_idx = Node.parent;
         if !parent_idx.is_valid() {
-            return Err(PartialError::AtRoot);
+            return Err(TrameError::AtRoot);
         }
 
         let field_in_parent = Node.field_in_parent as usize;
@@ -444,11 +451,11 @@ where
     /// Build the value, returning ownership of heap and arena.
     ///
     /// Returns error if not all fields are initialized.
-    pub fn build(self) -> Result<(H, A, H::Ptr), PartialError> {
+    pub fn build(self) -> Result<(H, A, H::Ptr), TrameError> {
         self.check_poisoned()?;
 
         if !self.Node_is_complete(self.current) {
-            return Err(PartialError::Incomplete);
+            return Err(TrameError::Incomplete);
         }
 
         let data = Node.data;
@@ -461,7 +468,7 @@ where
         Ok((heap, arena, data))
     }
 
-    /// Poison the partial, cleaning up all initialized fields.
+    /// Poison the Trame, cleaning up all initialized fields.
     fn poison(&mut self) {
         if self.poisoned {
             return;
@@ -567,19 +574,19 @@ mod tests {
         heap.mark_init(src, 4);
 
         let arena = TestArena::new();
-        let mut partial = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::new(heap, arena, shape) };
 
-        assert!(!partial.is_complete());
+        assert!(!trame.is_complete());
         let root: [PathSegment; 0] = [];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &root,
                 src: Source::Imm(src),
             })
             .unwrap();
-        assert!(partial.is_complete());
+        assert!(trame.is_complete());
 
-        let _ = partial.build().unwrap();
+        let _ = trame.build().unwrap();
     }
 
     #[test]
@@ -598,29 +605,29 @@ mod tests {
         heap.mark_init(src1, 4);
 
         let arena = TestArena::new();
-        let mut partial = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::new(heap, arena, shape) };
 
-        assert!(!partial.is_complete());
+        assert!(!trame.is_complete());
 
         let f0 = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &f0,
                 src: Source::Imm(src0),
             })
             .unwrap();
-        assert!(!partial.is_complete());
+        assert!(!trame.is_complete());
 
         let f1 = [PathSegment::Field(1)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &f1,
                 src: Source::Imm(src1),
             })
             .unwrap();
-        assert!(partial.is_complete());
+        assert!(trame.is_complete());
 
-        let _ = partial.build().unwrap();
+        let _ = trame.build().unwrap();
     }
 
     #[test]
@@ -642,33 +649,33 @@ mod tests {
         heap.mark_init(src2, 4);
 
         let arena = TestArena::new();
-        let mut partial = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::new(heap, arena, shape) };
 
         // Init in reverse order
         let f2 = [PathSegment::Field(2)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &f2,
                 src: Source::Imm(src2),
             })
             .unwrap();
         let f0 = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &f0,
                 src: Source::Imm(src0),
             })
             .unwrap();
         let f1 = [PathSegment::Field(1)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &f1,
                 src: Source::Imm(src1),
             })
             .unwrap();
 
-        assert!(partial.is_complete());
-        let _ = partial.build().unwrap();
+        assert!(trame.is_complete());
+        let _ = trame.build().unwrap();
     }
 
     #[test]
@@ -684,10 +691,10 @@ mod tests {
         let heap = TestHeap::new();
         let arena = TestArena::new();
 
-        let mut partial = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::new(heap, arena, shape) };
 
         let field0 = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &field0,
                 src: Source::Stage(None),
@@ -695,23 +702,23 @@ mod tests {
             .unwrap();
 
         let inner_a = [PathSegment::Field(0)];
-        let src = partial.heap.alloc(store.view(u32_h));
-        partial.heap.mark_init(src, 4);
-        partial
+        let src = trame.heap.alloc(store.view(u32_h));
+        trame.heap.mark_init(src, 4);
+        trame
             .apply(Op::Set {
                 dst: &inner_a,
                 src: Source::Imm(src),
             })
             .unwrap();
-        partial.apply(Op::End).unwrap();
+        trame.apply(Op::End).unwrap();
 
         let root_field0 = [PathSegment::Root, PathSegment::Field(0)];
-        let result = partial.apply(Op::Set {
+        let result = trame.apply(Op::Set {
             dst: &root_field0,
             src: Source::Stage(None),
         });
         assert!(result.is_ok());
-        assert_eq!(partial.depth(), 1);
+        assert_eq!(trame.depth(), 1);
     }
 
     #[test]
@@ -728,18 +735,18 @@ mod tests {
         heap.mark_init(src, 4);
 
         let arena = TestArena::new();
-        let mut partial = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::new(heap, arena, shape) };
 
         let f0 = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &f0,
                 src: Source::Imm(src),
             })
             .unwrap();
 
-        let err = partial.build();
-        assert!(matches!(err, Err(PartialError::Incomplete)));
+        let err = trame.build();
+        assert!(matches!(err, Err(TrameError::Incomplete)));
     }
 
     #[test]
@@ -756,17 +763,17 @@ mod tests {
         heap.mark_init(src, 4);
 
         let arena = TestArena::new();
-        let mut partial = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::new(heap, arena, shape) };
 
         let f0 = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &f0,
                 src: Source::Imm(src),
             })
             .unwrap();
 
-        drop(partial);
+        drop(trame);
     }
 
     // --- Nested struct tests ---
@@ -795,50 +802,50 @@ mod tests {
         heap.mark_init(src_b, 4);
 
         let arena = TestArena::new();
-        let mut partial = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::new(heap, arena, shape) };
 
-        assert_eq!(partial.depth(), 0);
-        assert!(!partial.is_complete());
+        assert_eq!(trame.depth(), 0);
+        assert!(!trame.is_complete());
 
         let outer_x = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &outer_x,
                 src: Source::Imm(src_x),
             })
             .unwrap();
-        assert!(!partial.is_complete());
+        assert!(!trame.is_complete());
 
         let inner_field = [PathSegment::Field(1)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &inner_field,
                 src: Source::Stage(None),
             })
             .unwrap();
-        assert_eq!(partial.depth(), 1);
+        assert_eq!(trame.depth(), 1);
 
         let inner_a = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &inner_a,
                 src: Source::Imm(src_a),
             })
             .unwrap();
         let inner_b = [PathSegment::Field(1)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &inner_b,
                 src: Source::Imm(src_b),
             })
             .unwrap();
-        assert!(partial.is_complete());
+        assert!(trame.is_complete());
 
-        partial.apply(Op::End).unwrap();
-        assert_eq!(partial.depth(), 0);
-        assert!(partial.is_complete());
+        trame.apply(Op::End).unwrap();
+        assert_eq!(trame.depth(), 0);
+        assert!(trame.is_complete());
 
-        let _ = partial.build().unwrap();
+        let _ = trame.build().unwrap();
     }
 
     #[test]
@@ -861,28 +868,28 @@ mod tests {
         heap.mark_init(src, 4);
 
         let arena = TestArena::new();
-        let mut partial = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::new(heap, arena, shape) };
 
         let inner_field = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &inner_field,
                 src: Source::Stage(None),
             })
             .unwrap();
         let inner_a = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &inner_a,
                 src: Source::Imm(src),
             })
             .unwrap();
 
-        drop(partial);
+        drop(trame);
     }
 
     #[test]
-    fn nested_struct_partial_inner_cleanup() {
+    fn nested_struct_trame_inner_cleanup() {
         let mut store = DynShapeStore::new();
 
         // Inner struct: { a: u32, b: u32 }
@@ -901,24 +908,24 @@ mod tests {
         heap.mark_init(src, 4);
 
         let arena = TestArena::new();
-        let mut partial = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::new(heap, arena, shape) };
 
         let inner_field = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &inner_field,
                 src: Source::Stage(None),
             })
             .unwrap();
         let inner_a = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &inner_a,
                 src: Source::Imm(src),
             })
             .unwrap();
 
-        drop(partial);
+        drop(trame);
     }
 
     #[test]
@@ -941,25 +948,25 @@ mod tests {
         heap.mark_init(src, 4);
 
         let arena = TestArena::new();
-        let mut partial = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::new(heap, arena, shape) };
 
         let inner_field = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &inner_field,
                 src: Source::Stage(None),
             })
             .unwrap();
         let inner_a = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &inner_a,
                 src: Source::Imm(src),
             })
             .unwrap();
 
-        let err = partial.apply(Op::End);
-        assert_eq!(err, Err(PartialError::CurrentIncomplete));
+        let err = trame.apply(Op::End);
+        assert_eq!(err, Err(TrameError::CurrentIncomplete));
     }
 
     #[test]
@@ -976,18 +983,18 @@ mod tests {
         heap.mark_init(src, 4);
 
         let arena = TestArena::new();
-        let mut partial = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::new(heap, arena, shape) };
 
         let f0 = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &f0,
                 src: Source::Imm(src),
             })
             .unwrap();
 
-        let err = partial.apply(Op::End);
-        assert_eq!(err, Err(PartialError::AtRoot));
+        let err = trame.apply(Op::End);
+        assert_eq!(err, Err(TrameError::AtRoot));
     }
 
     #[test]
@@ -1004,18 +1011,18 @@ mod tests {
         heap.mark_init(src, 4);
 
         let arena = TestArena::new();
-        let mut partial = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::new(heap, arena, shape) };
 
         let path = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &path,
                 src: Source::Imm(src),
             })
             .unwrap();
 
-        assert!(partial.is_complete());
-        let _ = partial.build().unwrap();
+        assert!(trame.is_complete());
+        let _ = trame.build().unwrap();
     }
 
     #[test]
@@ -1037,10 +1044,10 @@ mod tests {
         heap.mark_init(src2, 4);
 
         let arena = TestArena::new();
-        let mut partial = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::new(heap, arena, shape) };
 
         let outer_x = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &outer_x,
                 src: Source::Imm(src1),
@@ -1048,7 +1055,7 @@ mod tests {
             .unwrap();
 
         let inner_field = [PathSegment::Field(1)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &inner_field,
                 src: Source::Stage(None),
@@ -1056,7 +1063,7 @@ mod tests {
             .unwrap();
 
         let inner_a = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &inner_a,
                 src: Source::Imm(src2),
@@ -1064,18 +1071,18 @@ mod tests {
             .unwrap();
 
         let inner_b = [PathSegment::Field(1)];
-        let src3 = partial.heap.alloc(u32_shape);
-        partial.heap.mark_init(src3, 4);
-        partial
+        let src3 = trame.heap.alloc(u32_shape);
+        trame.heap.mark_init(src3, 4);
+        trame
             .apply(Op::Set {
                 dst: &inner_b,
                 src: Source::Imm(src3),
             })
             .unwrap();
 
-        partial.apply(Op::End).unwrap();
-        assert!(partial.is_complete());
-        let _ = partial.build().unwrap();
+        trame.apply(Op::End).unwrap();
+        assert!(trame.is_complete());
+        let _ = trame.build().unwrap();
     }
 }
 
@@ -1106,17 +1113,17 @@ mod kani_proofs {
         heap.mark_init(src, 4);
         let arena = TestArena::new();
 
-        let mut partial = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::new(heap, arena, shape) };
 
-        kani::assert(!partial.is_complete(), "not complete initially");
+        kani::assert(!trame.is_complete(), "not complete initially");
         let root: [PathSegment; 0] = [];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &root,
                 src: Source::Imm(src),
             })
             .unwrap();
-        kani::assert(partial.is_complete(), "complete after init");
+        kani::assert(trame.is_complete(), "complete after init");
     }
 
     #[kani::proof]
@@ -1148,7 +1155,7 @@ mod kani_proofs {
         let src = heap.alloc(scalar_shape);
         heap.mark_init(src, 4);
         let arena = TestArena::new();
-        let mut partial = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::new(heap, arena, shape) };
 
         // Init all but one field
         let skip_field: u8 = kani::any();
@@ -1157,7 +1164,7 @@ mod kani_proofs {
         for i in 0..(field_count as usize) {
             if i != skip_field as usize {
                 let path = [PathSegment::Field(i as u32)];
-                partial
+                trame
                     .apply(Op::Set {
                         dst: &path,
                         src: Source::Imm(src),
@@ -1167,11 +1174,11 @@ mod kani_proofs {
         }
 
         // Should not be complete
-        kani::assert(!partial.is_complete(), "incomplete without all fields");
+        kani::assert(!trame.is_complete(), "incomplete without all fields");
 
         // Init the skipped field
         let path = [PathSegment::Field(skip_field as u32)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &path,
                 src: Source::Imm(src),
@@ -1179,7 +1186,7 @@ mod kani_proofs {
             .unwrap();
 
         // Now should be complete
-        kani::assert(partial.is_complete(), "complete with all fields");
+        kani::assert(trame.is_complete(), "complete with all fields");
     }
 
     /// Prove: staging the same field via Root while in a child re-enters
@@ -1217,10 +1224,10 @@ mod kani_proofs {
 
         let heap = TestHeap::new();
         let arena = TestArena::new();
-        let mut partial = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::new(heap, arena, shape) };
 
         let path = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &path,
                 src: Source::Stage(None),
@@ -1228,24 +1235,24 @@ mod kani_proofs {
             .unwrap();
 
         let scalar_shape = store.view(scalar_h);
-        let src = partial.heap.alloc(scalar_shape);
-        partial.heap.mark_init(src, 4);
+        let src = trame.heap.alloc(scalar_shape);
+        trame.heap.mark_init(src, 4);
         let inner_a = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &inner_a,
                 src: Source::Imm(src),
             })
             .unwrap();
-        partial.apply(Op::End).unwrap();
+        trame.apply(Op::End).unwrap();
 
         let root_path = [PathSegment::Root, PathSegment::Field(0)];
-        let result2 = partial.apply(Op::Set {
+        let result2 = trame.apply(Op::Set {
             dst: &root_path,
             src: Source::Stage(None),
         });
         kani::assert(result2.is_ok(), "stage after complete re-enters");
-        kani::assert(partial.depth() == 1, "cursor remains in child");
+        kani::assert(trame.depth() == 1, "cursor remains in child");
     }
 
     /// Prove: build fails if not all fields initialized
@@ -1278,11 +1285,11 @@ mod kani_proofs {
         let src = heap.alloc(scalar_shape);
         heap.mark_init(src, 4);
         let arena = TestArena::new();
-        let mut partial = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::new(heap, arena, shape) };
 
         // Init only first field
         let f0 = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &f0,
                 src: Source::Imm(src),
@@ -1290,10 +1297,10 @@ mod kani_proofs {
             .unwrap();
 
         // build should fail
-        let result = partial.build();
+        let result = trame.build();
         kani::assert(result.is_err(), "build fails when incomplete");
         kani::assert(
-            matches!(result, Err(PartialError::Incomplete)),
+            matches!(result, Err(trame::Incomplete)),
             "error is Incomplete",
         );
     }
@@ -1328,7 +1335,7 @@ mod kani_proofs {
         let src = heap.alloc(scalar_shape);
         heap.mark_init(src, 4);
         let arena = TestArena::new();
-        let mut partial = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::new(heap, arena, shape) };
 
         // Try to init field beyond bounds
         let bad_idx: u8 = kani::any();
@@ -1336,7 +1343,7 @@ mod kani_proofs {
         kani::assume(bad_idx < 10); // Keep bounded
 
         let path = [PathSegment::Field(bad_idx as u32)];
-        let result = partial.apply(Op::Set {
+        let result = trame.apply(Op::Set {
             dst: &path,
             src: Source::Imm(src),
         });
@@ -1379,7 +1386,7 @@ mod kani_proofs {
         heap.mark_init(src1, 4);
         heap.mark_init(src2, 4);
         let arena = TestArena::new();
-        let mut partial = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::new(heap, arena, shape) };
 
         // Choose arbitrary init order
         let first: u8 = kani::any();
@@ -1396,7 +1403,7 @@ mod kani_proofs {
         let srcs = [src0, src1, src2];
         let order = [first as usize, second as usize, third as usize];
         for idx in order {
-            partial
+            trame
                 .apply(Op::Set {
                     dst: &paths[idx],
                     src: Source::Imm(srcs[idx]),
@@ -1405,11 +1412,11 @@ mod kani_proofs {
         }
 
         kani::assert(
-            partial.is_complete(),
+            trame.is_complete(),
             "complete after all fields in any order",
         );
 
-        let result = partial.build();
+        let result = trame.build();
         kani::assert(result.is_ok(), "build succeeds when complete");
     }
 
@@ -1472,40 +1479,40 @@ mod kani_proofs {
         heap.mark_init(src_a, 4);
         heap.mark_init(src_b, 4);
         let arena = TestArena::new();
-        let mut partial = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::new(heap, arena, shape) };
 
         let outer_x = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &outer_x,
                 src: Source::Imm(src_x),
             })
             .unwrap();
         let inner_field = [PathSegment::Field(1)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &inner_field,
                 src: Source::Stage(None),
             })
             .unwrap();
         let inner_a = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &inner_a,
                 src: Source::Imm(src_a),
             })
             .unwrap();
         let inner_b = [PathSegment::Field(1)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &inner_b,
                 src: Source::Imm(src_b),
             })
             .unwrap();
-        partial.apply(Op::End).unwrap();
+        trame.apply(Op::End).unwrap();
 
-        kani::assert(partial.is_complete(), "outer complete after both fields");
-        let result = partial.build();
+        kani::assert(trame.is_complete(), "outer complete after both fields");
+        let result = trame.build();
         kani::assert(result.is_ok(), "build succeeds");
     }
 
@@ -1556,56 +1563,56 @@ mod kani_proofs {
         heap.mark_init(src_a, 4);
         heap.mark_init(src_b, 4);
         let arena = TestArena::new();
-        let mut partial = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::new(heap, arena, shape) };
 
         // Verify initial state
-        kani::assert(partial.depth() == 0, "starts at depth 0");
-        kani::assert(!partial.is_complete(), "not complete initially");
+        kani::assert(trame.depth() == 0, "starts at depth 0");
+        kani::assert(!trame.is_complete(), "not complete initially");
 
         // Init scalar field
         let outer_x = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &outer_x,
                 src: Source::Imm(src_x),
             })
             .unwrap();
-        kani::assert(!partial.is_complete(), "not complete with one field");
+        kani::assert(!trame.is_complete(), "not complete with one field");
 
         // Stage nested struct
         let inner_field = [PathSegment::Field(1)];
-        let result = partial.apply(Op::Set {
+        let result = trame.apply(Op::Set {
             dst: &inner_field,
             src: Source::Stage(None),
         });
         kani::assert(result.is_ok(), "stage succeeds");
-        kani::assert(partial.depth() == 1, "depth is 1 after begin");
-        kani::assert(!partial.is_complete(), "inner not complete yet");
+        kani::assert(trame.depth() == 1, "depth is 1 after begin");
+        kani::assert(!trame.is_complete(), "inner not complete yet");
 
         // Init inner fields
         let inner_a = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &inner_a,
                 src: Source::Imm(src_a),
             })
             .unwrap();
         let inner_b = [PathSegment::Field(1)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &inner_b,
                 src: Source::Imm(src_b),
             })
             .unwrap();
-        kani::assert(partial.is_complete(), "inner complete");
+        kani::assert(trame.is_complete(), "inner complete");
 
         // End nested struct
-        let result = partial.apply(Op::End);
+        let result = trame.apply(Op::End);
         kani::assert(result.is_ok(), "end succeeds");
-        kani::assert(partial.depth() == 0, "back to depth 0");
-        kani::assert(partial.is_complete(), "outer complete");
+        kani::assert(trame.depth() == 0, "back to depth 0");
+        kani::assert(trame.is_complete(), "outer complete");
 
-        let result = partial.build();
+        let result = trame.build();
         kani::assert(result.is_ok(), "build succeeds");
     }
 
@@ -1644,10 +1651,10 @@ mod kani_proofs {
 
         let heap = TestHeap::new();
         let arena = TestArena::new();
-        let mut partial = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::new(heap, arena, shape) };
 
         let path = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &path,
                 src: Source::Stage(None),
@@ -1655,24 +1662,24 @@ mod kani_proofs {
             .unwrap();
 
         let scalar_shape = store.view(scalar_h);
-        let src = partial.heap.alloc(scalar_shape);
-        partial.heap.mark_init(src, 4);
+        let src = trame.heap.alloc(scalar_shape);
+        trame.heap.mark_init(src, 4);
         let inner_a = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &inner_a,
                 src: Source::Imm(src),
             })
             .unwrap();
-        partial.apply(Op::End).unwrap();
+        trame.apply(Op::End).unwrap();
 
         let root_path = [PathSegment::Root, PathSegment::Field(0)];
-        let result = partial.apply(Op::Set {
+        let result = trame.apply(Op::Set {
             dst: &root_path,
             src: Source::Stage(None),
         });
         kani::assert(result.is_ok(), "stage after complete re-enters");
-        kani::assert(partial.depth() == 1, "cursor remains in child");
+        kani::assert(trame.depth() == 1, "cursor remains in child");
     }
 
     /// Prove: Op::End at root returns error
@@ -1700,10 +1707,10 @@ mod kani_proofs {
         let src = heap.alloc(scalar_shape);
         heap.mark_init(src, 4);
         let arena = TestArena::new();
-        let mut partial = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::new(heap, arena, shape) };
 
         let f0 = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &f0,
                 src: Source::Imm(src),
@@ -1711,7 +1718,7 @@ mod kani_proofs {
             .unwrap();
 
         // Try End at root
-        let result = partial.apply(Op::End);
+        let result = trame.apply(Op::End);
         kani::assert(result.is_err(), "end at root fails");
         kani::assert(
             matches!(result, Err(PartialError::AtRoot)),
@@ -1758,17 +1765,17 @@ mod kani_proofs {
         let src = heap.alloc(scalar_shape);
         heap.mark_init(src, 4);
         let arena = TestArena::new();
-        let mut partial = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::new(heap, arena, shape) };
 
         let inner_field = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &inner_field,
                 src: Source::Stage(None),
             })
             .unwrap();
         let inner_a = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &inner_a,
                 src: Source::Imm(src),
@@ -1776,7 +1783,7 @@ mod kani_proofs {
             .unwrap();
 
         // Try End with incomplete inner
-        let result = partial.apply(Op::End);
+        let result = trame.apply(Op::End);
         kani::assert(result.is_err(), "end with incomplete inner fails");
         kani::assert(
             matches!(result, Err(PartialError::CurrentIncomplete)),
@@ -1822,11 +1829,11 @@ mod kani_proofs {
         let src = heap.alloc(scalar_shape);
         heap.mark_init(src, 4);
         let arena = TestArena::new();
-        let mut partial = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::new(heap, arena, shape) };
 
         // Enter nested struct
         let inner_field = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &inner_field,
                 src: Source::Stage(None),
@@ -1834,7 +1841,7 @@ mod kani_proofs {
             .unwrap();
         // Init inner field
         let inner_a = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &inner_a,
                 src: Source::Imm(src),
@@ -1843,7 +1850,7 @@ mod kani_proofs {
         // Don't end - just drop
 
         // Drop should clean up child Node before parent
-        drop(partial);
+        drop(trame);
         // No panic = cleanup order is correct
     }
 
@@ -1885,30 +1892,30 @@ mod kani_proofs {
         let src = heap.alloc(scalar_shape);
         heap.mark_init(src, 4);
         let arena = TestArena::new();
-        let mut partial = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::new(heap, arena, shape) };
 
-        kani::assert(partial.depth() == 0, "initial depth is 0");
+        kani::assert(trame.depth() == 0, "initial depth is 0");
 
         let inner_field = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &inner_field,
                 src: Source::Stage(None),
             })
             .unwrap();
-        kani::assert(partial.depth() == 1, "depth is 1 after begin");
+        kani::assert(trame.depth() == 1, "depth is 1 after begin");
 
         let inner_a = [PathSegment::Field(0)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &inner_a,
                 src: Source::Imm(src),
             })
             .unwrap();
-        kani::assert(partial.depth() == 1, "depth still 1 after inner init");
+        kani::assert(trame.depth() == 1, "depth still 1 after inner init");
 
-        partial.apply(Op::End).unwrap();
-        kani::assert(partial.depth() == 0, "depth back to 0 after end");
+        trame.apply(Op::End).unwrap();
+        kani::assert(trame.depth() == 0, "depth back to 0 after end");
     }
 
     /// Prove: Stage uses the same allocation as the parent.
@@ -1925,19 +1932,19 @@ mod kani_proofs {
 
         let heap = TestHeap::new();
         let arena = TestArena::new();
-        let mut partial = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::new(heap, arena, shape) };
 
         let inner_field = [PathSegment::Field(1)];
-        partial
+        trame
             .apply(Op::Set {
                 dst: &inner_field,
                 src: Source::Stage(None),
             })
             .unwrap();
 
-        let child = partial.current;
-        let child_Node = partial.arena.get(child);
-        let parent_Node = partial.arena.get(child_Node.parent);
+        let child = trame.current;
+        let child_Node = trame.arena.get(child);
+        let parent_Node = trame.arena.get(child_Node.parent);
 
         kani::assert(
             child_Node.data.alloc_id() == parent_Node.data.alloc_id(),

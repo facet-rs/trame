@@ -113,7 +113,10 @@ impl<S: IShape> VerifiedHeap<S> {
         for i in 0..field_count {
             let field = st.field(i).expect("field index in range");
             let field_shape = field.shape();
-            let field_size = field_shape.layout().size();
+            let field_size = field_shape
+                .layout()
+                .expect("IShape requires sized types")
+                .size();
             let start = field.offset();
             let end = start + field_size;
             if offset >= start && offset < end {
@@ -136,7 +139,7 @@ impl<S: IShape> IHeap<S> for VerifiedHeap<S> {
             MAX_ALLOCS
         );
 
-        let layout = shape.layout();
+        let layout = shape.layout().expect("IShape requires sized types");
         self.allocs[id as usize] = Some((ByteRangeTracker::new(), shape));
         self.next_id += 1;
 
@@ -191,7 +194,7 @@ impl<S: IShape> IHeap<S> for VerifiedHeap<S> {
     }
 
     unsafe fn drop_in_place(&mut self, ptr: Ptr, shape: S) {
-        let layout = shape.layout();
+        let layout = shape.layout().expect("IShape requires sized types");
         if layout.size() == 0 {
             return; // ZST - nothing to drop
         }
@@ -218,7 +221,10 @@ impl<S: IShape> IHeap<S> for VerifiedHeap<S> {
             for i in 0..field_count {
                 let field = st.field(i).expect("field index in range");
                 let field_shape = field.shape();
-                let field_size = field_shape.layout().size() as u32;
+                let field_size = field_shape
+                    .layout()
+                    .expect("IShape requires sized types")
+                    .size() as u32;
                 if field_size == 0 {
                     continue;
                 }
@@ -304,7 +310,7 @@ impl<S: IShape> IHeap<S> for RealHeap<S> {
     type Ptr = *mut u8;
 
     fn alloc(&mut self, shape: S) -> *mut u8 {
-        let layout = shape.layout();
+        let layout = shape.layout().expect("IShape requires sized types");
         if layout.size() == 0 {
             // ZST - don't allocate, use dangling but aligned pointer
             layout.align() as *mut u8
@@ -319,7 +325,7 @@ impl<S: IShape> IHeap<S> for RealHeap<S> {
     }
 
     fn dealloc(&mut self, ptr: *mut u8, shape: S) {
-        let layout = shape.layout();
+        let layout = shape.layout().expect("IShape requires sized types");
         if layout.size() > 0 {
             // SAFETY: caller guarantees this is a live allocation
             unsafe { std::alloc::dealloc(ptr, layout) };

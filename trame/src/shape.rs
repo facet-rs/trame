@@ -39,10 +39,8 @@ impl IShape for &'static Shape {
     type Field = &'static Field;
 
     #[inline]
-    fn layout(&self) -> Layout {
-        self.layout
-            .sized_layout()
-            .expect("IShape requires sized types")
+    fn layout(&self) -> Option<Layout> {
+        self.layout.sized_layout()
     }
 
     #[inline]
@@ -153,11 +151,11 @@ mod tests {
 
         let f0 = st.field(0).unwrap();
         assert_eq!(f0.offset(), 0);
-        assert_eq!(f0.shape().layout().size(), 4);
+        assert_eq!(f0.shape().layout().unwrap().size(), 4);
 
         let f1 = st.field(1).unwrap();
         assert_eq!(f1.offset(), 8);
-        assert_eq!(f1.shape().layout().size(), 8);
+        assert_eq!(f1.shape().layout().unwrap().size(), 8);
 
         assert!(st.field(2).is_none());
     }
@@ -192,7 +190,7 @@ mod tests {
         let f0 = outer_st.field(0).unwrap();
         assert_eq!(f0.offset(), 0);
         assert!(!f0.shape().is_struct());
-        assert_eq!(f0.shape().layout().size(), 8);
+        assert_eq!(f0.shape().layout().unwrap().size(), 8);
 
         // Field 1: inner struct
         let f1 = outer_st.field(1).unwrap();
@@ -205,11 +203,11 @@ mod tests {
 
         let inner_f0 = inner_st.field(0).unwrap();
         assert_eq!(inner_f0.offset(), 0);
-        assert_eq!(inner_f0.shape().layout().size(), 4);
+        assert_eq!(inner_f0.shape().layout().unwrap().size(), 4);
 
         let inner_f1 = inner_st.field(1).unwrap();
         assert_eq!(inner_f1.offset(), 4);
-        assert_eq!(inner_f1.shape().layout().size(), 4);
+        assert_eq!(inner_f1.shape().layout().unwrap().size(), 4);
     }
 
     // Tests for real Shape implementation
@@ -239,8 +237,8 @@ mod tests {
         let f1 = st.field(1).unwrap();
 
         // Fields exist and have non-zero sized shapes
-        assert!(f0.shape().layout().size() > 0);
-        assert!(f1.shape().layout().size() > 0);
+        assert!(f0.shape().layout().unwrap().size() > 0);
+        assert!(f1.shape().layout().unwrap().size() > 0);
 
         assert!(st.field(2).is_none());
     }
@@ -379,7 +377,7 @@ mod kani_proofs {
         let inner_field0 = inner_st.field(0).unwrap();
         kani::assert(!inner_field0.shape().is_struct(), "inner field 0 is scalar");
         kani::assert(
-            inner_field0.shape().layout().size() == 4,
+            inner_field0.shape().layout().unwrap().size() == 4,
             "inner field 0 is 4 bytes",
         );
     }
@@ -426,7 +424,7 @@ mod kani_proofs {
             let field = st.field(i).unwrap();
             let field_shape = field.shape();
             // Should not panic - the handle should be valid
-            let _layout = field_shape.layout();
+            let _layout = field_shape.layout().unwrap();
             kani::assert(!field_shape.is_struct(), "field points to scalar");
         }
     }

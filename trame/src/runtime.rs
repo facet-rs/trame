@@ -6,7 +6,7 @@ mod verified;
 use std::{alloc::Layout, marker::PhantomData};
 
 /// A heap and a shape implementation, over which Trame can be parameterized
-trait IRuntime {
+pub(crate) trait IRuntime {
     type Shape: IShape;
     type Heap: IHeap<Self::Shape>;
     type Arena: IArena;
@@ -45,7 +45,9 @@ pub trait IShape: Copy + PartialEq {
     type Field: IField<Shape = Self>;
 
     /// Get the layout (size and alignment) of this shape.
-    fn layout(&self) -> Layout;
+    ///
+    /// Returns `None` for unsized types.
+    fn layout(&self) -> Option<Layout>;
 
     /// Check if this is a struct type.
     fn is_struct(&self) -> bool;

@@ -23,11 +23,12 @@ mod heap;
 mod node;
 mod ops;
 mod ptr;
-mod runtime;
 mod shape;
 mod trame;
+
+pub(crate) mod runtime;
 
 pub use arena::RealArena;
 pub use heap::RealHeap;
 pub use ops::{Op, Path, PathSegment, Source};
-pub use trame::{PartialError, Trame};
+pub use trame::{Trame, TrameError};

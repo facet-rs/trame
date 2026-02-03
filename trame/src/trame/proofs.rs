@@ -205,54 +205,53 @@ fn incomplete_finish_fails() {
     );
 }
 
-//     /// Prove: field index out of bounds returns error
-//     #[kani::proof]
-//     #[kani::unwind(10)]
-//     fn out_of_bounds_rejected() {
-//         let field_count: u8 = kani::any();
-//         kani::assume(field_count > 0 && field_count <= 3);
+/// Prove: field index out of bounds returns error
+#[kani::proof]
+#[kani::unwind(10)]
+fn out_of_bounds_rejected() {
+    let field_count: u8 = kani::any();
+    kani::assume(field_count > 0 && field_count <= 3);
 
-//         let mut store = VShapeStore::new();
-//         let scalar_h = store.add(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+    let scalar_h = vshape_register(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
 
-//         let mut fields_arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
-//         for i in 0..(field_count as usize) {
-//             fields_arr[i] = VFieldDef::new(i * 4, scalar_h);
-//         }
+    let mut fields_arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
+    for i in 0..(field_count as usize) {
+        fields_arr[i] = VFieldDef::new(i * 4, scalar_h);
+    }
 
-//         let struct_def = VShapeDef {
-//             layout: Layout::from_size_align((field_count as usize) * 4, 1).unwrap(),
-//             def: VDef::Struct(VStructDef {
-//                 field_count,
-//                 fields: fields_arr,
-//             }),
-//         };
-//         let struct_h = store.add(struct_def);
-//         let shape = store.view(struct_h);
+    let struct_def = VShapeDef {
+        layout: Layout::from_size_align((field_count as usize) * 4, 1).unwrap(),
+        def: VDef::Struct(VStructDef {
+            field_count,
+            fields: fields_arr,
+        }),
+    };
+    let struct_h = vshape_register(struct_def);
+    let shape = vshape_view(struct_h);
+    let scalar_shape = vshape_view(scalar_h);
 
-//         let mut heap = TestHeap::new();
-//         let scalar_shape = store.view(scalar_h);
-//         let src = unsafe { heap.alloc(scalar_shape) };
-//         heap.mark_init(src, 4);
-//         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(shape) };
+    let mut heap = VRuntime::heap();
+    let src = unsafe { heap.alloc(scalar_shape) };
+    unsafe { heap.default_in_place(src, scalar_shape) };
 
-//         // Try to init field beyond bounds
-//         let bad_idx: u8 = kani::any();
-//         kani::assume(bad_idx >= field_count);
-//         kani::assume(bad_idx < 10); // Keep bounded
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, shape) };
 
-//         let path = [PathSegment::Field(bad_idx as u32)];
-//         let result = trame.apply(Op::Set {
-//             dst: &path,
-//             src: Source::Imm(src),
-//         });
-//         kani::assert(result.is_err(), "out of bounds fails");
-//         kani::assert(
-//             matches!(result, Err(PartialError::FieldOutOfBounds { .. })),
-//             "error is FieldOutOfBounds",
-//         );
-//     }
+    // Try to init field beyond bounds
+    let bad_idx: u8 = kani::any();
+    kani::assume(bad_idx >= field_count);
+    kani::assume(bad_idx < 10); // Keep bounded
+
+    let path = [PathSegment::Field(bad_idx as u32)];
+    let result = trame.apply(Op::Set {
+        dst: &path,
+        src: Source::Imm(src),
+    });
+    kani::assert(result.is_err(), "out of bounds fails");
+    kani::assert(
+        matches!(result, Err(TrameError::FieldOutOfBounds { .. })),
+        "error is FieldOutOfBounds",
+    );
+}
 
 //     /// Prove: any init order works for completion
 //     #[kani::proof]

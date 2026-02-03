@@ -14,10 +14,12 @@ afl = "0.17"
 arbitrary = { version = "1", features = ["derive"] }
 
 [dependencies.facet]
-path = "../../../facet/facet"
+git = "https://github.com/facet-rs/facet"
+branch = "main"
 
 [dependencies.facet-core]
-path = "../../../facet/facet-core"
+git = "https://github.com/facet-rs/facet"
+branch = "main"
 
 [dependencies.trame]
 path = ".."

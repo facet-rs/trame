@@ -4,7 +4,7 @@ use arbitrary::Arbitrary;
 use facet::Facet;
 use facet_core::{Field, Shape, StructType, Type, UserType};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use trame::{Op, Partial, PathSegment, RealArena, RealHeap, Source};
+use trame::{IRuntime, LRuntime, Op, PathSegment, Source, Trame};
 
 // ============================================================================
 // Compound types for fuzzing (these need Facet derive)
@@ -501,9 +501,8 @@ fn run_fuzz(input: FuzzInput, log: bool) {
         eprintln!("=== Allocating {:?} ===", input.target);
     }
 
-    let heap = RealHeap::new();
-    let arena = RealArena::new();
-    let mut partial = unsafe { Partial::new(heap, arena, target_shape) };
+    let heap = LRuntime::heap();
+    let mut trame = unsafe { Trame::<LRuntime>::new(heap, target_shape) };
 
     let mut shape_stack = vec![target_shape];
 
@@ -537,7 +536,7 @@ fn run_fuzz(input: FuzzInput, log: bool) {
                             eprintln!("  [{idx}] Set dst={:?} src=Imm", path_buf);
                         }
 
-                        partial.apply(Op::Set {
+                        trame.apply(Op::Set {
                             dst: &path_buf,
                             src: Source::Imm(ptr),
                         })
@@ -546,7 +545,7 @@ fn run_fuzz(input: FuzzInput, log: bool) {
                         if log {
                             eprintln!("  [{idx}] Set dst={:?} src=Default", path_buf);
                         }
-                        partial.apply(Op::Set {
+                        trame.apply(Op::Set {
                             dst: &path_buf,
                             src: Source::Default,
                         })
@@ -555,7 +554,7 @@ fn run_fuzz(input: FuzzInput, log: bool) {
                         if log {
                             eprintln!("  [{idx}] Set dst={:?} src=Stage({:?})", path_buf, len_hint);
                         }
-                        partial.apply(Op::Set {
+                        trame.apply(Op::Set {
                             dst: &path_buf,
                             src: Source::Stage(len_hint.map(|n| n as usize)),
                         })
@@ -574,7 +573,7 @@ fn run_fuzz(input: FuzzInput, log: bool) {
                 if log {
                     eprintln!("  [{idx}] End");
                 }
-                let result = partial.apply(Op::End);
+                let result = trame.apply(Op::End);
                 if result.is_ok() && shape_stack.len() > 1 {
                     shape_stack.pop();
                 }
@@ -583,6 +582,6 @@ fn run_fuzz(input: FuzzInput, log: bool) {
     }
 
     if log {
-        eprintln!("=== Dropping partial ===");
+        eprintln!("=== Dropping trame ===");
     }
 }

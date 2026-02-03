@@ -6,18 +6,8 @@ all:
     just test
 
 # Run proofs via soteria-rust. Use `--filter substring` to run only some tests
-sote *args:
-    soteria-rust cargo . --kani --summary {{ args }}
-
-kani *args:
-    #!/usr/bin/env bash
-    # cargo kani {{ args }}
-    cat <<EOF
-    Use "just sote" instead, which requires switching to the right opal env
-    For me that's:
-    eval \$(opam env --switch=/Users/amos/bearcove/soteria --set-switch)
-    EOF
-    exit 1
+prove *args:
+    soteria-rust cargo . --kani --summary --stats stdout --flamegraph-dir .soteria {{ args }}
 
 test *args:
     cargo test -p trame-formal {{ args }}

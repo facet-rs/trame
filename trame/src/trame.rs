@@ -76,7 +76,6 @@ struct FieldMeta<S: IShape> {
 impl<R> Trame<R>
 where
     R: IRuntime,
-    Ptr<R>: IPtr,
 {
     /// Create a new Trame for the given shape.
     ///
@@ -539,7 +538,6 @@ where
 impl<R> Drop for Trame<R>
 where
     R: IRuntime,
-    Ptr<R>: IPtr,
 {
     fn drop(&mut self) {
         if !self.poisoned {
@@ -557,12 +555,17 @@ mod tests {
     use super::*;
     use crate::runtime::verified::VArena;
     use crate::runtime::verified::VHeap;
+    use crate::runtime::verified::VPtr;
     use crate::runtime::verified::{VShapeDef, VShapeStore, VShapeView};
     use core::alloc::Layout;
 
     type S<'a> = VShapeView<'a, VShapeStore>;
     type TestHeap<'a> = VHeap<S<'a>>;
     type TestArena<'a> = VArena<Node<TestHeap<'a>, S<'a>>, 8>;
+
+    fn init<'a>(heap: &mut TestHeap<'a>, ptr: VPtr, shape: S<'a>) {
+        assert!(unsafe { heap.default_in_place(ptr, shape) });
+    }
 
     #[test]
     fn scalar_lifecycle() {
@@ -572,7 +575,7 @@ mod tests {
 
         let mut heap = TestHeap::new();
         let src = unsafe { heap.alloc(shape) };
-        heap.mark_init(src, 4);
+        init(&mut heap, src, shape);
 
         let arena = TestArena::new();
         let mut trame = unsafe { Trame::new(heap, arena, shape) };
@@ -602,8 +605,8 @@ mod tests {
         let mut heap = TestHeap::new();
         let src0 = unsafe { heap.alloc(u32_shape) };
         let src1 = unsafe { heap.alloc(u32_shape) };
-        heap.mark_init(src0, 4);
-        heap.mark_init(src1, 4);
+        init(&mut heap, src0, u32_shape);
+        init(&mut heap, src1, u32_shape);
 
         let arena = TestArena::new();
         let mut trame = unsafe { Trame::new(heap, arena, shape) };
@@ -645,9 +648,9 @@ mod tests {
         let src0 = unsafe { heap.alloc(u32_shape) };
         let src1 = unsafe { heap.alloc(u32_shape) };
         let src2 = unsafe { heap.alloc(u32_shape) };
-        heap.mark_init(src0, 4);
-        heap.mark_init(src1, 4);
-        heap.mark_init(src2, 4);
+        init(&mut heap, src0, u32_shape);
+        init(&mut heap, src1, u32_shape);
+        init(&mut heap, src2, u32_shape);
 
         let arena = TestArena::new();
         let mut trame = unsafe { Trame::new(heap, arena, shape) };
@@ -703,8 +706,9 @@ mod tests {
             .unwrap();
 
         let inner_a = [PathSegment::Field(0)];
-        let src = unsafe { trame.heap.alloc(store.view(u32_h)) };
-        trame.heap.mark_init(src, 4);
+        let u32_shape = store.view(u32_h);
+        let src = unsafe { trame.heap.alloc(u32_shape) };
+        init(&mut trame.heap, src, u32_shape);
         trame
             .apply(Op::Set {
                 dst: &inner_a,
@@ -733,7 +737,7 @@ mod tests {
 
         let mut heap = TestHeap::new();
         let src = unsafe { heap.alloc(u32_shape) };
-        heap.mark_init(src, 4);
+        init(&mut heap, src, u32_shape);
 
         let arena = TestArena::new();
         let mut trame = unsafe { Trame::new(heap, arena, shape) };
@@ -761,7 +765,7 @@ mod tests {
 
         let mut heap = TestHeap::new();
         let src = unsafe { heap.alloc(u32_shape) };
-        heap.mark_init(src, 4);
+        init(&mut heap, src, u32_shape);
 
         let arena = TestArena::new();
         let mut trame = unsafe { Trame::new(heap, arena, shape) };
@@ -798,9 +802,9 @@ mod tests {
         let src_x = unsafe { heap.alloc(u32_shape) };
         let src_a = unsafe { heap.alloc(u32_shape) };
         let src_b = unsafe { heap.alloc(u32_shape) };
-        heap.mark_init(src_x, 4);
-        heap.mark_init(src_a, 4);
-        heap.mark_init(src_b, 4);
+        init(&mut heap, src_x, u32_shape);
+        init(&mut heap, src_a, u32_shape);
+        init(&mut heap, src_b, u32_shape);
 
         let arena = TestArena::new();
         let mut trame = unsafe { Trame::new(heap, arena, shape) };
@@ -866,7 +870,7 @@ mod tests {
 
         let mut heap = TestHeap::new();
         let src = unsafe { heap.alloc(u32_shape) };
-        heap.mark_init(src, 4);
+        init(&mut heap, src, u32_shape);
 
         let arena = TestArena::new();
         let mut trame = unsafe { Trame::new(heap, arena, shape) };
@@ -906,7 +910,7 @@ mod tests {
 
         let mut heap = TestHeap::new();
         let src = unsafe { heap.alloc(u32_shape) };
-        heap.mark_init(src, 4);
+        init(&mut heap, src, u32_shape);
 
         let arena = TestArena::new();
         let mut trame = unsafe { Trame::new(heap, arena, shape) };
@@ -946,7 +950,7 @@ mod tests {
 
         let mut heap = TestHeap::new();
         let src = unsafe { heap.alloc(u32_shape) };
-        heap.mark_init(src, 4);
+        init(&mut heap, src, u32_shape);
 
         let arena = TestArena::new();
         let mut trame = unsafe { Trame::new(heap, arena, shape) };
@@ -981,7 +985,7 @@ mod tests {
 
         let mut heap = TestHeap::new();
         let src = unsafe { heap.alloc(u32_shape) };
-        heap.mark_init(src, 4);
+        init(&mut heap, src, u32_shape);
 
         let arena = TestArena::new();
         let mut trame = unsafe { Trame::new(heap, arena, shape) };
@@ -1009,7 +1013,7 @@ mod tests {
 
         let mut heap = TestHeap::new();
         let src = unsafe { heap.alloc(u32_shape) };
-        heap.mark_init(src, 4);
+        init(&mut heap, src, u32_shape);
 
         let arena = TestArena::new();
         let mut trame = unsafe { Trame::new(heap, arena, shape) };
@@ -1041,8 +1045,8 @@ mod tests {
         let mut heap = TestHeap::new();
         let src1 = unsafe { heap.alloc(u32_shape) };
         let src2 = unsafe { heap.alloc(u32_shape) };
-        heap.mark_init(src1, 4);
-        heap.mark_init(src2, 4);
+        init(&mut heap, src1, u32_shape);
+        init(&mut heap, src2, u32_shape);
 
         let arena = TestArena::new();
         let mut trame = unsafe { Trame::new(heap, arena, shape) };
@@ -1073,7 +1077,7 @@ mod tests {
 
         let inner_b = [PathSegment::Field(1)];
         let src3 = unsafe { trame.heap.alloc(u32_shape) };
-        trame.heap.mark_init(src3, 4);
+        init(&mut trame.heap, src3, u32_shape);
         trame
             .apply(Op::Set {
                 dst: &inner_b,

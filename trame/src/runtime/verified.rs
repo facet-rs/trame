@@ -579,34 +579,6 @@ impl<S: IShape> VHeap<S> {
             .expect("allocation already freed")
     }
 
-    /// Mark a byte range as initialized without copying data.
-    pub fn mark_init(&mut self, ptr: VPtr, len: usize) {
-        if len == 0 {
-            return;
-        }
-
-        // Bounds check
-        assert!(
-            ptr.offset_bytes() + len <= ptr.alloc_size(),
-            "mark_init: out of bounds"
-        );
-
-        let (tracker, _) = self.get_tracker_mut(ptr.alloc_id());
-        tracker
-            .mark_init(ptr.offset as u32, ptr.offset as u32 + len as u32)
-            .expect("mark_init: range already initialized");
-    }
-
-    /// Check if a byte range is initialized.
-    pub fn is_init(&self, ptr: VPtr, len: usize) -> bool {
-        if len == 0 {
-            return true;
-        }
-
-        let (tracker, _) = self.get_tracker(ptr.alloc_id());
-        tracker.is_init(ptr.offset as u32, ptr.offset as u32 + len as u32)
-    }
-
     fn matches_subshape(stored: S, offset: usize, target: S) -> bool {
         if offset == 0 && stored == target {
             return true;
@@ -767,7 +739,21 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
             Some(layout) => layout,
             None => return false,
         };
-        self.mark_init(ptr, layout.size());
+        let len = layout.size();
+        if len == 0 {
+            return true;
+        }
+
+        // Bounds check
+        assert!(
+            ptr.offset_bytes() + len <= ptr.alloc_size(),
+            "default_in_place: out of bounds"
+        );
+
+        let (tracker, _) = self.get_tracker_mut(ptr.alloc_id());
+        tracker
+            .mark_init(ptr.offset as u32, ptr.offset as u32 + len as u32)
+            .expect("default_in_place: range already initialized");
         true
     }
 }

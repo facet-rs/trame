@@ -286,7 +286,10 @@ where
         Ok((meta.shape, frame.data.offset(meta.offset), meta.layout.size()))
     }
 
-    fn resolve_path(&self, path: Path<'_>) -> Result<(Idx<Frame<H, S>>, Option<usize>), PartialError> {
+    fn resolve_path(
+        &mut self,
+        path: Path<'_>,
+    ) -> Result<(Idx<Frame<H, S>>, Option<usize>), PartialError> {
         if path.is_empty() {
             return Ok((self.current, None));
         }
@@ -294,7 +297,8 @@ where
         let mut idx = self.current;
         let mut segs = path;
         if let Some(PathSegment::Root) = segs.first() {
-            idx = self.root;
+            // Move the cursor to the root by walking parent links.
+            idx = self.ascend_to_root()?;
             segs = &segs[1..];
         }
 
@@ -317,6 +321,13 @@ where
                 segment: PathSegment::Root,
             }),
         }
+    }
+
+    fn ascend_to_root(&mut self) -> Result<Idx<Frame<H, S>>, PartialError> {
+        while self.current != self.root {
+            self.end_current_frame()?;
+        }
+        Ok(self.current)
     }
 
     fn apply_set(
@@ -365,7 +376,7 @@ where
                 }
             }
             Some(field_idx) => {
-                match &frame.kind {
+                let (mut child_idx, mut already_init) = match &frame.kind {
                     FrameKind::Struct { fields } => {
                         if field_idx >= fields.count as usize {
                             return Err(PartialError::FieldOutOfBounds {
@@ -373,20 +384,29 @@ where
                                 count: fields.count as usize,
                             });
                         }
-                        if fields.get_child(field_idx).is_some() {
-                            return Err(PartialError::FieldAlreadyInit { index: field_idx });
-                        }
+                        (fields.get_child(field_idx), fields.is_init(field_idx))
                     }
                     FrameKind::Scalar { .. } => return Err(PartialError::NotAStruct),
-                }
-
-                let already_init = if let FrameKind::Struct { fields } = &frame.kind {
-                    fields.is_init(field_idx)
-                } else {
-                    false
                 };
 
                 let (field_shape, dst, size) = Self::field_ptr(frame, field_idx)?;
+
+                if let Some(child) = child_idx {
+                    if matches!(src, Source::Imm(_) | Source::Default) {
+                        // We are overwriting a staged field: drop any initialized subfields.
+                        self.cleanup_frame(child);
+                        if self.current_in_subtree(child) {
+                            self.current = target_idx;
+                        }
+                        if let FrameKind::Struct { fields } =
+                            &mut self.arena.get_mut(target_idx).kind
+                        {
+                            fields.mark_not_started(field_idx);
+                        }
+                        child_idx = None;
+                        already_init = false;
+                    }
+                }
 
                 if already_init {
                     unsafe { self.heap.drop_in_place(dst, field_shape) };
@@ -423,6 +443,12 @@ where
                             return Err(PartialError::NotAStruct);
                         }
 
+                        if let Some(child) = child_idx {
+                            // Re-enter an existing staged child frame.
+                            self.current = child;
+                            return Ok(());
+                        }
+
                         let child_frame = Frame {
                             data: dst,
                             shape: field_shape,
@@ -436,12 +462,25 @@ where
                         {
                             fields.set_child(field_idx, child_idx);
                         }
+                        // Move the cursor to the child frame.
                         self.current = child_idx;
                         Ok(())
                     }
                 }
             }
         }
+    }
+
+    fn current_in_subtree(&self, ancestor: Idx<Frame<H, S>>) -> bool {
+        let mut idx = self.current;
+        while idx.is_valid() {
+            if idx == ancestor {
+                return true;
+            }
+            let frame = self.arena.get(idx);
+            idx = frame.parent;
+        }
+        false
     }
 
     pub fn apply(&mut self, op: Op<'_, H::Ptr>) -> Result<(), PartialError> {
@@ -451,17 +490,12 @@ where
             Op::End => self.end_current_frame(),
             Op::Set { dst, src } => {
                 let (target, field_idx) = self.resolve_path(dst)?;
-                if matches!(src, Source::Stage(_)) && target != self.current {
-                    return Err(PartialError::UnsupportedPath {
-                        segment: PathSegment::Root,
-                    });
-                }
                 self.apply_set(target, field_idx, src)
             }
         }
     }
 
-    /// End constructing the current frame and return to parent.
+    /// End constructing the current frame and move the cursor to the parent.
     ///
     /// This marks the field as initialized in the parent frame and pops back.
     /// The current frame must be complete.
@@ -489,7 +523,7 @@ where
             fields.mark_complete(field_in_parent);
         }
 
-        // Pop back to parent
+        // Move cursor back to parent
         self.current = parent_idx;
 
         Ok(())
@@ -747,7 +781,7 @@ mod tests {
     }
 
     #[test]
-    fn stage_field_twice_fails() {
+    fn stage_field_twice_reenters() {
         let mut store = DynShapeStore::new();
         let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
         let inner_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h)]);
@@ -769,11 +803,24 @@ mod tests {
             })
             .unwrap();
 
-        let err = partial.apply(Op::Set {
-            dst: &field0,
+        let inner_a = [PathSegment::Field(0)];
+        let src = partial.heap.alloc(store.view(u32_h));
+        partial.heap.mark_init(src, 4);
+        partial
+            .apply(Op::Set {
+                dst: &inner_a,
+                src: Source::Imm(src),
+            })
+            .unwrap();
+        partial.apply(Op::End).unwrap();
+
+        let root_field0 = [PathSegment::Root, PathSegment::Field(0)];
+        let result = partial.apply(Op::Set {
+            dst: &root_field0,
             src: Source::Stage(None),
         });
-        assert_eq!(err, Err(PartialError::FieldAlreadyInit { index: 0 }));
+        assert!(result.is_ok());
+        assert_eq!(partial.depth(), 1);
     }
 
     #[test]
@@ -1244,7 +1291,7 @@ mod kani_proofs {
         kani::assert(partial.is_complete(), "complete with all fields");
     }
 
-    /// Prove: staging the same field twice returns error
+    /// Prove: staging the same field via Root while in a child re-enters
     #[kani::proof]
     #[kani::unwind(10)]
     fn double_init_rejected() {
@@ -1289,15 +1336,25 @@ mod kani_proofs {
             })
             .unwrap();
 
+        let scalar_shape = store.view(scalar_h);
+        let src = partial.heap.alloc(scalar_shape);
+        partial.heap.mark_init(src, 4);
+        let inner_a = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &inner_a,
+                src: Source::Imm(src),
+            })
+            .unwrap();
+        partial.apply(Op::End).unwrap();
+
+        let root_path = [PathSegment::Root, PathSegment::Field(0)];
         let result2 = partial.apply(Op::Set {
-            dst: &path,
+            dst: &root_path,
             src: Source::Stage(None),
         });
-        kani::assert(result2.is_err(), "double stage fails");
-        kani::assert(
-            matches!(result2, Err(PartialError::FieldAlreadyInit { .. })),
-            "error is FieldAlreadyInit",
-        );
+        kani::assert(result2.is_ok(), "stage after complete re-enters");
+        kani::assert(partial.depth() == 1, "cursor remains in child");
     }
 
     /// Prove: build fails if not all fields initialized
@@ -1564,7 +1621,7 @@ mod kani_proofs {
     /// Prove: Stage/End lifecycle works correctly
     #[kani::proof]
     #[kani::unwind(10)]
-    fn begin_end_field_lifecycle() {
+    fn stage_end_lifecycle() {
         let mut store = DynShapeStore::new();
 
         // Inner struct: { a: u32, b: u32 }
@@ -1661,10 +1718,10 @@ mod kani_proofs {
         kani::assert(result.is_ok(), "build succeeds");
     }
 
-    /// Prove: staging a field twice fails
+    /// Prove: staging the same field via Root while in a child re-enters
     #[kani::proof]
     #[kani::unwind(10)]
-    fn begin_field_already_init_fails() {
+    fn stage_reenter_root_ok() {
         let mut store = DynShapeStore::new();
         let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
         let inner_def = DynShapeDef {
@@ -1706,21 +1763,31 @@ mod kani_proofs {
             })
             .unwrap();
 
+        let scalar_shape = store.view(scalar_h);
+        let src = partial.heap.alloc(scalar_shape);
+        partial.heap.mark_init(src, 4);
+        let inner_a = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &inner_a,
+                src: Source::Imm(src),
+            })
+            .unwrap();
+        partial.apply(Op::End).unwrap();
+
+        let root_path = [PathSegment::Root, PathSegment::Field(0)];
         let result = partial.apply(Op::Set {
-            dst: &path,
+            dst: &root_path,
             src: Source::Stage(None),
         });
-        kani::assert(result.is_err(), "stage on already in-progress fails");
-        kani::assert(
-            matches!(result, Err(PartialError::FieldAlreadyInit { index: 0 })),
-            "error is FieldAlreadyInit",
-        );
+        kani::assert(result.is_ok(), "stage after complete re-enters");
+        kani::assert(partial.depth() == 1, "cursor remains in child");
     }
 
     /// Prove: Op::End at root returns error
     #[kani::proof]
     #[kani::unwind(10)]
-    fn end_field_at_root_fails() {
+    fn end_op_at_root_fails() {
         let mut store = DynShapeStore::new();
         let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
         let struct_def = DynShapeDef {
@@ -1764,7 +1831,7 @@ mod kani_proofs {
     /// Prove: End with incomplete inner fails
     #[kani::proof]
     #[kani::unwind(10)]
-    fn end_field_incomplete_inner_fails() {
+    fn end_op_incomplete_inner_fails() {
         let mut store = DynShapeStore::new();
         let scalar_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
         let inner_def = DynShapeDef {
@@ -1956,7 +2023,7 @@ mod kani_proofs {
     /// Prove: Stage uses the same allocation as the parent.
     #[kani::proof]
     #[kani::unwind(8)]
-    fn begin_field_same_alloc_id() {
+    fn stage_same_alloc_id() {
         let mut store = DynShapeStore::new();
         let u32_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
         let inner_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);

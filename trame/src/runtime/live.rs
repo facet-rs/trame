@@ -1,9 +1,8 @@
 //! Live implementations of all of trame's runtime traits: no verification involved, real memory
 //! allocations, etc.
 
+use crate::runtime::{IArena, IField, IHeap, IPtr, IShape, IShapeStore, IStructType, Idx};
 use facet_core::{Field, Shape, StructType, Type, UserType};
-
-use crate::runtime::{IArena, IField, IHeap, IShape, IShapeStore, IStructType, Idx};
 
 // ==================================================================
 // Shape
@@ -164,6 +163,27 @@ impl<S: IShape> IHeap<S> for LHeap<S> {
     unsafe fn drop_in_place(&mut self, ptr: *mut u8, shape: S) {
         // Use the shape's drop_in_place method
         unsafe { shape.drop_in_place(ptr) };
+    }
+}
+
+/// Provide access to a raw pointer when available.
+pub trait PtrAsMut: Copy {
+    /// Returns a raw pointer if this pointer represents real memory.
+    fn as_mut_ptr(self) -> Option<*mut u8>;
+}
+
+impl IPtr for *mut u8 {
+    #[inline]
+    fn byte_add(self, n: usize) -> Self {
+        // SAFETY: caller ensures the resulting pointer is in-bounds.
+        unsafe { self.add(n) }
+    }
+}
+
+impl PtrAsMut for *mut u8 {
+    #[inline]
+    fn as_mut_ptr(self) -> Option<*mut u8> {
+        Some(self)
     }
 }
 

@@ -4,11 +4,16 @@
 //! fields have been initialized and ensuring proper cleanup on failure.
 
 use crate::{
-    PathSegment,
-    node::Node,
-    runtime::{IRuntime, IShape, Idx},
+    Op, Path, PathSegment, Source,
+    node::{FieldSlot, MAX_NODE_FIELDS, Node, NodeKind, NodeState},
+    ptr::PtrAsMut,
+    runtime::{IArena, IHeap, IPtr, IRuntime, IShape, Idx},
 };
-use core::marker::PhantomData;
+
+type Heap<R> = <R as IRuntime>::Heap;
+type Shape<R> = <R as IRuntime>::Shape;
+type Arena<R> = <R as IRuntime>::Arena;
+type Ptr<R> = <Heap<R> as IHeap<Shape<R>>>::Ptr;
 
 // ============================================================================
 // Trame - the main builder
@@ -69,19 +74,17 @@ struct FieldMeta<S: IShape> {
     layout: core::alloc::Layout,
 }
 
-impl<H, A, S> Trame<H, A, S>
+impl<R> Trame<R>
 where
-    H: IHeap<S>,
-    H::Ptr: IPtr + PtrAsMut,
-    A: IArena<Node<H, S>>,
-    S: IShape,
+    R: IRuntime,
+    Ptr<R>: IPtr + PtrAsMut,
 {
     /// Create a new Trame for the given shape.
     ///
     /// # Safety
     /// The caller must ensure the shape is valid and sized.
-    pub unsafe fn new(mut heap: H, mut arena: A, shape: S) -> Self {
-        let data = heap.alloc(shape);
+    pub unsafe fn new(mut heap: Heap<R>, mut arena: Arena<R>, shape: Shape<R>) -> Self {
+        let data = unsafe { heap.alloc(shape) };
         let Node = Node::new_root(data, shape);
         let root = arena.alloc(Node);
 
@@ -91,7 +94,6 @@ where
             root,
             current: root,
             poisoned: false,
-            _marker: PhantomData,
         }
     }
 
@@ -104,11 +106,11 @@ where
         }
     }
 
-    fn struct_type(shape: S) -> Result<S::StructType, TrameError> {
+    fn struct_type(shape: Shape<R>) -> Result<<Shape<R> as IShape>::StructType, TrameError> {
         shape.as_struct().ok_or(TrameError::NotAStruct)
     }
 
-    fn field_meta(shape: S, field_idx: usize) -> Result<FieldMeta<S>, TrameError> {
+    fn field_meta(shape: Shape<R>, field_idx: usize) -> Result<FieldMeta<Shape<R>>, TrameError> {
         let st = Self::struct_type(shape)?;
         let field_count = st.field_count();
         let field = st.field(field_idx).ok_or(TrameError::FieldOutOfBounds {
@@ -125,7 +127,10 @@ where
         })
     }
 
-    fn field_ptr(Node: &Node<H, S>, field_idx: usize) -> Result<(S, H::Ptr, usize), TrameError> {
+    fn field_ptr(
+        Node: &Node<Heap<R>, Shape<R>>,
+        field_idx: usize,
+    ) -> Result<(Shape<R>, Ptr<R>, usize), TrameError> {
         let meta = Self::field_meta(Node.shape, field_idx)?;
         let Node_size = Node
             .shape
@@ -141,7 +146,7 @@ where
         );
         Ok((
             meta.shape,
-            Node.data.offset(meta.offset),
+            Node.data.byte_add(meta.offset),
             meta.layout.size(),
         ))
     }
@@ -149,7 +154,7 @@ where
     fn resolve_path(
         &mut self,
         path: Path<'_>,
-    ) -> Result<(Idx<Node<H, S>>, Option<usize>), TrameError> {
+    ) -> Result<(Idx<Node<Heap<R>, Shape<R>>>, Option<usize>), TrameError> {
         if path.is_empty() {
             return Ok((self.current, None));
         }
@@ -181,48 +186,48 @@ where
         }
     }
 
-    fn ascend_to_root(&mut self) -> Result<Idx<Node<H, S>>, TrameError> {
+    fn ascend_to_root(&mut self) -> Result<Idx<Node<Heap<R>, Shape<R>>>, TrameError> {
         while self.current != self.root {
-            self.end_current_Node()?;
+            self.end_current_node()?;
         }
         Ok(self.current)
     }
 
     fn apply_set(
         &mut self,
-        target_idx: Idx<Node<H, S>>,
+        target_idx: Idx<Node<Heap<R>, Shape<R>>>,
         field_idx: Option<usize>,
-        src: Source<H::Ptr>,
+        src: Source<Ptr<R>>,
     ) -> Result<(), TrameError> {
-        let Node = self.arena.get(target_idx);
+        let node = self.arena.get(target_idx);
 
         match field_idx {
-            None => match Node.kind {
+            None => match node.kind {
                 NodeKind::Scalar { .. } => {
-                    let size = Node
+                    let size = node
                         .shape
                         .layout()
                         .expect("IShape requires sized types")
                         .size();
-                    let dst = Node.data;
-                    let already_init = matches!(Node.kind, NodeKind::Scalar { initialized: true });
+                    let dst = node.data;
+                    let already_init = matches!(node.kind, NodeKind::Scalar { initialized: true });
 
                     if already_init {
-                        unsafe { self.heap.drop_in_place(dst, Node.shape) };
+                        unsafe { self.heap.drop_in_place(dst, node.shape) };
                     }
 
                     match src {
                         Source::Imm(src_ptr) => {
-                            self.heap.memcpy(dst, src_ptr, size);
+                            unsafe { self.heap.memcpy(dst, src_ptr, size) };
                         }
                         Source::Default => {
                             if let Some(raw) = dst.as_mut_ptr() {
-                                let ok = unsafe { Node.shape.default_in_place(raw) };
+                                let ok = unsafe { node.shape.default_in_place(raw) };
                                 if !ok {
                                     return Err(TrameError::DefaultUnavailable);
                                 }
                             }
-                            self.heap.mark_init(dst, size);
+                            unsafe { self.heap.mark_init(dst, size) };
                         }
                         Source::Stage(_) => return Err(TrameError::UnsupportedSource),
                     }
@@ -236,7 +241,7 @@ where
                 NodeKind::Struct { .. } => Err(TrameError::NotAStruct),
             },
             Some(field_idx) => {
-                let (mut child_idx, mut already_init) = match &Node.kind {
+                let (mut child_idx, mut already_init) = match &node.kind {
                     NodeKind::Struct { fields } => {
                         if field_idx >= fields.count as usize {
                             return Err(TrameError::FieldOutOfBounds {
@@ -249,7 +254,7 @@ where
                     NodeKind::Scalar { .. } => return Err(TrameError::NotAStruct),
                 };
 
-                let (field_shape, dst, size) = Self::field_ptr(Node, field_idx)?;
+                let (field_shape, dst, size) = Self::field_ptr(node, field_idx)?;
 
                 if let Some(child) = child_idx {
                     if matches!(src, Source::Imm(_) | Source::Default) {
@@ -277,7 +282,7 @@ where
 
                 match src {
                     Source::Imm(src_ptr) => {
-                        self.heap.memcpy(dst, src_ptr, size);
+                        unsafe { self.heap.memcpy(dst, src_ptr, size) };
                         if let NodeKind::Struct { fields } =
                             &mut self.arena.get_mut(target_idx).kind
                         {
@@ -292,7 +297,7 @@ where
                                 return Err(TrameError::DefaultUnavailable);
                             }
                         }
-                        self.heap.mark_init(dst, size);
+                        unsafe { self.heap.mark_init(dst, size) };
                         if let NodeKind::Struct { fields } =
                             &mut self.arena.get_mut(target_idx).kind
                         {
@@ -316,7 +321,8 @@ where
                             self.cleanup_Node(child);
                             {
                                 let child_Node = self.arena.get_mut(child);
-                                child_Node.kind = Node::<H, S>::kind_for_shape(child_Node.shape);
+                                child_Node.kind =
+                                    Node::<Heap<R>, Shape<R>>::kind_for_shape(child_Node.shape);
                                 child_Node.state = NodeState::Staged;
                             }
                             self.current = child;
@@ -326,7 +332,7 @@ where
                         let child_Node = Node {
                             data: dst,
                             shape: field_shape,
-                            kind: Node::<H, S>::kind_for_shape(field_shape),
+                            kind: Node::<Heap<R>, Shape<R>>::kind_for_shape(field_shape),
                             state: NodeState::Staged,
                             parent: target_idx,
                             field_in_parent: field_idx as u32,
@@ -347,21 +353,21 @@ where
         }
     }
 
-    fn current_in_subtree(&self, ancestor: Idx<Node<H, S>>) -> bool {
+    fn current_in_subtree(&self, ancestor: Idx<Node<Heap<R>, Shape<R>>>) -> bool {
         let mut idx = self.current;
         while idx.is_valid() {
             if idx == ancestor {
                 return true;
             }
-            let Node = self.arena.get(idx);
-            idx = Node.parent;
+            let node = self.arena.get(idx);
+            idx = node.parent;
         }
         false
     }
 
-    fn Node_is_complete(&self, idx: Idx<Node<H, S>>) -> bool {
-        let Node = self.arena.get(idx);
-        match &Node.kind {
+    fn node_is_complete(&self, idx: Idx<Node<Heap<R>, Shape<R>>>) -> bool {
+        let node = self.arena.get(idx);
+        match &node.kind {
             NodeKind::Scalar { initialized } => *initialized,
             NodeKind::Struct { fields } => {
                 for i in 0..(fields.count as usize) {
@@ -369,8 +375,8 @@ where
                         FieldSlot::Untracked => return false,
                         FieldSlot::Complete => {}
                         FieldSlot::Child(child) => {
-                            let child_Node = self.arena.get(child);
-                            if child_Node.state != NodeState::Complete {
+                            let child_node = self.arena.get(child);
+                            if child_node.state != NodeState::Sealed {
                                 return false;
                             }
                         }
@@ -381,11 +387,11 @@ where
         }
     }
 
-    pub fn apply(&mut self, op: Op<'_, H::Ptr>) -> Result<(), TrameError> {
+    pub fn apply(&mut self, op: Op<'_, Ptr<R>>) -> Result<(), TrameError> {
         self.check_poisoned()?;
 
         match op {
-            Op::End => self.end_current_Node(),
+            Op::End => self.end_current_node(),
             Op::Set { dst, src } => {
                 let (target, field_idx) = self.resolve_path(dst)?;
                 self.apply_set(target, field_idx, src)
@@ -397,13 +403,13 @@ where
     ///
     /// This marks the field as initialized in the parent Node and pops back.
     /// The current Node must be complete.
-    fn end_current_Node(&mut self) -> Result<(), TrameError> {
+    fn end_current_node(&mut self) -> Result<(), TrameError> {
         self.check_poisoned()?;
 
         let Node = self.arena.get(self.current);
 
         // Check current Node is complete
-        if !self.Node_is_complete(self.current) {
+        if !self.node_is_complete(self.current) {
             return Err(TrameError::CurrentIncomplete);
         }
 
@@ -417,7 +423,7 @@ where
 
         // Mark this Node as complete.
         let Node = self.arena.get_mut(self.current);
-        Node.state = NodeState::Complete;
+        Node.state = NodeState::Sealed;
 
         // Move cursor back to parent
         self.current = parent_idx;
@@ -445,19 +451,20 @@ where
         if self.poisoned {
             return false;
         }
-        self.Node_is_complete(self.current)
+        self.node_is_complete(self.current)
     }
 
     /// Build the value, returning ownership of heap and arena.
     ///
     /// Returns error if not all fields are initialized.
-    pub fn build(self) -> Result<(H, A, H::Ptr), TrameError> {
+    pub fn build(self) -> Result<(Heap<R>, Arena<R>, Ptr<R>), TrameError> {
         self.check_poisoned()?;
 
-        if !self.Node_is_complete(self.current) {
+        if !self.node_is_complete(self.current) {
             return Err(TrameError::Incomplete);
         }
 
+        let Node = self.arena.get(self.root);
         let data = Node.data;
 
         // Don't run Drop - we're transferring ownership
@@ -480,17 +487,17 @@ where
     }
 
     /// Recursively clean up a Node and all its children (depth-first).
-    fn cleanup_Node(&mut self, idx: Idx<Node<H, S>>) {
+    fn cleanup_Node(&mut self, idx: Idx<Node<Heap<R>, Shape<R>>>) {
         if !idx.is_valid() {
             return;
         }
 
         let Node = self.arena.get(idx);
-        if Node.state == NodeState::Complete {
+        if Node.state == NodeState::Sealed {
             unsafe { self.heap.drop_in_place(Node.data, Node.shape) };
         } else {
             // Collect children first to avoid borrow issues
-            let mut children = [Idx::NOT_STARTED; MAX_Node_FIELDS];
+            let mut children = [Idx::NOT_STARTED; MAX_NODE_FIELDS];
             let mut child_count = 0;
 
             if let NodeKind::Struct { fields } = &Node.kind {
@@ -533,12 +540,10 @@ where
     }
 }
 
-impl<H, A, S> Drop for Trame<H, A, S>
+impl<R> Drop for Trame<R>
 where
-    H: IHeap<S>,
-    H::Ptr: IPtr + PtrAsMut,
-    A: IArena<Node<H, S>>,
-    S: IShape,
+    R: IRuntime,
+    Ptr<R>: IPtr + PtrAsMut,
 {
     fn drop(&mut self) {
         if !self.poisoned {
@@ -570,7 +575,7 @@ mod tests {
         let shape = store.view(h);
 
         let mut heap = TestHeap::new();
-        let src = heap.alloc(shape);
+        let src = unsafe { heap.alloc(shape) };
         heap.mark_init(src, 4);
 
         let arena = TestArena::new();
@@ -599,8 +604,8 @@ mod tests {
         let u32_shape = store.view(u32_h);
 
         let mut heap = TestHeap::new();
-        let src0 = heap.alloc(u32_shape);
-        let src1 = heap.alloc(u32_shape);
+        let src0 = unsafe { heap.alloc(u32_shape) };
+        let src1 = unsafe { heap.alloc(u32_shape) };
         heap.mark_init(src0, 4);
         heap.mark_init(src1, 4);
 
@@ -641,9 +646,9 @@ mod tests {
         let u32_shape = store.view(u32_h);
 
         let mut heap = TestHeap::new();
-        let src0 = heap.alloc(u32_shape);
-        let src1 = heap.alloc(u32_shape);
-        let src2 = heap.alloc(u32_shape);
+        let src0 = unsafe { heap.alloc(u32_shape) };
+        let src1 = unsafe { heap.alloc(u32_shape) };
+        let src2 = unsafe { heap.alloc(u32_shape) };
         heap.mark_init(src0, 4);
         heap.mark_init(src1, 4);
         heap.mark_init(src2, 4);
@@ -702,7 +707,7 @@ mod tests {
             .unwrap();
 
         let inner_a = [PathSegment::Field(0)];
-        let src = trame.heap.alloc(store.view(u32_h));
+        let src = unsafe { trame.heap.alloc(store.view(u32_h)) };
         trame.heap.mark_init(src, 4);
         trame
             .apply(Op::Set {
@@ -731,7 +736,7 @@ mod tests {
         let u32_shape = store.view(u32_h);
 
         let mut heap = TestHeap::new();
-        let src = heap.alloc(u32_shape);
+        let src = unsafe { heap.alloc(u32_shape) };
         heap.mark_init(src, 4);
 
         let arena = TestArena::new();
@@ -759,7 +764,7 @@ mod tests {
         let u32_shape = store.view(u32_h);
 
         let mut heap = TestHeap::new();
-        let src = heap.alloc(u32_shape);
+        let src = unsafe { heap.alloc(u32_shape) };
         heap.mark_init(src, 4);
 
         let arena = TestArena::new();
@@ -794,9 +799,9 @@ mod tests {
         let u32_shape = store.view(u32_h);
 
         let mut heap = TestHeap::new();
-        let src_x = heap.alloc(u32_shape);
-        let src_a = heap.alloc(u32_shape);
-        let src_b = heap.alloc(u32_shape);
+        let src_x = unsafe { heap.alloc(u32_shape) };
+        let src_a = unsafe { heap.alloc(u32_shape) };
+        let src_b = unsafe { heap.alloc(u32_shape) };
         heap.mark_init(src_x, 4);
         heap.mark_init(src_a, 4);
         heap.mark_init(src_b, 4);
@@ -864,7 +869,7 @@ mod tests {
         let u32_shape = store.view(u32_h);
 
         let mut heap = TestHeap::new();
-        let src = heap.alloc(u32_shape);
+        let src = unsafe { heap.alloc(u32_shape) };
         heap.mark_init(src, 4);
 
         let arena = TestArena::new();
@@ -904,7 +909,7 @@ mod tests {
         let u32_shape = store.view(u32_h);
 
         let mut heap = TestHeap::new();
-        let src = heap.alloc(u32_shape);
+        let src = unsafe { heap.alloc(u32_shape) };
         heap.mark_init(src, 4);
 
         let arena = TestArena::new();
@@ -944,7 +949,7 @@ mod tests {
         let u32_shape = store.view(u32_h);
 
         let mut heap = TestHeap::new();
-        let src = heap.alloc(u32_shape);
+        let src = unsafe { heap.alloc(u32_shape) };
         heap.mark_init(src, 4);
 
         let arena = TestArena::new();
@@ -979,7 +984,7 @@ mod tests {
         let u32_shape = store.view(u32_h);
 
         let mut heap = TestHeap::new();
-        let src = heap.alloc(u32_shape);
+        let src = unsafe { heap.alloc(u32_shape) };
         heap.mark_init(src, 4);
 
         let arena = TestArena::new();
@@ -1007,7 +1012,7 @@ mod tests {
         let u32_shape = store.view(u32_h);
 
         let mut heap = TestHeap::new();
-        let src = heap.alloc(u32_shape);
+        let src = unsafe { heap.alloc(u32_shape) };
         heap.mark_init(src, 4);
 
         let arena = TestArena::new();
@@ -1038,8 +1043,8 @@ mod tests {
         let u32_shape = store.view(u32_h);
 
         let mut heap = TestHeap::new();
-        let src1 = heap.alloc(u32_shape);
-        let src2 = heap.alloc(u32_shape);
+        let src1 = unsafe { heap.alloc(u32_shape) };
+        let src2 = unsafe { heap.alloc(u32_shape) };
         heap.mark_init(src1, 4);
         heap.mark_init(src2, 4);
 
@@ -1071,7 +1076,7 @@ mod tests {
             .unwrap();
 
         let inner_b = [PathSegment::Field(1)];
-        let src3 = trame.heap.alloc(u32_shape);
+        let src3 = unsafe { trame.heap.alloc(u32_shape) };
         trame.heap.mark_init(src3, 4);
         trame
             .apply(Op::Set {
@@ -1092,8 +1097,8 @@ mod kani_proofs {
     use crate::runtime::verified::VArena;
     use crate::runtime::verified::VHeap;
     use crate::runtime::verified::{
-        VDef, VFieldDef, VShapeDef, VShapeHandle, VShapeStore, VShapeView,
-        VStructDef, IField, IShape, IStructType, MAX_FIELDS_PER_STRUCT,
+        IField, IShape, IStructType, MAX_FIELDS_PER_STRUCT, VDef, VFieldDef, VShapeDef,
+        VShapeHandle, VShapeStore, VShapeView, VStructDef,
     };
     use core::alloc::Layout;
 
@@ -1109,7 +1114,7 @@ mod kani_proofs {
         let shape = store.view(h);
 
         let mut heap = TestHeap::new();
-        let src = heap.alloc(shape);
+        let src = unsafe { heap.alloc(shape) };
         heap.mark_init(src, 4);
         let arena = TestArena::new();
 
@@ -1152,7 +1157,7 @@ mod kani_proofs {
 
         let mut heap = TestHeap::new();
         let scalar_shape = store.view(scalar_h);
-        let src = heap.alloc(scalar_shape);
+        let src = unsafe { heap.alloc(scalar_shape) };
         heap.mark_init(src, 4);
         let arena = TestArena::new();
         let mut trame = unsafe { Trame::new(heap, arena, shape) };
@@ -1235,7 +1240,7 @@ mod kani_proofs {
             .unwrap();
 
         let scalar_shape = store.view(scalar_h);
-        let src = trame.heap.alloc(scalar_shape);
+        let src = unsafe { trame.heap.alloc(scalar_shape) };
         trame.heap.mark_init(src, 4);
         let inner_a = [PathSegment::Field(0)];
         trame
@@ -1282,7 +1287,7 @@ mod kani_proofs {
 
         let mut heap = TestHeap::new();
         let scalar_shape = store.view(scalar_h);
-        let src = heap.alloc(scalar_shape);
+        let src = unsafe { heap.alloc(scalar_shape) };
         heap.mark_init(src, 4);
         let arena = TestArena::new();
         let mut trame = unsafe { Trame::new(heap, arena, shape) };
@@ -1332,7 +1337,7 @@ mod kani_proofs {
 
         let mut heap = TestHeap::new();
         let scalar_shape = store.view(scalar_h);
-        let src = heap.alloc(scalar_shape);
+        let src = unsafe { heap.alloc(scalar_shape) };
         heap.mark_init(src, 4);
         let arena = TestArena::new();
         let mut trame = unsafe { Trame::new(heap, arena, shape) };
@@ -1379,9 +1384,9 @@ mod kani_proofs {
 
         let mut heap = TestHeap::new();
         let scalar_shape = store.view(scalar_h);
-        let src0 = heap.alloc(scalar_shape);
-        let src1 = heap.alloc(scalar_shape);
-        let src2 = heap.alloc(scalar_shape);
+        let src0 = unsafe { heap.alloc(scalar_shape) };
+        let src1 = unsafe { heap.alloc(scalar_shape) };
+        let src2 = unsafe { heap.alloc(scalar_shape) };
         heap.mark_init(src0, 4);
         heap.mark_init(src1, 4);
         heap.mark_init(src2, 4);
@@ -1472,9 +1477,9 @@ mod kani_proofs {
         // Construct the outer struct
         let mut heap = TestHeap::new();
         let scalar_shape = store.view(scalar_h);
-        let src_x = heap.alloc(scalar_shape);
-        let src_a = heap.alloc(scalar_shape);
-        let src_b = heap.alloc(scalar_shape);
+        let src_x = unsafe { heap.alloc(scalar_shape) };
+        let src_a = unsafe { heap.alloc(scalar_shape) };
+        let src_b = unsafe { heap.alloc(scalar_shape) };
         heap.mark_init(src_x, 4);
         heap.mark_init(src_a, 4);
         heap.mark_init(src_b, 4);
@@ -1556,9 +1561,9 @@ mod kani_proofs {
 
         let mut heap = TestHeap::new();
         let scalar_shape = store.view(scalar_h);
-        let src_x = heap.alloc(scalar_shape);
-        let src_a = heap.alloc(scalar_shape);
-        let src_b = heap.alloc(scalar_shape);
+        let src_x = unsafe { heap.alloc(scalar_shape) };
+        let src_a = unsafe { heap.alloc(scalar_shape) };
+        let src_b = unsafe { heap.alloc(scalar_shape) };
         heap.mark_init(src_x, 4);
         heap.mark_init(src_a, 4);
         heap.mark_init(src_b, 4);
@@ -1662,7 +1667,7 @@ mod kani_proofs {
             .unwrap();
 
         let scalar_shape = store.view(scalar_h);
-        let src = trame.heap.alloc(scalar_shape);
+        let src = unsafe { trame.heap.alloc(scalar_shape) };
         trame.heap.mark_init(src, 4);
         let inner_a = [PathSegment::Field(0)];
         trame
@@ -1704,7 +1709,7 @@ mod kani_proofs {
 
         let mut heap = TestHeap::new();
         let scalar_shape = store.view(scalar_h);
-        let src = heap.alloc(scalar_shape);
+        let src = unsafe { heap.alloc(scalar_shape) };
         heap.mark_init(src, 4);
         let arena = TestArena::new();
         let mut trame = unsafe { Trame::new(heap, arena, shape) };
@@ -1762,7 +1767,7 @@ mod kani_proofs {
 
         let mut heap = TestHeap::new();
         let scalar_shape = store.view(scalar_h);
-        let src = heap.alloc(scalar_shape);
+        let src = unsafe { heap.alloc(scalar_shape) };
         heap.mark_init(src, 4);
         let arena = TestArena::new();
         let mut trame = unsafe { Trame::new(heap, arena, shape) };
@@ -1826,7 +1831,7 @@ mod kani_proofs {
 
         let mut heap = TestHeap::new();
         let scalar_shape = store.view(scalar_h);
-        let src = heap.alloc(scalar_shape);
+        let src = unsafe { heap.alloc(scalar_shape) };
         heap.mark_init(src, 4);
         let arena = TestArena::new();
         let mut trame = unsafe { Trame::new(heap, arena, shape) };
@@ -1889,7 +1894,7 @@ mod kani_proofs {
 
         let mut heap = TestHeap::new();
         let scalar_shape = store.view(scalar_h);
-        let src = heap.alloc(scalar_shape);
+        let src = unsafe { heap.alloc(scalar_shape) };
         heap.mark_init(src, 4);
         let arena = TestArena::new();
         let mut trame = unsafe { Trame::new(heap, arena, shape) };

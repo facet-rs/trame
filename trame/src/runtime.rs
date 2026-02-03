@@ -17,10 +17,19 @@ pub trait IRuntime {
     fn arena() -> Self::Arena;
 }
 
-/// Marker trait for runtimes that use real facet shapes.
-pub trait LiveRuntime: IRuntime<Shape = &'static facet_core::Shape> {}
+/// Marker trait for runtimes that use real facet shapes and raw pointers.
+pub trait LiveRuntime:
+    IRuntime<Shape = &'static facet_core::Shape, Heap: IHeap<&'static facet_core::Shape, Ptr = *mut u8>>
+{
+}
 
-impl<T> LiveRuntime for T where T: IRuntime<Shape = &'static facet_core::Shape> {}
+impl<T> LiveRuntime for T where
+    T: IRuntime<
+            Shape = &'static facet_core::Shape,
+            Heap: IHeap<&'static facet_core::Shape, Ptr = *mut u8>,
+        >
+{
+}
 
 // ==================================================================
 // Shape

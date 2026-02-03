@@ -1,4 +1,4 @@
-use crate::runtime::{IHeap, IRuntime, IShape, LiveRuntime};
+use crate::runtime::{IHeap, IRuntime, LiveRuntime};
 use core::marker::PhantomData;
 
 type Heap<R> = <R as IRuntime>::Heap;
@@ -49,7 +49,7 @@ where
         }
         let mut this = core::mem::ManuallyDrop::new(self);
         let mut heap = core::mem::replace(&mut this.heap, R::heap());
-        let value = unsafe { core::ptr::read(this.ptr.cast::<T>()) };
+        let value = unsafe { core::ptr::read((this.ptr as *mut u8).cast::<T>()) };
         unsafe { heap.dealloc(this.ptr, this.shape) };
         Ok(value)
     }

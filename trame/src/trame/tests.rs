@@ -83,6 +83,8 @@ fn scalar_lifecycle_live_alloc() {
     assert!(trame.is_complete());
 
     let hv = trame.build().unwrap();
+    let value = hv.materialize::<u32>().unwrap();
+    assert_eq!(value, 123);
 }
 
 //     #[test]

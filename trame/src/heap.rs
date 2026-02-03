@@ -1,13 +1,10 @@
 //! Heap abstraction for memory operations.
 //!
-//! Two implementations:
-//! - `RealHeap`: Actual memory operations (for production)
-//! - `VerifiedHeap`: State tracking with ByteRangeTracker (for Kani)
+//! Verified heap with state tracking for Kani.
 //!
 //! The key insight: we have ONE implementation of business logic that uses
 //! the Heap trait. For verification, we swap in VerifiedHeap which tracks
-//! byte-level initialization state. For production, RealHeap performs actual
-//! memory operations with zero overhead.
+//! byte-level initialization state.
 //!
 //! Unlike the old Backend trait which tracked per-slot state, this Heap trait
 //! models actual pointer arithmetic and byte-range initialization, which is
@@ -276,88 +273,6 @@ impl<S: IShape> IHeap<S> for VerifiedHeap<S> {
 }
 
 // ============================================================================
-// RealHeap - production memory operations
-// ============================================================================
-
-/// Real heap that performs actual memory operations.
-///
-/// This is the production heap - it allocates real memory and performs
-/// actual memcpy and drop operations. No state tracking overhead.
-///
-/// Unlike VerifiedHeap which tracks everything for proofs, RealHeap
-/// trusts that callers follow the contract. Violating the contract is UB.
-#[derive(Debug)]
-pub struct RealHeap<S> {
-    _marker: core::marker::PhantomData<S>,
-}
-
-impl<S> RealHeap<S> {
-    /// Create a new real heap.
-    pub const fn new() -> Self {
-        Self {
-            _marker: core::marker::PhantomData,
-        }
-    }
-}
-
-impl<S> Default for RealHeap<S> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<S: IShape> IHeap<S> for RealHeap<S> {
-    type Ptr = *mut u8;
-
-    fn alloc(&mut self, shape: S) -> *mut u8 {
-        let layout = shape.layout().expect("IShape requires sized types");
-        if layout.size() == 0 {
-            // ZST - don't allocate, use dangling but aligned pointer
-            layout.align() as *mut u8
-        } else {
-            // SAFETY: layout.size() > 0
-            let ptr = unsafe { std::alloc::alloc(layout) };
-            if ptr.is_null() {
-                std::alloc::handle_alloc_error(layout);
-            }
-            ptr
-        }
-    }
-
-    fn dealloc(&mut self, ptr: *mut u8, shape: S) {
-        let layout = shape.layout().expect("IShape requires sized types");
-        if layout.size() > 0 {
-            // SAFETY: caller guarantees this is a live allocation
-            unsafe { std::alloc::dealloc(ptr, layout) };
-        }
-    }
-
-    fn memcpy(&mut self, dst: *mut u8, src: *mut u8, len: usize) {
-        if len > 0 {
-            // SAFETY: caller guarantees non-overlapping, valid pointers
-            unsafe {
-                core::ptr::copy_nonoverlapping(src, dst, len);
-            }
-        }
-    }
-
-    unsafe fn drop_in_place(&mut self, ptr: *mut u8, shape: S) {
-        // Use the shape's drop_in_place method
-        unsafe { shape.drop_in_place(ptr) };
-    }
-
-    fn mark_init(&mut self, _ptr: *mut u8, _len: usize) {
-        // No-op in production - we trust the caller
-    }
-
-    fn is_init(&self, _ptr: *mut u8, _len: usize) -> bool {
-        // RealHeap doesn't track this - caller must know
-        // This method shouldn't really be called on RealHeap
-        panic!("RealHeap::is_init should not be called - caller must track init state")
-    }
-}
-
-// ============================================================================
 // Tests
 // ============================================================================
 
@@ -604,61 +519,6 @@ mod tests {
         // Dealloc the single outer allocation
         heap.dealloc(outer_ptr, outer_shape);
         heap.assert_no_leaks();
-    }
-
-    // --- RealHeap tests ---
-
-    #[test]
-    fn real_alloc_dealloc() {
-        let mut store = DynShapeStore::new();
-        let h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
-        let shape = store.view(h);
-
-        let mut heap: RealHeap<S<'_>> = RealHeap::new();
-        let ptr = heap.alloc(shape);
-
-        // Write something to verify memory is usable
-        unsafe {
-            core::ptr::write(ptr as *mut u32, 42);
-            assert_eq!(core::ptr::read(ptr as *const u32), 42);
-        }
-
-        heap.dealloc(ptr, shape);
-    }
-
-    #[test]
-    fn real_zst_alloc_dealloc() {
-        let mut store = DynShapeStore::new();
-        let h = store.add(DynShapeDef::scalar(Layout::new::<()>()));
-        let shape = store.view(h);
-
-        let mut heap: RealHeap<S<'_>> = RealHeap::new();
-        let ptr = heap.alloc(shape);
-
-        // ZST should have non-null aligned pointer
-        assert!(!ptr.is_null());
-
-        heap.dealloc(ptr, shape);
-    }
-
-    #[test]
-    fn real_memcpy() {
-        let mut store = DynShapeStore::new();
-        let h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
-        let shape = store.view(h);
-
-        let mut heap: RealHeap<S<'_>> = RealHeap::new();
-        let src = heap.alloc(shape);
-        let dst = heap.alloc(shape);
-
-        unsafe {
-            core::ptr::write(src as *mut u32, 12345);
-            heap.memcpy(dst, src, 4);
-            assert_eq!(core::ptr::read(dst as *const u32), 12345);
-        }
-
-        heap.dealloc(src, shape);
-        heap.dealloc(dst, shape);
     }
 }
 

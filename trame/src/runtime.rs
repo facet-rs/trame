@@ -5,11 +5,13 @@ mod verified;
 
 use std::{alloc::Layout, marker::PhantomData};
 
+use crate::node::Node;
+
 /// A heap and a shape implementation, over which Trame can be parameterized
 pub(crate) trait IRuntime {
     type Shape: IShape;
     type Heap: IHeap<Self::Shape>;
-    type Arena: IArena;
+    type Arena: IArena<Node<Self::Heap, Self::Shape>>;
 }
 
 // ==================================================================

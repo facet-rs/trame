@@ -3,7 +3,7 @@
 
 use facet_core::{Field, Shape, StructType, Type, UserType};
 
-use crate::runtime::{IField, IShape, IShapeStore, IStructType};
+use crate::runtime::{IArena, IField, IHeap, IShape, IShapeStore, IStructType, Idx};
 
 // ==================================================================
 // Shape
@@ -93,10 +93,135 @@ impl IField for &'static Field {
 // Heap
 // ==================================================================
 
-// TODO: import from arena.rs + ptr.rs, rename to LHeap
+/// Live heap that performs actual memory operations.
+#[derive(Debug)]
+pub struct LHeap<S> {
+    _marker: core::marker::PhantomData<S>,
+}
+
+impl<S> LHeap<S> {
+    /// Create a new live heap.
+    pub const fn new() -> Self {
+        Self {
+            _marker: core::marker::PhantomData,
+        }
+    }
+}
+
+impl<S> Default for LHeap<S> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<S: IShape> IHeap<S> for LHeap<S> {
+    type Ptr = *mut u8;
+
+    unsafe fn alloc(&mut self, shape: S) -> *mut u8 {
+        let layout = shape.layout();
+        if let Some(layout) = layout {
+            if layout.size() == 0 {
+                // "Note that layouts are not required to have non-zero size, even though
+                // GlobalAlloc requires that all memory requests be non-zero in size. A caller
+                // must either ensure that conditions like this are met, use specific allocators
+                // with looser requirements, or use the more lenient Allocator interface"
+                // (std::alloc::Layout)
+                // https://doc.rust-lang.org/stable/std/alloc/struct.Layout.html
+                // ZST - no allocation required
+                core::ptr::NonNull::dangling().as_ptr()
+            } else {
+                // SAFETY: layout.size() > 0
+                let ptr = unsafe { std::alloc::alloc(layout) };
+                if ptr.is_null() {
+                    std::alloc::handle_alloc_error(layout);
+                }
+                ptr
+            }
+        } else {
+            // No layout available (e.g., ZST/unsized) - return dangling.
+            core::ptr::NonNull::dangling().as_ptr()
+        }
+    }
+
+    unsafe fn dealloc(&mut self, ptr: *mut u8, shape: S) {
+        if let Some(layout) = shape.layout() {
+            if layout.size() > 0 {
+                // SAFETY: caller guarantees this is a live allocation
+                unsafe { std::alloc::dealloc(ptr, layout) };
+            }
+        }
+    }
+
+    unsafe fn memcpy(&mut self, dst: *mut u8, src: *mut u8, len: usize) {
+        if len > 0 {
+            // SAFETY: caller guarantees non-overlapping, valid pointers
+            unsafe {
+                core::ptr::copy_nonoverlapping(src, dst, len);
+            }
+        }
+    }
+
+    unsafe fn drop_in_place(&mut self, ptr: *mut u8, shape: S) {
+        // Use the shape's drop_in_place method
+        unsafe { shape.drop_in_place(ptr) };
+    }
+}
 
 // ==================================================================
 // Arena
 // ==================================================================
 
-// TODO: import from arena.rs, rename to LArena
+/// Vec-based arena with free list for production use.
+pub struct LArena<T> {
+    slots: Vec<Option<T>>,
+    free_list: Vec<u32>,
+}
+
+impl<T> LArena<T> {
+    /// Create a new live arena.
+    pub fn new() -> Self {
+        Self {
+            slots: vec![None], // Slot 0 reserved for NOT_STARTED
+            free_list: Vec::new(),
+        }
+    }
+}
+
+impl<T> Default for LArena<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> IArena<T> for LArena<T> {
+    fn alloc(&mut self, value: T) -> Idx<T> {
+        let raw = if let Some(idx) = self.free_list.pop() {
+            debug_assert!(self.slots[idx as usize].is_none());
+            self.slots[idx as usize] = Some(value);
+            idx
+        } else {
+            let idx = self.slots.len();
+            assert!(idx < u32::MAX as usize, "arena full");
+            self.slots.push(Some(value));
+            idx as u32
+        };
+        Idx::from_raw(raw)
+    }
+
+    fn free(&mut self, id: Idx<T>) -> T {
+        debug_assert!(id.is_valid());
+        let value = self.slots[id.index()].take().expect("double-free");
+        self.free_list.push(id.raw);
+        value
+    }
+
+    fn get(&self, id: Idx<T>) -> &T {
+        debug_assert!(id.is_valid());
+        self.slots[id.index()].as_ref().expect("slot empty")
+    }
+
+    fn get_mut(&mut self, id: Idx<T>) -> &mut T {
+        debug_assert!(id.is_valid());
+        self.slots[id.index()].as_mut().expect("slot empty")
+    }
+}

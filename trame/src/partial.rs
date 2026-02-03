@@ -17,75 +17,79 @@ pub const MAX_FRAME_FIELDS: usize = 8;
 // FieldState - tracks which fields are initialized
 // ============================================================================
 
+/// Tracks per-field state within a struct frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FieldSlot<F> {
+    /// Field not touched.
+    Untracked,
+    /// Field fully initialized (no child frame).
+    Complete,
+    /// Field has a child frame (staged or complete).
+    Child(Idx<F>),
+}
+
 /// Tracks initialization state of struct fields.
-///
-/// Each field slot is either:
-/// - `Idx::NOT_STARTED` - field not touched
-/// - `Idx::COMPLETE` - field fully initialized
-/// - Valid `Idx<Frame>` - in-progress child frame
 #[derive(Debug, Clone, Copy)]
-pub struct FieldStates<F> {
+struct FieldStates<F> {
     /// State of each field.
-    slots: [Idx<F>; MAX_FRAME_FIELDS],
+    slots: [FieldSlot<F>; MAX_FRAME_FIELDS],
     /// Number of fields in the struct.
-    pub count: u8,
+    count: u8,
 }
 
 impl<F> FieldStates<F> {
     /// Create field states for a struct with `count` fields.
-    pub fn new(count: usize) -> Self {
+    fn new(count: usize) -> Self {
         assert!(count <= MAX_FRAME_FIELDS, "too many fields");
         Self {
-            slots: [Idx::NOT_STARTED; MAX_FRAME_FIELDS],
+            slots: [FieldSlot::Untracked; MAX_FRAME_FIELDS],
             count: count as u8,
         }
     }
 
     /// Mark a field as complete (initialized).
-    pub fn mark_complete(&mut self, idx: usize) {
+    fn mark_complete(&mut self, idx: usize) {
         debug_assert!(idx < self.count as usize);
-        self.slots[idx] = Idx::COMPLETE;
+        self.slots[idx] = FieldSlot::Complete;
     }
 
     /// Mark a field as not started.
-    pub fn mark_not_started(&mut self, idx: usize) {
+    fn mark_not_started(&mut self, idx: usize) {
         debug_assert!(idx < self.count as usize);
-        self.slots[idx] = Idx::NOT_STARTED;
+        self.slots[idx] = FieldSlot::Untracked;
     }
 
     /// Set a field's child frame index.
-    pub fn set_child(&mut self, idx: usize, child: Idx<F>) {
+    fn set_child(&mut self, idx: usize, child: Idx<F>) {
         debug_assert!(idx < self.count as usize);
-        self.slots[idx] = child;
+        self.slots[idx] = FieldSlot::Child(child);
     }
 
     /// Get a field's child frame index, if it has one.
-    pub fn get_child(&self, idx: usize) -> Option<Idx<F>> {
+    fn get_child(&self, idx: usize) -> Option<Idx<F>> {
         debug_assert!(idx < self.count as usize);
-        let slot = self.slots[idx];
-        if slot.is_valid() { Some(slot) } else { None }
+        match self.slots[idx] {
+            FieldSlot::Child(child) => Some(child),
+            _ => None,
+        }
     }
 
     /// Check if a field is complete (initialized).
-    pub fn is_init(&self, idx: usize) -> bool {
+    fn is_init(&self, idx: usize) -> bool {
         debug_assert!(idx < self.count as usize);
-        self.slots[idx].is_complete()
+        matches!(self.slots[idx], FieldSlot::Complete)
     }
 
     /// Check if a field is not started.
-    pub fn is_not_started(&self, idx: usize) -> bool {
+    fn is_not_started(&self, idx: usize) -> bool {
         debug_assert!(idx < self.count as usize);
-        self.slots[idx] == Idx::NOT_STARTED
+        matches!(self.slots[idx], FieldSlot::Untracked)
     }
 
-    /// Check if all fields are complete.
-    pub fn all_init(&self) -> bool {
-        (0..self.count as usize).all(|i| self.slots[i].is_complete())
-    }
-
-    /// Iterate over complete field indices.
-    pub fn iter_init(&self) -> impl Iterator<Item = usize> + '_ {
-        (0..self.count as usize).filter(|&i| self.slots[i].is_complete())
+    /// Get the raw slot for a field.
+    fn slot(&self, idx: usize) -> FieldSlot<F> {
+        debug_assert!(idx < self.count as usize);
+        self.slots[idx]
     }
 }
 
@@ -95,39 +99,42 @@ impl<F> FieldStates<F> {
 
 /// What kind of value a frame is building.
 #[derive(Debug, Clone, Copy)]
-pub enum FrameKind<F> {
+enum FrameKind<F> {
     /// Scalar value (no internal structure).
     Scalar { initialized: bool },
     /// Struct with tracked fields.
     Struct { fields: FieldStates<F> },
 }
 
-impl<F> FrameKind<F> {
-    /// Check if the frame is fully initialized.
-    pub fn is_complete(&self) -> bool {
-        match self {
-            FrameKind::Scalar { initialized } => *initialized,
-            FrameKind::Struct { fields } => fields.all_init(),
-        }
-    }
-}
+impl<F> FrameKind<F> {}
 
 // ============================================================================
 // Frame - a node in the construction tree
 // ============================================================================
 
+/// Completion state for a frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameState {
+    /// Frame exists but has not been finalized.
+    Staged,
+    /// Frame has been finalized (complete).
+    Complete,
+}
+
 /// A frame tracking construction of a single value.
-pub struct Frame<H: Heap<S>, S: IShape> {
+struct Frame<H: Heap<S>, S: IShape> {
     /// Pointer to this frame's data.
-    pub data: H::Ptr,
+    data: H::Ptr,
     /// Shape of the value being built.
-    pub shape: S,
+    shape: S,
     /// What kind of value and its init state.
-    pub kind: FrameKind<Self>,
+    kind: FrameKind<Self>,
+    /// Whether the frame has been finalized.
+    state: FrameState,
     /// Parent frame index (NOT_STARTED if root).
-    pub parent: Idx<Self>,
+    parent: Idx<Self>,
     /// Field index within parent (if applicable).
-    pub field_in_parent: u32,
+    field_in_parent: u32,
 }
 
 impl<H: Heap<S>, S: IShape> Frame<H, S> {
@@ -143,11 +150,12 @@ impl<H: Heap<S>, S: IShape> Frame<H, S> {
     }
 
     /// Create a new root frame.
-    pub fn new_root(data: H::Ptr, shape: S) -> Self {
+    fn new_root(data: H::Ptr, shape: S) -> Self {
         Self {
             data,
             shape,
             kind: Self::kind_for_shape(shape),
+            state: FrameState::Staged,
             parent: Idx::NOT_STARTED,
             field_in_parent: 0,
         }
@@ -444,7 +452,19 @@ where
                         }
 
                         if let Some(child) = child_idx {
-                            // Re-enter an existing staged child frame.
+                            let state = self.arena.get(child).state;
+                            if state == FrameState::Staged {
+                                // Re-enter an existing staged child frame.
+                                self.current = child;
+                                return Ok(());
+                            }
+                            // Child is complete: clear it and restart staging.
+                            self.cleanup_frame(child);
+                            {
+                                let child_frame = self.arena.get_mut(child);
+                                child_frame.kind = Frame::<H, S>::kind_for_shape(child_frame.shape);
+                                child_frame.state = FrameState::Staged;
+                            }
                             self.current = child;
                             return Ok(());
                         }
@@ -453,6 +473,7 @@ where
                             data: dst,
                             shape: field_shape,
                             kind: Frame::<H, S>::kind_for_shape(field_shape),
+                            state: FrameState::Staged,
                             parent: target_idx,
                             field_in_parent: field_idx as u32,
                         };
@@ -483,6 +504,28 @@ where
         false
     }
 
+    fn frame_is_complete(&self, idx: Idx<Frame<H, S>>) -> bool {
+        let frame = self.arena.get(idx);
+        match &frame.kind {
+            FrameKind::Scalar { initialized } => *initialized,
+            FrameKind::Struct { fields } => {
+                for i in 0..(fields.count as usize) {
+                    match fields.slot(i) {
+                        FieldSlot::Untracked => return false,
+                        FieldSlot::Complete => {}
+                        FieldSlot::Child(child) => {
+                            let child_frame = self.arena.get(child);
+                            if child_frame.state != FrameState::Complete {
+                                return false;
+                            }
+                        }
+                    }
+                }
+                true
+            }
+        }
+    }
+
     pub fn apply(&mut self, op: Op<'_, H::Ptr>) -> Result<(), PartialError> {
         self.check_poisoned()?;
 
@@ -505,7 +548,7 @@ where
         let frame = self.arena.get(self.current);
 
         // Check current frame is complete
-        if !frame.kind.is_complete() {
+        if !self.frame_is_complete(self.current) {
             return Err(PartialError::CurrentIncomplete);
         }
 
@@ -517,11 +560,9 @@ where
 
         let field_in_parent = frame.field_in_parent as usize;
 
-        // Mark the field as complete in parent
-        let parent = self.arena.get_mut(parent_idx);
-        if let FrameKind::Struct { fields } = &mut parent.kind {
-            fields.mark_complete(field_in_parent);
-        }
+        // Mark this frame as complete.
+        let frame = self.arena.get_mut(self.current);
+        frame.state = FrameState::Complete;
 
         // Move cursor back to parent
         self.current = parent_idx;
@@ -549,8 +590,7 @@ where
         if self.poisoned {
             return false;
         }
-        let frame = self.arena.get(self.current);
-        frame.kind.is_complete()
+        self.frame_is_complete(self.current)
     }
 
     /// Build the value, returning ownership of heap and arena.
@@ -559,8 +599,7 @@ where
     pub fn build(self) -> Result<(H, A, H::Ptr), PartialError> {
         self.check_poisoned()?;
 
-        let frame = self.arena.get(self.current);
-        if !frame.kind.is_complete() {
+        if !self.frame_is_complete(self.current) {
             return Err(PartialError::Incomplete);
         }
 
@@ -591,12 +630,14 @@ where
             return;
         }
 
-        // Collect children first to avoid borrow issues
-        let mut children = [Idx::NOT_STARTED; MAX_FRAME_FIELDS];
-        let mut child_count = 0;
+        let frame = self.arena.get(idx);
+        if frame.state == FrameState::Complete {
+            unsafe { self.heap.drop_in_place(frame.data, frame.shape) };
+        } else {
+            // Collect children first to avoid borrow issues
+            let mut children = [Idx::NOT_STARTED; MAX_FRAME_FIELDS];
+            let mut child_count = 0;
 
-        {
-            let frame = self.arena.get(idx);
             if let FrameKind::Struct { fields } = &frame.kind {
                 for i in 0..(fields.count as usize) {
                     if let Some(child_idx) = fields.get_child(i) {
@@ -605,27 +646,28 @@ where
                     }
                 }
             }
-        }
 
-        // Recursively clean up children first (depth-first)
-        for i in 0..child_count {
-            self.cleanup_frame(children[i]);
-        }
-
-        // Now clean up this frame's initialized slots
-        let frame = self.arena.get(idx);
-        match &frame.kind {
-            FrameKind::Scalar { initialized: true } => {
-                unsafe { self.heap.drop_in_place(frame.data, frame.shape) };
+            // Recursively clean up children first (depth-first)
+            for i in 0..child_count {
+                self.cleanup_frame(children[i]);
             }
-            FrameKind::Struct { fields } => {
-                for i in fields.iter_init() {
-                    let (field_shape, ptr, _size) = Self::field_ptr(frame, i)
-                        .expect("field metadata should be valid during cleanup");
-                    unsafe { self.heap.drop_in_place(ptr, field_shape) };
+
+            // Now clean up this frame's initialized slots
+            match &frame.kind {
+                FrameKind::Scalar { initialized: true } => {
+                    unsafe { self.heap.drop_in_place(frame.data, frame.shape) };
                 }
+                FrameKind::Struct { fields } => {
+                    for i in 0..(fields.count as usize) {
+                        if matches!(fields.slot(i), FieldSlot::Complete) {
+                            let (field_shape, ptr, _size) = Self::field_ptr(frame, i)
+                                .expect("field metadata should be valid during cleanup");
+                            unsafe { self.heap.drop_in_place(ptr, field_shape) };
+                        }
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         }
 
         // Only root owns the allocation.

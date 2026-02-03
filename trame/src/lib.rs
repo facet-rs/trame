@@ -19,13 +19,15 @@
 // about what our public interface is.
 mod arena;
 mod byte_range;
-mod dyn_shape;
 mod heap;
+mod node;
 mod ops;
-mod partial;
 mod ptr;
+mod runtime;
+mod shape;
+mod trame;
 
 pub use arena::RealArena;
 pub use heap::RealHeap;
 pub use ops::{Op, Path, PathSegment, Source};
-pub use partial::{Partial, PartialError};
+pub use trame::{PartialError, Trame};

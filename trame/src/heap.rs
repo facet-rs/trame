@@ -14,79 +14,11 @@
 //! needed for nested struct construction without separate allocations.
 
 use crate::byte_range::{ByteRangeError, ByteRangeTracker};
-use crate::dyn_shape::{IField, IShape, IStructType};
-use crate::ptr::{Ptr, PtrLike};
+use crate::ptr::{IPtr, Ptr};
+use crate::shape::{IField, IShape, IStructType};
 
 /// Maximum number of allocations tracked by VerifiedHeap.
 pub const MAX_ALLOCS: usize = 8;
-
-/// Heap for memory operations, generic over shape type.
-///
-/// This trait models what actually happens in production:
-/// - Allocations are contiguous byte regions
-/// - Pointers are addresses into those regions
-/// - Initialization happens via `memcpy`
-/// - The verified heap catches safety bugs by tracking byte ranges
-pub trait Heap<S: IShape> {
-    /// Pointer type used by this heap.
-    type Ptr: PtrLike;
-
-    /// Allocate a region for a value of the given shape.
-    ///
-    /// Returns a pointer to the start of the allocation.
-    /// The entire region starts as uninitialized.
-    /// The shape is stored for verification on dealloc/drop_in_place.
-    fn alloc(&mut self, shape: S) -> Self::Ptr;
-
-    /// Deallocate a region.
-    ///
-    /// # Requirements
-    /// - The pointer must point to the start of an allocation (offset 0).
-    /// - The entire region must be uninitialized (all drops completed).
-    /// - Shape must match the shape passed to alloc.
-    ///
-    /// # Panics (VerifiedHeap)
-    /// Panics if any of the requirements are violated.
-    fn dealloc(&mut self, ptr: Self::Ptr, shape: S);
-
-    /// Copy `len` bytes from `src` to `dst`.
-    ///
-    /// # Requirements
-    /// - `dst` range must be uninitialized (catches forgotten drops)
-    /// - `src` range must be initialized (catches use of uninit memory)
-    /// - After copy, `dst` range is marked initialized
-    /// - `src` range remains initialized (it's a copy, not a move)
-    ///
-    /// # Panics (VerifiedHeap)
-    /// Panics if requirements are violated.
-    fn memcpy(&mut self, dst: Self::Ptr, src: Self::Ptr, len: usize);
-
-    /// Drop the value at `ptr` and mark the range as uninitialized.
-    ///
-    /// # Requirements
-    /// - Range must be initialized
-    /// - After drop, range is marked uninitialized
-    /// - Shape must match the shape passed to alloc
-    ///
-    /// For RealHeap: calls the shape's drop_in_place vtable function.
-    /// For VerifiedHeap: verifies shape matches, then updates ByteRangeTracker.
-    ///
-    /// # Safety
-    /// The caller must ensure the shape matches the actual type at `ptr`.
-    unsafe fn drop_in_place(&mut self, ptr: Self::Ptr, shape: S);
-
-    /// Mark a byte range as initialized without copying data.
-    ///
-    /// This is used when data is written directly (e.g., via Default::default()).
-    ///
-    /// # Requirements
-    /// - Range must be uninitialized
-    /// - After call, range is marked initialized
-    fn mark_init(&mut self, ptr: Self::Ptr, len: usize);
-
-    /// Check if a byte range is initialized.
-    fn is_init(&self, ptr: Self::Ptr, len: usize) -> bool;
-}
 
 // ============================================================================
 // VerifiedHeap - state tracking for Kani proofs
@@ -193,7 +125,7 @@ impl<S: IShape> VerifiedHeap<S> {
     }
 }
 
-impl<S: IShape> Heap<S> for VerifiedHeap<S> {
+impl<S: IShape> IHeap<S> for VerifiedHeap<S> {
     type Ptr = Ptr;
 
     fn alloc(&mut self, shape: S) -> Ptr {
@@ -368,7 +300,7 @@ impl<S> Default for RealHeap<S> {
     }
 }
 
-impl<S: IShape> Heap<S> for RealHeap<S> {
+impl<S: IShape> IHeap<S> for RealHeap<S> {
     type Ptr = *mut u8;
 
     fn alloc(&mut self, shape: S) -> *mut u8 {
@@ -426,7 +358,7 @@ impl<S: IShape> Heap<S> for RealHeap<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dyn_shape::{DynShapeDef, DynShapeStore, DynShapeView};
+    use crate::shape::{DynShapeDef, DynShapeStore, DynShapeView};
     use core::alloc::Layout;
 
     type S<'a> = DynShapeView<'a, DynShapeStore>;
@@ -727,7 +659,7 @@ mod tests {
 #[cfg(kani)]
 mod kani_proofs {
     use super::*;
-    use crate::dyn_shape::{DynShapeDef, DynShapeStore, DynShapeView};
+    use crate::shape::{DynShapeDef, DynShapeStore, DynShapeView};
     use core::alloc::Layout;
 
     type S<'a> = DynShapeView<'a, DynShapeStore>;

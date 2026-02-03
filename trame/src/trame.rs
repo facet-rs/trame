@@ -1,187 +1,35 @@
 //! Partial value construction.
 //!
-//! `Partial` manages incremental construction of a value, tracking which
+//! `Trame` manages incremental construction of a value, tracking which
 //! fields have been initialized and ensuring proper cleanup on failure.
 
-use crate::arena::{Arena, Idx};
-use crate::dyn_shape::{IField, IShape, IStructType};
-use crate::heap::Heap;
+use crate::arena::{IArena, Idx};
+use crate::heap::IHeap;
 use crate::ops::{Op, Path, PathSegment, Source};
-use crate::ptr::{PtrAsMut, PtrLike};
+use crate::ptr::{IPtr, PtrAsMut};
+use crate::shape::{IField, IShape, IStructType};
 use core::marker::PhantomData;
 
-/// Maximum fields tracked per frame (for verification).
-pub const MAX_FRAME_FIELDS: usize = 8;
-
 // ============================================================================
-// FieldState - tracks which fields are initialized
-// ============================================================================
-
-/// Tracks per-field state within a struct frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FieldSlot<F> {
-    /// Field not touched.
-    Untracked,
-    /// Field fully initialized (no child frame).
-    Complete,
-    /// Field has a child frame (staged or complete).
-    Child(Idx<F>),
-}
-
-/// Tracks initialization state of struct fields.
-#[derive(Debug, Clone, Copy)]
-struct FieldStates<F> {
-    /// State of each field.
-    slots: [FieldSlot<F>; MAX_FRAME_FIELDS],
-    /// Number of fields in the struct.
-    count: u8,
-}
-
-impl<F> FieldStates<F> {
-    /// Create field states for a struct with `count` fields.
-    fn new(count: usize) -> Self {
-        assert!(count <= MAX_FRAME_FIELDS, "too many fields");
-        Self {
-            slots: [FieldSlot::Untracked; MAX_FRAME_FIELDS],
-            count: count as u8,
-        }
-    }
-
-    /// Mark a field as complete (initialized).
-    fn mark_complete(&mut self, idx: usize) {
-        debug_assert!(idx < self.count as usize);
-        self.slots[idx] = FieldSlot::Complete;
-    }
-
-    /// Mark a field as not started.
-    fn mark_not_started(&mut self, idx: usize) {
-        debug_assert!(idx < self.count as usize);
-        self.slots[idx] = FieldSlot::Untracked;
-    }
-
-    /// Set a field's child frame index.
-    fn set_child(&mut self, idx: usize, child: Idx<F>) {
-        debug_assert!(idx < self.count as usize);
-        self.slots[idx] = FieldSlot::Child(child);
-    }
-
-    /// Get a field's child frame index, if it has one.
-    fn get_child(&self, idx: usize) -> Option<Idx<F>> {
-        debug_assert!(idx < self.count as usize);
-        match self.slots[idx] {
-            FieldSlot::Child(child) => Some(child),
-            _ => None,
-        }
-    }
-
-    /// Check if a field is complete (initialized).
-    fn is_init(&self, idx: usize) -> bool {
-        debug_assert!(idx < self.count as usize);
-        matches!(self.slots[idx], FieldSlot::Complete)
-    }
-
-    /// Check if a field is not started.
-    fn is_not_started(&self, idx: usize) -> bool {
-        debug_assert!(idx < self.count as usize);
-        matches!(self.slots[idx], FieldSlot::Untracked)
-    }
-
-    /// Get the raw slot for a field.
-    fn slot(&self, idx: usize) -> FieldSlot<F> {
-        debug_assert!(idx < self.count as usize);
-        self.slots[idx]
-    }
-}
-
-// ============================================================================
-// FrameKind - what kind of value we're building
-// ============================================================================
-
-/// What kind of value a frame is building.
-#[derive(Debug, Clone, Copy)]
-enum FrameKind<F> {
-    /// Scalar value (no internal structure).
-    Scalar { initialized: bool },
-    /// Struct with tracked fields.
-    Struct { fields: FieldStates<F> },
-}
-
-impl<F> FrameKind<F> {}
-
-// ============================================================================
-// Frame - a node in the construction tree
-// ============================================================================
-
-/// Completion state for a frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FrameState {
-    /// Frame exists but has not been finalized.
-    Staged,
-    /// Frame has been finalized (complete).
-    Complete,
-}
-
-/// A frame tracking construction of a single value.
-struct Frame<H: Heap<S>, S: IShape> {
-    /// Pointer to this frame's data.
-    data: H::Ptr,
-    /// Shape of the value being built.
-    shape: S,
-    /// What kind of value and its init state.
-    kind: FrameKind<Self>,
-    /// Whether the frame has been finalized.
-    state: FrameState,
-    /// Parent frame index (NOT_STARTED if root).
-    parent: Idx<Self>,
-    /// Field index within parent (if applicable).
-    field_in_parent: u32,
-}
-
-impl<H: Heap<S>, S: IShape> Frame<H, S> {
-    /// Create the appropriate FrameKind for a shape.
-    fn kind_for_shape(shape: S) -> FrameKind<Self> {
-        if let Some(st) = shape.as_struct() {
-            FrameKind::Struct {
-                fields: FieldStates::new(st.field_count()),
-            }
-        } else {
-            FrameKind::Scalar { initialized: false }
-        }
-    }
-
-    /// Create a new root frame.
-    fn new_root(data: H::Ptr, shape: S) -> Self {
-        Self {
-            data,
-            shape,
-            kind: Self::kind_for_shape(shape),
-            state: FrameState::Staged,
-            parent: Idx::NOT_STARTED,
-            field_in_parent: 0,
-        }
-    }
-}
-
-// ============================================================================
-// Partial - the main builder
+// Trame - the main builder
 // ============================================================================
 
 /// Manages incremental construction of a value.
-pub struct Partial<H, A, S>
+pub struct Trame<H, A, S>
 where
-    H: Heap<S>,
-    H::Ptr: PtrLike + PtrAsMut,
-    A: Arena<Frame<H, S>>,
+    H: IHeap<S>,
+    H::Ptr: IPtr + PtrAsMut,
+    A: IArena<Node<H, S>>,
     S: IShape,
 {
     /// The heap for memory operations.
     heap: H,
-    /// Arena holding frames.
+    /// Arena holding Nodes.
     arena: A,
-    /// Root frame index.
-    root: Idx<Frame<H, S>>,
-    /// Current frame we're building.
-    current: Idx<Frame<H, S>>,
+    /// Root Node index.
+    root: Idx<Node<H, S>>,
+    /// Current Node we're building.
+    current: Idx<Node<H, S>>,
     /// Whether we've been poisoned (error occurred).
     poisoned: bool,
     /// Marker for shape type.
@@ -199,11 +47,11 @@ pub enum PartialError {
     FieldAlreadyInit { index: usize },
     /// Not all fields initialized when trying to build.
     Incomplete,
-    /// Current frame is not a struct.
+    /// Current Node is not a struct.
     NotAStruct,
-    /// Current frame is not complete (for `Op::End`).
+    /// Current Node is not complete (for `Op::End`).
     CurrentIncomplete,
-    /// Already at root frame (can't end).
+    /// Already at root Node (can't end).
     AtRoot,
     /// Shape mismatch.
     ShapeMismatch,
@@ -222,11 +70,11 @@ struct FieldMeta<S: IShape> {
     layout: core::alloc::Layout,
 }
 
-impl<H, A, S> Partial<H, A, S>
+impl<H, A, S> Trame<H, A, S>
 where
-    H: Heap<S>,
-    H::Ptr: PtrLike + PtrAsMut,
-    A: Arena<Frame<H, S>>,
+    H: IHeap<S>,
+    H::Ptr: IPtr + PtrAsMut,
+    A: IArena<Node<H, S>>,
     S: IShape,
 {
     /// Create a new Partial for the given shape.
@@ -235,8 +83,8 @@ where
     /// The caller must ensure the shape is valid and sized.
     pub unsafe fn new(mut heap: H, mut arena: A, shape: S) -> Self {
         let data = heap.alloc(shape);
-        let frame = Frame::new_root(data, shape);
-        let root = arena.alloc(frame);
+        let Node = Node::new_root(data, shape);
+        let root = arena.alloc(Node);
 
         Self {
             heap,
@@ -278,26 +126,27 @@ where
         })
     }
 
-    fn field_ptr(
-        frame: &Frame<H, S>,
-        field_idx: usize,
-    ) -> Result<(S, H::Ptr, usize), PartialError> {
-        let meta = Self::field_meta(frame.shape, field_idx)?;
-        let frame_size = frame.shape.layout().size();
+    fn field_ptr(Node: &Node<H, S>, field_idx: usize) -> Result<(S, H::Ptr, usize), PartialError> {
+        let meta = Self::field_meta(Node.shape, field_idx)?;
+        let Node_size = Node.shape.layout().size();
         assert!(
-            meta.offset + meta.layout.size() <= frame_size,
+            meta.offset + meta.layout.size() <= Node_size,
             "field out of bounds: {} + {} > {}",
             meta.offset,
             meta.layout.size(),
-            frame_size
+            Node_size
         );
-        Ok((meta.shape, frame.data.offset(meta.offset), meta.layout.size()))
+        Ok((
+            meta.shape,
+            Node.data.offset(meta.offset),
+            meta.layout.size(),
+        ))
     }
 
     fn resolve_path(
         &mut self,
         path: Path<'_>,
-    ) -> Result<(Idx<Frame<H, S>>, Option<usize>), PartialError> {
+    ) -> Result<(Idx<Node<H, S>>, Option<usize>), PartialError> {
         if path.is_empty() {
             return Ok((self.current, None));
         }
@@ -315,9 +164,7 @@ where
         }
 
         if segs.len() != 1 {
-            return Err(PartialError::UnsupportedPath {
-                segment: segs[0],
-            });
+            return Err(PartialError::UnsupportedPath { segment: segs[0] });
         }
 
         match segs[0] {
@@ -331,61 +178,59 @@ where
         }
     }
 
-    fn ascend_to_root(&mut self) -> Result<Idx<Frame<H, S>>, PartialError> {
+    fn ascend_to_root(&mut self) -> Result<Idx<Node<H, S>>, PartialError> {
         while self.current != self.root {
-            self.end_current_frame()?;
+            self.end_current_Node()?;
         }
         Ok(self.current)
     }
 
     fn apply_set(
         &mut self,
-        target_idx: Idx<Frame<H, S>>,
+        target_idx: Idx<Node<H, S>>,
         field_idx: Option<usize>,
         src: Source<H::Ptr>,
     ) -> Result<(), PartialError> {
-        let frame = self.arena.get(target_idx);
+        let Node = self.arena.get(target_idx);
 
         match field_idx {
-            None => {
-                match frame.kind {
-                    FrameKind::Scalar { .. } => {
-                        let size = frame.shape.layout().size();
-                        let dst = frame.data;
-                        let already_init = matches!(frame.kind, FrameKind::Scalar { initialized: true });
+            None => match Node.kind {
+                NodeKind::Scalar { .. } => {
+                    let size = Node.shape.layout().size();
+                    let dst = Node.data;
+                    let already_init = matches!(Node.kind, NodeKind::Scalar { initialized: true });
 
-                        if already_init {
-                            unsafe { self.heap.drop_in_place(dst, frame.shape) };
-                        }
-
-                        match src {
-                            Source::Imm(src_ptr) => {
-                                self.heap.memcpy(dst, src_ptr, size);
-                            }
-                            Source::Default => {
-                                if let Some(raw) = dst.as_mut_ptr() {
-                                    let ok = unsafe { frame.shape.default_in_place(raw) };
-                                    if !ok {
-                                        return Err(PartialError::DefaultUnavailable);
-                                    }
-                                }
-                                self.heap.mark_init(dst, size);
-                            }
-                            Source::Stage(_) => return Err(PartialError::UnsupportedSource),
-                        }
-
-                        let frame = self.arena.get_mut(target_idx);
-                        if let FrameKind::Scalar { initialized } = &mut frame.kind {
-                            *initialized = true;
-                        }
-                        Ok(())
+                    if already_init {
+                        unsafe { self.heap.drop_in_place(dst, Node.shape) };
                     }
-                    FrameKind::Struct { .. } => Err(PartialError::NotAStruct),
+
+                    match src {
+                        Source::Imm(src_ptr) => {
+                            self.heap.memcpy(dst, src_ptr, size);
+                        }
+                        Source::Default => {
+                            if let Some(raw) = dst.as_mut_ptr() {
+                                let ok = unsafe { Node.shape.default_in_place(raw) };
+                                if !ok {
+                                    return Err(PartialError::DefaultUnavailable);
+                                }
+                            }
+                            self.heap.mark_init(dst, size);
+                        }
+                        Source::Stage(_) => return Err(PartialError::UnsupportedSource),
+                    }
+
+                    let Node = self.arena.get_mut(target_idx);
+                    if let NodeKind::Scalar { initialized } = &mut Node.kind {
+                        *initialized = true;
+                    }
+                    Ok(())
                 }
-            }
+                NodeKind::Struct { .. } => Err(PartialError::NotAStruct),
+            },
             Some(field_idx) => {
-                let (mut child_idx, mut already_init) = match &frame.kind {
-                    FrameKind::Struct { fields } => {
+                let (mut child_idx, mut already_init) = match &Node.kind {
+                    NodeKind::Struct { fields } => {
                         if field_idx >= fields.count as usize {
                             return Err(PartialError::FieldOutOfBounds {
                                 index: field_idx,
@@ -394,19 +239,19 @@ where
                         }
                         (fields.get_child(field_idx), fields.is_init(field_idx))
                     }
-                    FrameKind::Scalar { .. } => return Err(PartialError::NotAStruct),
+                    NodeKind::Scalar { .. } => return Err(PartialError::NotAStruct),
                 };
 
-                let (field_shape, dst, size) = Self::field_ptr(frame, field_idx)?;
+                let (field_shape, dst, size) = Self::field_ptr(Node, field_idx)?;
 
                 if let Some(child) = child_idx {
                     if matches!(src, Source::Imm(_) | Source::Default) {
                         // We are overwriting a staged field: drop any initialized subfields.
-                        self.cleanup_frame(child);
+                        self.cleanup_Node(child);
                         if self.current_in_subtree(child) {
                             self.current = target_idx;
                         }
-                        if let FrameKind::Struct { fields } =
+                        if let NodeKind::Struct { fields } =
                             &mut self.arena.get_mut(target_idx).kind
                         {
                             fields.mark_not_started(field_idx);
@@ -418,7 +263,7 @@ where
 
                 if already_init {
                     unsafe { self.heap.drop_in_place(dst, field_shape) };
-                    if let FrameKind::Struct { fields } = &mut self.arena.get_mut(target_idx).kind {
+                    if let NodeKind::Struct { fields } = &mut self.arena.get_mut(target_idx).kind {
                         fields.mark_not_started(field_idx);
                     }
                 }
@@ -426,7 +271,8 @@ where
                 match src {
                     Source::Imm(src_ptr) => {
                         self.heap.memcpy(dst, src_ptr, size);
-                        if let FrameKind::Struct { fields } = &mut self.arena.get_mut(target_idx).kind
+                        if let NodeKind::Struct { fields } =
+                            &mut self.arena.get_mut(target_idx).kind
                         {
                             fields.mark_complete(field_idx);
                         }
@@ -440,7 +286,8 @@ where
                             }
                         }
                         self.heap.mark_init(dst, size);
-                        if let FrameKind::Struct { fields } = &mut self.arena.get_mut(target_idx).kind
+                        if let NodeKind::Struct { fields } =
+                            &mut self.arena.get_mut(target_idx).kind
                         {
                             fields.mark_complete(field_idx);
                         }
@@ -453,37 +300,38 @@ where
 
                         if let Some(child) = child_idx {
                             let state = self.arena.get(child).state;
-                            if state == FrameState::Staged {
-                                // Re-enter an existing staged child frame.
+                            if state == NodeState::Staged {
+                                // Re-enter an existing staged child Node.
                                 self.current = child;
                                 return Ok(());
                             }
                             // Child is complete: clear it and restart staging.
-                            self.cleanup_frame(child);
+                            self.cleanup_Node(child);
                             {
-                                let child_frame = self.arena.get_mut(child);
-                                child_frame.kind = Frame::<H, S>::kind_for_shape(child_frame.shape);
-                                child_frame.state = FrameState::Staged;
+                                let child_Node = self.arena.get_mut(child);
+                                child_Node.kind = Node::<H, S>::kind_for_shape(child_Node.shape);
+                                child_Node.state = NodeState::Staged;
                             }
                             self.current = child;
                             return Ok(());
                         }
 
-                        let child_frame = Frame {
+                        let child_Node = Node {
                             data: dst,
                             shape: field_shape,
-                            kind: Frame::<H, S>::kind_for_shape(field_shape),
-                            state: FrameState::Staged,
+                            kind: Node::<H, S>::kind_for_shape(field_shape),
+                            state: NodeState::Staged,
                             parent: target_idx,
                             field_in_parent: field_idx as u32,
                         };
 
-                        let child_idx = self.arena.alloc(child_frame);
-                        if let FrameKind::Struct { fields } = &mut self.arena.get_mut(target_idx).kind
+                        let child_idx = self.arena.alloc(child_Node);
+                        if let NodeKind::Struct { fields } =
+                            &mut self.arena.get_mut(target_idx).kind
                         {
                             fields.set_child(field_idx, child_idx);
                         }
-                        // Move the cursor to the child frame.
+                        // Move the cursor to the child Node.
                         self.current = child_idx;
                         Ok(())
                     }
@@ -492,30 +340,30 @@ where
         }
     }
 
-    fn current_in_subtree(&self, ancestor: Idx<Frame<H, S>>) -> bool {
+    fn current_in_subtree(&self, ancestor: Idx<Node<H, S>>) -> bool {
         let mut idx = self.current;
         while idx.is_valid() {
             if idx == ancestor {
                 return true;
             }
-            let frame = self.arena.get(idx);
-            idx = frame.parent;
+            let Node = self.arena.get(idx);
+            idx = Node.parent;
         }
         false
     }
 
-    fn frame_is_complete(&self, idx: Idx<Frame<H, S>>) -> bool {
-        let frame = self.arena.get(idx);
-        match &frame.kind {
-            FrameKind::Scalar { initialized } => *initialized,
-            FrameKind::Struct { fields } => {
+    fn Node_is_complete(&self, idx: Idx<Node<H, S>>) -> bool {
+        let Node = self.arena.get(idx);
+        match &Node.kind {
+            NodeKind::Scalar { initialized } => *initialized,
+            NodeKind::Struct { fields } => {
                 for i in 0..(fields.count as usize) {
                     match fields.slot(i) {
                         FieldSlot::Untracked => return false,
                         FieldSlot::Complete => {}
                         FieldSlot::Child(child) => {
-                            let child_frame = self.arena.get(child);
-                            if child_frame.state != FrameState::Complete {
+                            let child_Node = self.arena.get(child);
+                            if child_Node.state != NodeState::Complete {
                                 return false;
                             }
                         }
@@ -530,7 +378,7 @@ where
         self.check_poisoned()?;
 
         match op {
-            Op::End => self.end_current_frame(),
+            Op::End => self.end_current_Node(),
             Op::Set { dst, src } => {
                 let (target, field_idx) = self.resolve_path(dst)?;
                 self.apply_set(target, field_idx, src)
@@ -538,31 +386,31 @@ where
         }
     }
 
-    /// End constructing the current frame and move the cursor to the parent.
+    /// End constructing the current Node and move the cursor to the parent.
     ///
-    /// This marks the field as initialized in the parent frame and pops back.
-    /// The current frame must be complete.
-    fn end_current_frame(&mut self) -> Result<(), PartialError> {
+    /// This marks the field as initialized in the parent Node and pops back.
+    /// The current Node must be complete.
+    fn end_current_Node(&mut self) -> Result<(), PartialError> {
         self.check_poisoned()?;
 
-        let frame = self.arena.get(self.current);
+        let Node = self.arena.get(self.current);
 
-        // Check current frame is complete
-        if !self.frame_is_complete(self.current) {
+        // Check current Node is complete
+        if !self.Node_is_complete(self.current) {
             return Err(PartialError::CurrentIncomplete);
         }
 
         // Check we're not at root
-        let parent_idx = frame.parent;
+        let parent_idx = Node.parent;
         if !parent_idx.is_valid() {
             return Err(PartialError::AtRoot);
         }
 
-        let field_in_parent = frame.field_in_parent as usize;
+        let field_in_parent = Node.field_in_parent as usize;
 
-        // Mark this frame as complete.
-        let frame = self.arena.get_mut(self.current);
-        frame.state = FrameState::Complete;
+        // Mark this Node as complete.
+        let Node = self.arena.get_mut(self.current);
+        Node.state = NodeState::Complete;
 
         // Move cursor back to parent
         self.current = parent_idx;
@@ -575,22 +423,22 @@ where
         let mut depth = 0;
         let mut idx = self.current;
         while idx.is_valid() {
-            let frame = self.arena.get(idx);
-            if !frame.parent.is_valid() {
+            let Node = self.arena.get(idx);
+            if !Node.parent.is_valid() {
                 break;
             }
             depth += 1;
-            idx = frame.parent;
+            idx = Node.parent;
         }
         depth
     }
 
-    /// Check if the current frame is complete.
+    /// Check if the current Node is complete.
     pub fn is_complete(&self) -> bool {
         if self.poisoned {
             return false;
         }
-        self.frame_is_complete(self.current)
+        self.Node_is_complete(self.current)
     }
 
     /// Build the value, returning ownership of heap and arena.
@@ -599,11 +447,11 @@ where
     pub fn build(self) -> Result<(H, A, H::Ptr), PartialError> {
         self.check_poisoned()?;
 
-        if !self.frame_is_complete(self.current) {
+        if !self.Node_is_complete(self.current) {
             return Err(PartialError::Incomplete);
         }
 
-        let data = frame.data;
+        let data = Node.data;
 
         // Don't run Drop - we're transferring ownership
         let heap = unsafe { core::ptr::read(&self.heap) };
@@ -621,24 +469,24 @@ where
         self.poisoned = true;
 
         // Clean up from root, depth-first (leaves before parents)
-        self.cleanup_frame(self.root);
+        self.cleanup_Node(self.root);
     }
 
-    /// Recursively clean up a frame and all its children (depth-first).
-    fn cleanup_frame(&mut self, idx: Idx<Frame<H, S>>) {
+    /// Recursively clean up a Node and all its children (depth-first).
+    fn cleanup_Node(&mut self, idx: Idx<Node<H, S>>) {
         if !idx.is_valid() {
             return;
         }
 
-        let frame = self.arena.get(idx);
-        if frame.state == FrameState::Complete {
-            unsafe { self.heap.drop_in_place(frame.data, frame.shape) };
+        let Node = self.arena.get(idx);
+        if Node.state == NodeState::Complete {
+            unsafe { self.heap.drop_in_place(Node.data, Node.shape) };
         } else {
             // Collect children first to avoid borrow issues
-            let mut children = [Idx::NOT_STARTED; MAX_FRAME_FIELDS];
+            let mut children = [Idx::NOT_STARTED; MAX_Node_FIELDS];
             let mut child_count = 0;
 
-            if let FrameKind::Struct { fields } = &frame.kind {
+            if let NodeKind::Struct { fields } = &Node.kind {
                 for i in 0..(fields.count as usize) {
                     if let Some(child_idx) = fields.get_child(i) {
                         children[child_count] = child_idx;
@@ -649,18 +497,18 @@ where
 
             // Recursively clean up children first (depth-first)
             for i in 0..child_count {
-                self.cleanup_frame(children[i]);
+                self.cleanup_Node(children[i]);
             }
 
-            // Now clean up this frame's initialized slots
-            match &frame.kind {
-                FrameKind::Scalar { initialized: true } => {
-                    unsafe { self.heap.drop_in_place(frame.data, frame.shape) };
+            // Now clean up this Node's initialized slots
+            match &Node.kind {
+                NodeKind::Scalar { initialized: true } => {
+                    unsafe { self.heap.drop_in_place(Node.data, Node.shape) };
                 }
-                FrameKind::Struct { fields } => {
+                NodeKind::Struct { fields } => {
                     for i in 0..(fields.count as usize) {
                         if matches!(fields.slot(i), FieldSlot::Complete) {
-                            let (field_shape, ptr, _size) = Self::field_ptr(frame, i)
+                            let (field_shape, ptr, _size) = Self::field_ptr(Node, i)
                                 .expect("field metadata should be valid during cleanup");
                             unsafe { self.heap.drop_in_place(ptr, field_shape) };
                         }
@@ -671,17 +519,18 @@ where
         }
 
         // Only root owns the allocation.
-        if !frame.parent.is_valid() {
-            self.heap.dealloc(frame.data, frame.shape);
+        // FIXME: ^ this isn't true. arbitrary Nodes can own their allocations
+        if !Node.parent.is_valid() {
+            self.heap.dealloc(Node.data, Node.shape);
         }
     }
 }
 
-impl<H, A, S> Drop for Partial<H, A, S>
+impl<H, A, S> Drop for Trame<H, A, S>
 where
-    H: Heap<S>,
-    H::Ptr: PtrLike + PtrAsMut,
-    A: Arena<Frame<H, S>>,
+    H: IHeap<S>,
+    H::Ptr: IPtr + PtrAsMut,
+    A: IArena<Node<H, S>>,
     S: IShape,
 {
     fn drop(&mut self) {
@@ -700,12 +549,12 @@ mod tests {
     use super::*;
     use crate::arena::VerifiedArena;
     use crate::heap::VerifiedHeap;
-    use crate::dyn_shape::{DynShapeDef, DynShapeStore, DynShapeView};
+    use crate::shape::{DynShapeDef, DynShapeStore, DynShapeView};
     use core::alloc::Layout;
 
     type S<'a> = DynShapeView<'a, DynShapeStore>;
     type TestHeap<'a> = VerifiedHeap<S<'a>>;
-    type TestArena<'a> = VerifiedArena<Frame<TestHeap<'a>, S<'a>>, 8>;
+    type TestArena<'a> = VerifiedArena<Node<TestHeap<'a>, S<'a>>, 8>;
 
     #[test]
     fn scalar_lifecycle() {
@@ -718,7 +567,7 @@ mod tests {
         heap.mark_init(src, 4);
 
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+        let mut partial = unsafe { Trame::new(heap, arena, shape) };
 
         assert!(!partial.is_complete());
         let root: [PathSegment; 0] = [];
@@ -749,7 +598,7 @@ mod tests {
         heap.mark_init(src1, 4);
 
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+        let mut partial = unsafe { Trame::new(heap, arena, shape) };
 
         assert!(!partial.is_complete());
 
@@ -793,7 +642,7 @@ mod tests {
         heap.mark_init(src2, 4);
 
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+        let mut partial = unsafe { Trame::new(heap, arena, shape) };
 
         // Init in reverse order
         let f2 = [PathSegment::Field(2)];
@@ -835,7 +684,7 @@ mod tests {
         let heap = TestHeap::new();
         let arena = TestArena::new();
 
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+        let mut partial = unsafe { Trame::new(heap, arena, shape) };
 
         let field0 = [PathSegment::Field(0)];
         partial
@@ -879,7 +728,7 @@ mod tests {
         heap.mark_init(src, 4);
 
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+        let mut partial = unsafe { Trame::new(heap, arena, shape) };
 
         let f0 = [PathSegment::Field(0)];
         partial
@@ -907,7 +756,7 @@ mod tests {
         heap.mark_init(src, 4);
 
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+        let mut partial = unsafe { Trame::new(heap, arena, shape) };
 
         let f0 = [PathSegment::Field(0)];
         partial
@@ -946,7 +795,7 @@ mod tests {
         heap.mark_init(src_b, 4);
 
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+        let mut partial = unsafe { Trame::new(heap, arena, shape) };
 
         assert_eq!(partial.depth(), 0);
         assert!(!partial.is_complete());
@@ -1012,7 +861,7 @@ mod tests {
         heap.mark_init(src, 4);
 
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+        let mut partial = unsafe { Trame::new(heap, arena, shape) };
 
         let inner_field = [PathSegment::Field(0)];
         partial
@@ -1052,7 +901,7 @@ mod tests {
         heap.mark_init(src, 4);
 
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+        let mut partial = unsafe { Trame::new(heap, arena, shape) };
 
         let inner_field = [PathSegment::Field(0)];
         partial
@@ -1092,7 +941,7 @@ mod tests {
         heap.mark_init(src, 4);
 
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+        let mut partial = unsafe { Trame::new(heap, arena, shape) };
 
         let inner_field = [PathSegment::Field(0)];
         partial
@@ -1127,7 +976,7 @@ mod tests {
         heap.mark_init(src, 4);
 
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+        let mut partial = unsafe { Trame::new(heap, arena, shape) };
 
         let f0 = [PathSegment::Field(0)];
         partial
@@ -1155,7 +1004,7 @@ mod tests {
         heap.mark_init(src, 4);
 
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+        let mut partial = unsafe { Trame::new(heap, arena, shape) };
 
         let path = [PathSegment::Field(0)];
         partial
@@ -1188,7 +1037,7 @@ mod tests {
         heap.mark_init(src2, 4);
 
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+        let mut partial = unsafe { Trame::new(heap, arena, shape) };
 
         let outer_x = [PathSegment::Field(0)];
         partial
@@ -1235,7 +1084,7 @@ mod kani_proofs {
     use super::*;
     use crate::arena::VerifiedArena;
     use crate::heap::VerifiedHeap;
-    use crate::dyn_shape::{
+    use crate::shape::{
         DynDef, DynFieldDef, DynShapeDef, DynShapeHandle, DynShapeStore, DynShapeView,
         DynStructDef, IField, IShape, IStructType, MAX_FIELDS,
     };
@@ -1243,7 +1092,7 @@ mod kani_proofs {
 
     type S<'a> = DynShapeView<'a, DynShapeStore>;
     type TestHeap<'a> = VerifiedHeap<S<'a>>;
-    type TestArena<'a> = VerifiedArena<Frame<TestHeap<'a>, S<'a>>, 4>;
+    type TestArena<'a> = VerifiedArena<Node<TestHeap<'a>, S<'a>>, 4>;
 
     #[kani::proof]
     #[kani::unwind(10)]
@@ -1257,7 +1106,7 @@ mod kani_proofs {
         heap.mark_init(src, 4);
         let arena = TestArena::new();
 
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+        let mut partial = unsafe { Trame::new(heap, arena, shape) };
 
         kani::assert(!partial.is_complete(), "not complete initially");
         let root: [PathSegment; 0] = [];
@@ -1299,7 +1148,7 @@ mod kani_proofs {
         let src = heap.alloc(scalar_shape);
         heap.mark_init(src, 4);
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+        let mut partial = unsafe { Trame::new(heap, arena, shape) };
 
         // Init all but one field
         let skip_field: u8 = kani::any();
@@ -1368,7 +1217,7 @@ mod kani_proofs {
 
         let heap = TestHeap::new();
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+        let mut partial = unsafe { Trame::new(heap, arena, shape) };
 
         let path = [PathSegment::Field(0)];
         partial
@@ -1429,7 +1278,7 @@ mod kani_proofs {
         let src = heap.alloc(scalar_shape);
         heap.mark_init(src, 4);
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+        let mut partial = unsafe { Trame::new(heap, arena, shape) };
 
         // Init only first field
         let f0 = [PathSegment::Field(0)];
@@ -1479,7 +1328,7 @@ mod kani_proofs {
         let src = heap.alloc(scalar_shape);
         heap.mark_init(src, 4);
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+        let mut partial = unsafe { Trame::new(heap, arena, shape) };
 
         // Try to init field beyond bounds
         let bad_idx: u8 = kani::any();
@@ -1530,7 +1379,7 @@ mod kani_proofs {
         heap.mark_init(src1, 4);
         heap.mark_init(src2, 4);
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+        let mut partial = unsafe { Trame::new(heap, arena, shape) };
 
         // Choose arbitrary init order
         let first: u8 = kani::any();
@@ -1623,7 +1472,7 @@ mod kani_proofs {
         heap.mark_init(src_a, 4);
         heap.mark_init(src_b, 4);
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+        let mut partial = unsafe { Trame::new(heap, arena, shape) };
 
         let outer_x = [PathSegment::Field(0)];
         partial
@@ -1707,7 +1556,7 @@ mod kani_proofs {
         heap.mark_init(src_a, 4);
         heap.mark_init(src_b, 4);
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+        let mut partial = unsafe { Trame::new(heap, arena, shape) };
 
         // Verify initial state
         kani::assert(partial.depth() == 0, "starts at depth 0");
@@ -1795,7 +1644,7 @@ mod kani_proofs {
 
         let heap = TestHeap::new();
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+        let mut partial = unsafe { Trame::new(heap, arena, shape) };
 
         let path = [PathSegment::Field(0)];
         partial
@@ -1851,7 +1700,7 @@ mod kani_proofs {
         let src = heap.alloc(scalar_shape);
         heap.mark_init(src, 4);
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+        let mut partial = unsafe { Trame::new(heap, arena, shape) };
 
         let f0 = [PathSegment::Field(0)];
         partial
@@ -1909,7 +1758,7 @@ mod kani_proofs {
         let src = heap.alloc(scalar_shape);
         heap.mark_init(src, 4);
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+        let mut partial = unsafe { Trame::new(heap, arena, shape) };
 
         let inner_field = [PathSegment::Field(0)];
         partial
@@ -1935,7 +1784,7 @@ mod kani_proofs {
         );
     }
 
-    /// Prove: drop properly cleans up nested frames (depth-first)
+    /// Prove: drop properly cleans up nested Nodes (depth-first)
     #[kani::proof]
     #[kani::unwind(12)]
     fn nested_drop_cleanup() {
@@ -1973,7 +1822,7 @@ mod kani_proofs {
         let src = heap.alloc(scalar_shape);
         heap.mark_init(src, 4);
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+        let mut partial = unsafe { Trame::new(heap, arena, shape) };
 
         // Enter nested struct
         let inner_field = [PathSegment::Field(0)];
@@ -1993,7 +1842,7 @@ mod kani_proofs {
             .unwrap();
         // Don't end - just drop
 
-        // Drop should clean up child frame before parent
+        // Drop should clean up child Node before parent
         drop(partial);
         // No panic = cleanup order is correct
     }
@@ -2036,7 +1885,7 @@ mod kani_proofs {
         let src = heap.alloc(scalar_shape);
         heap.mark_init(src, 4);
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+        let mut partial = unsafe { Trame::new(heap, arena, shape) };
 
         kani::assert(partial.depth() == 0, "initial depth is 0");
 
@@ -2076,7 +1925,7 @@ mod kani_proofs {
 
         let heap = TestHeap::new();
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+        let mut partial = unsafe { Trame::new(heap, arena, shape) };
 
         let inner_field = [PathSegment::Field(1)];
         partial
@@ -2087,13 +1936,16 @@ mod kani_proofs {
             .unwrap();
 
         let child = partial.current;
-        let child_frame = partial.arena.get(child);
-        let parent_frame = partial.arena.get(child_frame.parent);
+        let child_Node = partial.arena.get(child);
+        let parent_Node = partial.arena.get(child_Node.parent);
 
         kani::assert(
-            child_frame.data.alloc_id() == parent_frame.data.alloc_id(),
+            child_Node.data.alloc_id() == parent_Node.data.alloc_id(),
             "same allocation id",
         );
-        kani::assert(child_frame.data.offset_bytes() == 4, "offset is field offset");
+        kani::assert(
+            child_Node.data.offset_bytes() == 4,
+            "offset is field offset",
+        );
     }
 }

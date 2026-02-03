@@ -10,106 +10,6 @@ use core::marker::PhantomData;
 pub const MAX_ARENA_SLOTS: usize = 16;
 
 // ============================================================================
-// Idx - typed index into an arena
-// ============================================================================
-
-/// A typed index into an arena.
-///
-/// The phantom type prevents mixing indices from different arenas.
-#[derive(Debug)]
-pub struct Idx<T> {
-    raw: u32,
-    _ty: PhantomData<fn() -> T>,
-}
-
-impl<T> Clone for Idx<T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<T> Copy for Idx<T> {}
-
-impl<T> PartialEq for Idx<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.raw == other.raw
-    }
-}
-
-impl<T> Eq for Idx<T> {}
-
-impl<T> Idx<T> {
-    /// Sentinel: slot not started (reserved, slot 0)
-    pub const NOT_STARTED: Self = Self {
-        raw: 0,
-        _ty: PhantomData,
-    };
-
-    /// Sentinel: slot completed/freed
-    pub const COMPLETE: Self = Self {
-        raw: u32::MAX,
-        _ty: PhantomData,
-    };
-
-    #[inline]
-    pub fn is_not_started(self) -> bool {
-        self.raw == 0
-    }
-
-    #[inline]
-    pub fn is_complete(self) -> bool {
-        self.raw == u32::MAX
-    }
-
-    #[inline]
-    pub fn is_valid(self) -> bool {
-        self.raw != 0 && self.raw != u32::MAX
-    }
-
-    #[inline]
-    fn index(self) -> usize {
-        debug_assert!(self.is_valid(), "cannot get index of sentinel");
-        self.raw as usize
-    }
-
-    /// Create an index from a raw value (for internal use).
-    fn from_raw(raw: u32) -> Self {
-        Self {
-            raw,
-            _ty: PhantomData,
-        }
-    }
-}
-
-// ============================================================================
-// Arena trait
-// ============================================================================
-
-/// Arena for allocating and managing items.
-pub trait Arena<T> {
-    /// Allocate a new item, returning its index.
-    fn alloc(&mut self, value: T) -> Idx<T>;
-
-    /// Free an item, returning it.
-    ///
-    /// # Panics
-    /// Panics if the index is invalid or already freed.
-    fn free(&mut self, id: Idx<T>) -> T;
-
-    /// Get a reference to an item.
-    ///
-    /// # Panics
-    /// Panics if the index is invalid or freed.
-    fn get(&self, id: Idx<T>) -> &T;
-
-    /// Get a mutable reference to an item.
-    ///
-    /// # Panics
-    /// Panics if the index is invalid or freed.
-    fn get_mut(&mut self, id: Idx<T>) -> &mut T;
-}
-
-// ============================================================================
 // VerifiedArena - fixed-size for Kani
 // ============================================================================
 
@@ -150,7 +50,7 @@ impl<T, const N: usize> Default for VerifiedArena<T, N> {
     }
 }
 
-impl<T, const N: usize> Arena<T> for VerifiedArena<T, N> {
+impl<T, const N: usize> IArena<T> for VerifiedArena<T, N> {
     fn alloc(&mut self, value: T) -> Idx<T> {
         // Find an empty slot starting from next
         for i in self.next..N {
@@ -241,7 +141,7 @@ impl<T> Default for RealArena<T> {
     }
 }
 
-impl<T> Arena<T> for RealArena<T> {
+impl<T> IArena<T> for RealArena<T> {
     fn alloc(&mut self, value: T) -> Idx<T> {
         let raw = if let Some(idx) = self.free_list.pop() {
             debug_assert!(self.slots[idx as usize].is_none());

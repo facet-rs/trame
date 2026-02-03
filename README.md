@@ -10,11 +10,6 @@ fuzzed). The current attempt is built to be verified by
 There's nothing really useful here yet, I'm still getting used to the formal
 verification tools. But you can look around for fun for sure!
 
-## Fuzzing
-
-The `trame-ref` implementation can be fuzzed with `just fuzz` run in its
-directory. AFL++ is used under the hood.
-
 ## Verification
 
 The `trame` implementation has a bunch of Kani proofs you can run with

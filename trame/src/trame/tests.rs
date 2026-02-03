@@ -128,458 +128,454 @@ fn struct_lifecycle() {
     let _ = trame.build().unwrap();
 }
 
-//     #[test]
-//     fn struct_any_order() {
-//         let mut store = VShapeStore::new();
-//         let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
-//         let struct_def =
-//             VShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h), (8, u32_h)]);
-//         let struct_h = store.add(struct_def);
-//         let shape = store.view(struct_h);
-//         let u32_shape = store.view(u32_h);
+#[test]
+fn struct_any_order() {
+    let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
+    let struct_h = vshape_register(VShapeDef::struct_with_fields(
+        vshape_store(),
+        &[(0, u32_h), (4, u32_h), (8, u32_h)],
+    ));
+    let shape = vshape_view(struct_h);
+    let u32_shape = vshape_view(u32_h);
 
-//         let mut heap = TestHeap::new();
-//         let src0 = unsafe { heap.alloc(u32_shape) };
-//         let src1 = unsafe { heap.alloc(u32_shape) };
-//         let src2 = unsafe { heap.alloc(u32_shape) };
-//         unsafe { heap.default_in_place(src0, u32_shape) };
-//         unsafe { heap.default_in_place(src1, u32_shape) };
-//         unsafe { heap.default_in_place(src2, u32_shape) };
+    let mut heap = VRuntime::heap();
+    let src0 = unsafe { heap.alloc(u32_shape) };
+    let src1 = unsafe { heap.alloc(u32_shape) };
+    let src2 = unsafe { heap.alloc(u32_shape) };
+    unsafe { heap.default_in_place(src0, u32_shape) };
+    unsafe { heap.default_in_place(src1, u32_shape) };
+    unsafe { heap.default_in_place(src2, u32_shape) };
 
-//         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(shape) };
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, shape) };
 
-//         // Init in reverse order
-//         let f2 = [PathSegment::Field(2)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &f2,
-//                 src: Source::Imm(src2),
-//             })
-//             .unwrap();
-//         let f0 = [PathSegment::Field(0)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &f0,
-//                 src: Source::Imm(src0),
-//             })
-//             .unwrap();
-//         let f1 = [PathSegment::Field(1)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &f1,
-//                 src: Source::Imm(src1),
-//             })
-//             .unwrap();
+    // Init in reverse order
+    let f2 = [PathSegment::Field(2)];
+    trame
+        .apply(Op::Set {
+            dst: &f2,
+            src: Source::Imm(src2),
+        })
+        .unwrap();
+    let f0 = [PathSegment::Field(0)];
+    trame
+        .apply(Op::Set {
+            dst: &f0,
+            src: Source::Imm(src0),
+        })
+        .unwrap();
+    let f1 = [PathSegment::Field(1)];
+    trame
+        .apply(Op::Set {
+            dst: &f1,
+            src: Source::Imm(src1),
+        })
+        .unwrap();
 
-//         assert!(trame.is_complete());
-//         let _ = trame.build().unwrap();
-//     }
+    assert!(trame.is_complete());
+    let _ = trame.build().unwrap();
+}
 
-//     #[test]
-//     fn stage_field_twice_reenters() {
-//         let mut store = VShapeStore::new();
-//         let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
-//         let inner_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h)]);
-//         let inner_h = store.add(inner_def);
-//         let outer_def = VShapeDef::struct_with_fields(&store, &[(0, inner_h)]);
-//         let outer_h = store.add(outer_def);
-//         let shape = store.view(outer_h);
+#[test]
+fn stage_field_twice_reenters() {
+    let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
+    let inner_h = vshape_register(VShapeDef::struct_with_fields(vshape_store(), &[(0, u32_h)]));
+    let outer_h = vshape_register(VShapeDef::struct_with_fields(
+        vshape_store(),
+        &[(0, inner_h)],
+    ));
+    let shape = vshape_view(outer_h);
+    let u32_shape = vshape_view(u32_h);
 
-//         let heap = TestHeap::new();
-//         let arena = TestArena::new();
+    let mut heap = VRuntime::heap();
+    let src = unsafe { heap.alloc(u32_shape) };
+    unsafe { heap.default_in_place(src, u32_shape) };
 
-//         let mut trame = unsafe { Trame::new(shape) };
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, shape) };
 
-//         let field0 = [PathSegment::Field(0)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &field0,
-//                 src: Source::Stage(None),
-//             })
-//             .unwrap();
+    let field0 = [PathSegment::Field(0)];
+    trame
+        .apply(Op::Set {
+            dst: &field0,
+            src: Source::Stage(None),
+        })
+        .unwrap();
 
-//         let inner_a = [PathSegment::Field(0)];
-//         let u32_shape = store.view(u32_h);
-//         let src = unsafe { trame.heap.alloc(u32_shape) };
-//         unsafe { trame.heap.default_in_place(src, u32_shape) };
-//         trame
-//             .apply(Op::Set {
-//                 dst: &inner_a,
-//                 src: Source::Imm(src),
-//             })
-//             .unwrap();
-//         trame.apply(Op::End).unwrap();
+    let inner_a = [PathSegment::Field(0)];
+    trame
+        .apply(Op::Set {
+            dst: &inner_a,
+            src: Source::Imm(src),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
 
-//         let root_field0 = [PathSegment::Root, PathSegment::Field(0)];
-//         let result = trame.apply(Op::Set {
-//             dst: &root_field0,
-//             src: Source::Stage(None),
-//         });
-//         assert!(result.is_ok());
-//         assert_eq!(trame.depth(), 1);
-//     }
+    let root_field0 = [PathSegment::Root, PathSegment::Field(0)];
+    let result = trame.apply(Op::Set {
+        dst: &root_field0,
+        src: Source::Stage(None),
+    });
+    assert!(result.is_ok());
+    assert_eq!(trame.depth(), 1);
+}
 
-//     #[test]
-//     fn incomplete_build_fails() {
-//         let mut store = VShapeStore::new();
-//         let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
-//         let struct_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
-//         let struct_h = store.add(struct_def);
-//         let shape = store.view(struct_h);
-//         let u32_shape = store.view(u32_h);
+#[test]
+fn incomplete_build_fails() {
+    let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
+    let struct_h = vshape_register(VShapeDef::struct_with_fields(
+        vshape_store(),
+        &[(0, u32_h), (4, u32_h)],
+    ));
+    let shape = vshape_view(struct_h);
+    let u32_shape = vshape_view(u32_h);
 
-//         let mut heap = TestHeap::new();
-//         let src = unsafe { heap.alloc(u32_shape) };
-//         unsafe { heap.default_in_place(src, u32_shape) };
+    let mut heap = VRuntime::heap();
+    let src = unsafe { heap.alloc(u32_shape) };
+    unsafe { heap.default_in_place(src, u32_shape) };
 
-//         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(shape) };
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, shape) };
 
-//         let f0 = [PathSegment::Field(0)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &f0,
-//                 src: Source::Imm(src),
-//             })
-//             .unwrap();
+    let f0 = [PathSegment::Field(0)];
+    trame
+        .apply(Op::Set {
+            dst: &f0,
+            src: Source::Imm(src),
+        })
+        .unwrap();
 
-//         let err = trame.build();
-//         assert!(matches!(err, Err(TrameError::Incomplete)));
-//     }
+    let err = trame.build();
+    assert!(matches!(err, Err(TrameError::Incomplete)));
+}
 
 //     #[test]
-//     fn drop_cleans_up() {
-//         let mut store = VShapeStore::new();
-//         let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
-//         let struct_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
-//         let struct_h = store.add(struct_def);
-//         let shape = store.view(struct_h);
-//         let u32_shape = store.view(u32_h);
+#[test]
+fn drop_cleans_up() {
+    let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
+    let struct_h = vshape_register(VShapeDef::struct_with_fields(
+        vshape_store(),
+        &[(0, u32_h), (4, u32_h)],
+    ));
+    let shape = vshape_view(struct_h);
+    let u32_shape = vshape_view(u32_h);
 
-//         let mut heap = TestHeap::new();
-//         let src = unsafe { heap.alloc(u32_shape) };
-//         unsafe { heap.default_in_place(src, u32_shape) };
+    let mut heap = VRuntime::heap();
+    let src = unsafe { heap.alloc(u32_shape) };
+    unsafe { heap.default_in_place(src, u32_shape) };
 
-//         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(shape) };
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, shape) };
 
-//         let f0 = [PathSegment::Field(0)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &f0,
-//                 src: Source::Imm(src),
-//             })
-//             .unwrap();
+    let f0 = [PathSegment::Field(0)];
+    trame
+        .apply(Op::Set {
+            dst: &f0,
+            src: Source::Imm(src),
+        })
+        .unwrap();
 
-//         drop(trame);
-//     }
+    drop(trame);
+}
 
-//     // --- Nested struct tests ---
+// --- Nested struct tests ---
 
-//     #[test]
-//     fn nested_struct_begin_end() {
-//         let mut store = VShapeStore::new();
+#[test]
+fn nested_struct_begin_end() {
+    // Inner struct: { a: u32, b: u32 }
+    let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
+    let inner_h = vshape_register(VShapeDef::struct_with_fields(
+        vshape_store(),
+        &[(0, u32_h), (4, u32_h)],
+    ));
 
-//         // Inner struct: { a: u32, b: u32 }
-//         let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
-//         let inner_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
-//         let inner_h = store.add(inner_def);
+    // Outer struct: { x: u32, inner: Inner }
+    let outer_h = vshape_register(VShapeDef::struct_with_fields(
+        vshape_store(),
+        &[(0, u32_h), (4, inner_h)],
+    ));
+    let shape = vshape_view(outer_h);
+    let u32_shape = vshape_view(u32_h);
 
-//         // Outer struct: { x: u32, inner: Inner }
-//         let outer_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, inner_h)]);
-//         let outer_h = store.add(outer_def);
-//         let shape = store.view(outer_h);
-//         let u32_shape = store.view(u32_h);
+    let mut heap = VRuntime::heap();
+    let src_x = unsafe { heap.alloc(u32_shape) };
+    let src_a = unsafe { heap.alloc(u32_shape) };
+    let src_b = unsafe { heap.alloc(u32_shape) };
+    unsafe { heap.default_in_place(src_x, u32_shape) };
+    unsafe { heap.default_in_place(src_a, u32_shape) };
+    unsafe { heap.default_in_place(src_b, u32_shape) };
 
-//         let mut heap = TestHeap::new();
-//         let src_x = unsafe { heap.alloc(u32_shape) };
-//         let src_a = unsafe { heap.alloc(u32_shape) };
-//         let src_b = unsafe { heap.alloc(u32_shape) };
-//         unsafe { heap.default_in_place(src_x, u32_shape) };
-//         unsafe { heap.default_in_place(src_a, u32_shape) };
-//         unsafe { heap.default_in_place(src_b, u32_shape) };
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, shape) };
 
-//         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(shape) };
+    assert_eq!(trame.depth(), 0);
+    assert!(!trame.is_complete());
 
-//         assert_eq!(trame.depth(), 0);
-//         assert!(!trame.is_complete());
+    let outer_x = [PathSegment::Field(0)];
+    trame
+        .apply(Op::Set {
+            dst: &outer_x,
+            src: Source::Imm(src_x),
+        })
+        .unwrap();
+    assert!(!trame.is_complete());
 
-//         let outer_x = [PathSegment::Field(0)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &outer_x,
-//                 src: Source::Imm(src_x),
-//             })
-//             .unwrap();
-//         assert!(!trame.is_complete());
+    let inner_field = [PathSegment::Field(1)];
+    trame
+        .apply(Op::Set {
+            dst: &inner_field,
+            src: Source::Stage(None),
+        })
+        .unwrap();
+    assert_eq!(trame.depth(), 1);
 
-//         let inner_field = [PathSegment::Field(1)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &inner_field,
-//                 src: Source::Stage(None),
-//             })
-//             .unwrap();
-//         assert_eq!(trame.depth(), 1);
+    let inner_a = [PathSegment::Field(0)];
+    trame
+        .apply(Op::Set {
+            dst: &inner_a,
+            src: Source::Imm(src_a),
+        })
+        .unwrap();
+    let inner_b = [PathSegment::Field(1)];
+    trame
+        .apply(Op::Set {
+            dst: &inner_b,
+            src: Source::Imm(src_b),
+        })
+        .unwrap();
+    assert!(trame.is_complete());
 
-//         let inner_a = [PathSegment::Field(0)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &inner_a,
-//                 src: Source::Imm(src_a),
-//             })
-//             .unwrap();
-//         let inner_b = [PathSegment::Field(1)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &inner_b,
-//                 src: Source::Imm(src_b),
-//             })
-//             .unwrap();
-//         assert!(trame.is_complete());
+    trame.apply(Op::End).unwrap();
+    assert_eq!(trame.depth(), 0);
+    assert!(trame.is_complete());
 
-//         trame.apply(Op::End).unwrap();
-//         assert_eq!(trame.depth(), 0);
-//         assert!(trame.is_complete());
+    let _ = trame.build().unwrap();
+}
 
-//         let _ = trame.build().unwrap();
-//     }
+#[test]
+fn nested_struct_drop_cleans_up() {
+    // Inner struct: { a: u32 }
+    let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
+    let inner_h = vshape_register(VShapeDef::struct_with_fields(vshape_store(), &[(0, u32_h)]));
 
-//     #[test]
-//     fn nested_struct_drop_cleans_up() {
-//         let mut store = VShapeStore::new();
+    // Outer struct: { inner: Inner }
+    let outer_h = vshape_register(VShapeDef::struct_with_fields(
+        vshape_store(),
+        &[(0, inner_h)],
+    ));
+    let shape = vshape_view(outer_h);
+    let u32_shape = vshape_view(u32_h);
 
-//         // Inner struct: { a: u32 }
-//         let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
-//         let inner_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h)]);
-//         let inner_h = store.add(inner_def);
+    let mut heap = VRuntime::heap();
+    let src = unsafe { heap.alloc(u32_shape) };
+    unsafe { heap.default_in_place(src, u32_shape) };
 
-//         // Outer struct: { inner: Inner }
-//         let outer_def = VShapeDef::struct_with_fields(&store, &[(0, inner_h)]);
-//         let outer_h = store.add(outer_def);
-//         let shape = store.view(outer_h);
-//         let u32_shape = store.view(u32_h);
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, shape) };
 
-//         let mut heap = TestHeap::new();
-//         let src = unsafe { heap.alloc(u32_shape) };
-//         unsafe { heap.default_in_place(src, u32_shape) };
+    let inner_field = [PathSegment::Field(0)];
+    trame
+        .apply(Op::Set {
+            dst: &inner_field,
+            src: Source::Stage(None),
+        })
+        .unwrap();
+    let inner_a = [PathSegment::Field(0)];
+    trame
+        .apply(Op::Set {
+            dst: &inner_a,
+            src: Source::Imm(src),
+        })
+        .unwrap();
 
-//         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(shape) };
+    drop(trame);
+}
 
-//         let inner_field = [PathSegment::Field(0)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &inner_field,
-//                 src: Source::Stage(None),
-//             })
-//             .unwrap();
-//         let inner_a = [PathSegment::Field(0)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &inner_a,
-//                 src: Source::Imm(src),
-//             })
-//             .unwrap();
+#[test]
+fn nested_struct_trame_inner_cleanup() {
+    // Inner struct: { a: u32, b: u32 }
+    let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
+    let inner_h = vshape_register(VShapeDef::struct_with_fields(
+        vshape_store(),
+        &[(0, u32_h), (4, u32_h)],
+    ));
 
-//         drop(trame);
-//     }
+    // Outer struct: { inner: Inner }
+    let outer_h = vshape_register(VShapeDef::struct_with_fields(
+        vshape_store(),
+        &[(0, inner_h)],
+    ));
+    let shape = vshape_view(outer_h);
+    let u32_shape = vshape_view(u32_h);
 
-//     #[test]
-//     fn nested_struct_trame_inner_cleanup() {
-//         let mut store = VShapeStore::new();
+    let mut heap = VRuntime::heap();
+    let src = unsafe { heap.alloc(u32_shape) };
+    unsafe { heap.default_in_place(src, u32_shape) };
 
-//         // Inner struct: { a: u32, b: u32 }
-//         let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
-//         let inner_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
-//         let inner_h = store.add(inner_def);
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, shape) };
 
-//         // Outer struct: { inner: Inner }
-//         let outer_def = VShapeDef::struct_with_fields(&store, &[(0, inner_h)]);
-//         let outer_h = store.add(outer_def);
-//         let shape = store.view(outer_h);
-//         let u32_shape = store.view(u32_h);
+    let inner_field = [PathSegment::Field(0)];
+    trame
+        .apply(Op::Set {
+            dst: &inner_field,
+            src: Source::Stage(None),
+        })
+        .unwrap();
+    let inner_a = [PathSegment::Field(0)];
+    trame
+        .apply(Op::Set {
+            dst: &inner_a,
+            src: Source::Imm(src),
+        })
+        .unwrap();
 
-//         let mut heap = TestHeap::new();
-//         let src = unsafe { heap.alloc(u32_shape) };
-//         unsafe { heap.default_in_place(src, u32_shape) };
+    drop(trame);
+}
 
-//         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(shape) };
+#[test]
+fn end_op_incomplete_fails() {
+    // Inner struct: { a: u32, b: u32 }
+    let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
+    let inner_h = vshape_register(VShapeDef::struct_with_fields(
+        vshape_store(),
+        &[(0, u32_h), (4, u32_h)],
+    ));
 
-//         let inner_field = [PathSegment::Field(0)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &inner_field,
-//                 src: Source::Stage(None),
-//             })
-//             .unwrap();
-//         let inner_a = [PathSegment::Field(0)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &inner_a,
-//                 src: Source::Imm(src),
-//             })
-//             .unwrap();
+    // Outer struct: { inner: Inner }
+    let outer_h = vshape_register(VShapeDef::struct_with_fields(
+        vshape_store(),
+        &[(0, inner_h)],
+    ));
+    let shape = vshape_view(outer_h);
+    let u32_shape = vshape_view(u32_h);
 
-//         drop(trame);
-//     }
+    let mut heap = VRuntime::heap();
+    let src = unsafe { heap.alloc(u32_shape) };
+    unsafe { heap.default_in_place(src, u32_shape) };
 
-//     #[test]
-//     fn end_op_incomplete_fails() {
-//         let mut store = VShapeStore::new();
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, shape) };
 
-//         // Inner struct: { a: u32, b: u32 }
-//         let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
-//         let inner_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
-//         let inner_h = store.add(inner_def);
+    let inner_field = [PathSegment::Field(0)];
+    trame
+        .apply(Op::Set {
+            dst: &inner_field,
+            src: Source::Stage(None),
+        })
+        .unwrap();
+    let inner_a = [PathSegment::Field(0)];
+    trame
+        .apply(Op::Set {
+            dst: &inner_a,
+            src: Source::Imm(src),
+        })
+        .unwrap();
 
-//         // Outer struct: { inner: Inner }
-//         let outer_def = VShapeDef::struct_with_fields(&store, &[(0, inner_h)]);
-//         let outer_h = store.add(outer_def);
-//         let shape = store.view(outer_h);
-//         let u32_shape = store.view(u32_h);
+    let err = trame.apply(Op::End);
+    assert_eq!(err, Err(TrameError::CurrentIncomplete));
+}
 
-//         let mut heap = TestHeap::new();
-//         let src = unsafe { heap.alloc(u32_shape) };
-//         unsafe { heap.default_in_place(src, u32_shape) };
+#[test]
+fn end_op_at_root_fails() {
+    let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
+    let struct_h = vshape_register(VShapeDef::struct_with_fields(vshape_store(), &[(0, u32_h)]));
+    let shape = vshape_view(struct_h);
+    let u32_shape = vshape_view(u32_h);
 
-//         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(shape) };
+    let mut heap = VRuntime::heap();
+    let src = unsafe { heap.alloc(u32_shape) };
+    unsafe { heap.default_in_place(src, u32_shape) };
 
-//         let inner_field = [PathSegment::Field(0)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &inner_field,
-//                 src: Source::Stage(None),
-//             })
-//             .unwrap();
-//         let inner_a = [PathSegment::Field(0)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &inner_a,
-//                 src: Source::Imm(src),
-//             })
-//             .unwrap();
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, shape) };
 
-//         let err = trame.apply(Op::End);
-//         assert_eq!(err, Err(TrameError::CurrentIncomplete));
-//     }
+    let f0 = [PathSegment::Field(0)];
+    trame
+        .apply(Op::Set {
+            dst: &f0,
+            src: Source::Imm(src),
+        })
+        .unwrap();
 
-//     #[test]
-//     fn end_op_at_root_fails() {
-//         let mut store = VShapeStore::new();
-//         let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
-//         let struct_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h)]);
-//         let struct_h = store.add(struct_def);
-//         let shape = store.view(struct_h);
-//         let u32_shape = store.view(u32_h);
+    let err = trame.apply(Op::End);
+    assert_eq!(err, Err(TrameError::AtRoot));
+}
 
-//         let mut heap = TestHeap::new();
-//         let src = unsafe { heap.alloc(u32_shape) };
-//         unsafe { heap.default_in_place(src, u32_shape) };
+#[test]
+fn apply_set_imm_field() {
+    let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
+    let struct_h = vshape_register(VShapeDef::struct_with_fields(vshape_store(), &[(0, u32_h)]));
+    let shape = vshape_view(struct_h);
+    let u32_shape = vshape_view(u32_h);
 
-//         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(shape) };
+    let mut heap = VRuntime::heap();
+    let src = unsafe { heap.alloc(u32_shape) };
+    unsafe { heap.default_in_place(src, u32_shape) };
 
-//         let f0 = [PathSegment::Field(0)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &f0,
-//                 src: Source::Imm(src),
-//             })
-//             .unwrap();
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, shape) };
 
-//         let err = trame.apply(Op::End);
-//         assert_eq!(err, Err(TrameError::AtRoot));
-//     }
+    let path = [PathSegment::Field(0)];
+    trame
+        .apply(Op::Set {
+            dst: &path,
+            src: Source::Imm(src),
+        })
+        .unwrap();
 
-//     #[test]
-//     fn apply_set_imm_field() {
-//         let mut store = VShapeStore::new();
-//         let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
-//         let struct_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h)]);
-//         let struct_h = store.add(struct_def);
-//         let shape = store.view(struct_h);
-//         let u32_shape = store.view(u32_h);
+    assert!(trame.is_complete());
+    let _ = trame.build().unwrap();
+}
 
-//         let mut heap = TestHeap::new();
-//         let src = unsafe { heap.alloc(u32_shape) };
-//         unsafe { heap.default_in_place(src, u32_shape) };
+#[test]
+fn apply_stage_and_end() {
+    let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
+    let inner_h = vshape_register(VShapeDef::struct_with_fields(
+        vshape_store(),
+        &[(0, u32_h), (4, u32_h)],
+    ));
+    let outer_h = vshape_register(VShapeDef::struct_with_fields(
+        vshape_store(),
+        &[(0, u32_h), (4, inner_h)],
+    ));
 
-//         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(shape) };
+    let shape = vshape_view(outer_h);
+    let u32_shape = vshape_view(u32_h);
 
-//         let path = [PathSegment::Field(0)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &path,
-//                 src: Source::Imm(src),
-//             })
-//             .unwrap();
+    let mut heap = VRuntime::heap();
+    let src1 = unsafe { heap.alloc(u32_shape) };
+    let src2 = unsafe { heap.alloc(u32_shape) };
+    let src3 = unsafe { heap.alloc(u32_shape) };
+    unsafe { heap.default_in_place(src1, u32_shape) };
+    unsafe { heap.default_in_place(src2, u32_shape) };
+    unsafe { heap.default_in_place(src3, u32_shape) };
 
-//         assert!(trame.is_complete());
-//         let _ = trame.build().unwrap();
-//     }
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, shape) };
 
-//     #[test]
-//     fn apply_stage_and_end() {
-//         let mut store = VShapeStore::new();
-//         let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
-//         let inner_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
-//         let inner_h = store.add(inner_def);
-//         let outer_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, inner_h)]);
-//         let outer_h = store.add(outer_def);
+    let outer_x = [PathSegment::Field(0)];
+    trame
+        .apply(Op::Set {
+            dst: &outer_x,
+            src: Source::Imm(src1),
+        })
+        .unwrap();
 
-//         let shape = store.view(outer_h);
-//         let u32_shape = store.view(u32_h);
+    let inner_field = [PathSegment::Field(1)];
+    trame
+        .apply(Op::Set {
+            dst: &inner_field,
+            src: Source::Stage(None),
+        })
+        .unwrap();
 
-//         let mut heap = TestHeap::new();
-//         let src1 = unsafe { heap.alloc(u32_shape) };
-//         let src2 = unsafe { heap.alloc(u32_shape) };
-//         unsafe { heap.default_in_place(src1, u32_shape) };
-//         unsafe { heap.default_in_place(src2, u32_shape) };
+    let inner_a = [PathSegment::Field(0)];
+    trame
+        .apply(Op::Set {
+            dst: &inner_a,
+            src: Source::Imm(src2),
+        })
+        .unwrap();
 
-//         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(shape) };
+    let inner_b = [PathSegment::Field(1)];
+    trame
+        .apply(Op::Set {
+            dst: &inner_b,
+            src: Source::Imm(src3),
+        })
+        .unwrap();
 
-//         let outer_x = [PathSegment::Field(0)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &outer_x,
-//                 src: Source::Imm(src1),
-//             })
-//             .unwrap();
-
-//         let inner_field = [PathSegment::Field(1)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &inner_field,
-//                 src: Source::Stage(None),
-//             })
-//             .unwrap();
-
-//         let inner_a = [PathSegment::Field(0)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &inner_a,
-//                 src: Source::Imm(src2),
-//             })
-//             .unwrap();
-
-//         let inner_b = [PathSegment::Field(1)];
-//         let src3 = unsafe { trame.heap.alloc(u32_shape) };
-//         unsafe { trame.heap.default_in_place(src3, u32_shape) };
-//         trame
-//             .apply(Op::Set {
-//                 dst: &inner_b,
-//                 src: Source::Imm(src3),
-//             })
-//             .unwrap();
-
-//         trame.apply(Op::End).unwrap();
-//         assert!(trame.is_complete());
-//         let _ = trame.build().unwrap();
-//     }
+    trame.apply(Op::End).unwrap();
+    assert!(trame.is_complete());
+    let _ = trame.build().unwrap();
+}

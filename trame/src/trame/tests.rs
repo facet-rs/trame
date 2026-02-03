@@ -87,46 +87,46 @@ fn scalar_lifecycle_live_alloc() {
     assert_eq!(value, 123);
 }
 
-//     #[test]
-//     fn struct_lifecycle() {
-//         let mut store = VShapeStore::new();
-//         let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
-//         let struct_def = VShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
-//         let struct_h = store.add(struct_def);
-//         let shape = store.view(struct_h);
-//         let u32_shape = store.view(u32_h);
+#[test]
+fn struct_lifecycle() {
+    let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
+    let struct_h = vshape_register(VShapeDef::struct_with_fields(
+        vshape_store(),
+        &[(0, u32_h), (4, u32_h)],
+    ));
+    let shape = vshape_view(struct_h);
+    let u32_shape = vshape_view(u32_h);
 
-//         let mut heap = TestHeap::new();
-//         let src0 = unsafe { heap.alloc(u32_shape) };
-//         let src1 = unsafe { heap.alloc(u32_shape) };
-//         unsafe { heap.default_in_place(src0, u32_shape) };
-//         unsafe { heap.default_in_place(src1, u32_shape) };
+    let mut heap = VRuntime::heap();
+    let src0 = unsafe { heap.alloc(u32_shape) };
+    let src1 = unsafe { heap.alloc(u32_shape) };
+    unsafe { heap.default_in_place(src0, u32_shape) };
+    unsafe { heap.default_in_place(src1, u32_shape) };
 
-//         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(shape) };
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, shape) };
 
-//         assert!(!trame.is_complete());
+    assert!(!trame.is_complete());
 
-//         let f0 = [PathSegment::Field(0)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &f0,
-//                 src: Source::Imm(src0),
-//             })
-//             .unwrap();
-//         assert!(!trame.is_complete());
+    let f0 = [PathSegment::Field(0)];
+    trame
+        .apply(Op::Set {
+            dst: &f0,
+            src: Source::Imm(src0),
+        })
+        .unwrap();
+    assert!(!trame.is_complete());
 
-//         let f1 = [PathSegment::Field(1)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &f1,
-//                 src: Source::Imm(src1),
-//             })
-//             .unwrap();
-//         assert!(trame.is_complete());
+    let f1 = [PathSegment::Field(1)];
+    trame
+        .apply(Op::Set {
+            dst: &f1,
+            src: Source::Imm(src1),
+        })
+        .unwrap();
+    assert!(trame.is_complete());
 
-//         let _ = trame.build().unwrap();
-//     }
+    let _ = trame.build().unwrap();
+}
 
 //     #[test]
 //     fn struct_any_order() {

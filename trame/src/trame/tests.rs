@@ -69,6 +69,22 @@ fn scalar_lifecycle_live_stack_src() {
     let _ = trame.build().unwrap();
 }
 
+#[test]
+fn scalar_lifecycle_live_alloc() {
+    let mut trame = Trame::<LRuntime>::alloc::<u32>().unwrap();
+
+    assert!(!trame.is_complete());
+    trame
+        .apply(Op::Set {
+            dst: &[],
+            src: Source::imm_ref(&mut 123_u32),
+        })
+        .unwrap();
+    assert!(trame.is_complete());
+
+    let hv = trame.build().unwrap();
+}
+
 //     #[test]
 //     fn struct_lifecycle() {
 //         let mut store = VShapeStore::new();

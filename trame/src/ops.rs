@@ -24,6 +24,13 @@ pub enum Source<P> {
     Default,
 }
 
+impl Source<*mut u8> {
+    /// Build an immediate from a reference
+    pub fn imm_ref<T>(t: &mut T) -> Source<*mut u8> {
+        Source::Imm(t as *mut _ as *mut u8)
+    }
+}
+
 /// An operation on a Partial.
 pub enum Op<'a, P> {
     /// Set a value at a path relative to the current frame.

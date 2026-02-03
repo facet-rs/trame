@@ -24,3 +24,8 @@ mod heap;
 mod ops;
 mod partial;
 mod ptr;
+
+pub use arena::RealArena;
+pub use heap::RealHeap;
+pub use ops::{Op, Path, PathSegment, Source};
+pub use partial::{Partial, PartialError};

@@ -1,5 +1,5 @@
 [package]
-name = "trame-afl"
+name = "trame-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2024"
@@ -22,7 +22,7 @@ git = "https://github.com/facet-rs/facet"
 branch = "main"
 
 [dependencies.trame]
-path = ".."
+path = "../trame"
 
 # Prevent this from interfering with workspaces
 [workspace]

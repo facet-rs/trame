@@ -1,0 +1,13 @@
+[package]
+name = "trame-proptest"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[dependencies]
+proptest = "1"
+trame = { path = "../trame" }
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]

@@ -33,6 +33,14 @@ pub fn vshape_view(handle: VShapeHandle) -> VShapeView<'static, VShapeStore> {
     unsafe { (&*VSHAPE_STORE.0.get()).view(handle) }
 }
 
+/// Reset the global shape store. For testing only.
+///
+/// # Safety
+/// Caller must ensure no VShapeView or VShapeHandle from this store is in use.
+pub unsafe fn vshape_store_reset() {
+    unsafe { *VSHAPE_STORE.0.get() = VShapeStore::new() }
+}
+
 impl IRuntime for VRuntime {
     type Shape = VShapeView<'static, VShapeStore>;
     type Heap = VHeap<Self::Shape>;

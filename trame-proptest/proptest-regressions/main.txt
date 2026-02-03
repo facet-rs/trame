@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc be4a469dad9af1e0b2d7816b45a31fe345b6031a2b07f8e8a76f67f558eaddbd # shrinks to ops = []
+cc 9ea7f18069fdb8639b60398ba7458cbe1286d96863e0bd0a1018cd7e953a23dc # shrinks to outer_fields = 1, inner_fields = 1, ops = []
+cc c9bd4fbe1d73f10c8f905529c641df1f360630df2260af4fce400c80e5b9dc73 # shrinks to field_count = 1, ops = []
+cc 88a6aa69137f87cf174dc642681e6177a443ee22f32e356f40c3c92a9cb92a22 # shrinks to field_count = 3, ops = [SetFieldStage { field: 5 }, SetFieldStage { field: 5 }, SetRootImm, SetFieldStage { field: 6 }, End, SetRootImm, SetRootDefault, SetFieldDefault { field: 7 }, End, SetRootDefault, SetRootImm, SetFieldImm { field: 1 }, SetRootImm, End, SetFieldImm { field: 2 }, SetFieldStage { field: 7 }, SetRootImm, SetFieldDefault { field: 7 }, SetFieldImm { field: 1 }]
+cc d40e3f79704f377f0b13156b9baef85206e7a7033d48a48dca057abed5e66ac1 # shrinks to outer_fields = 1, inner_fields = 2, ops = [SetFieldImm { field: 0 }]

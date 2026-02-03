@@ -28,7 +28,8 @@ pub use ops::{Op, Path, PathSegment, Source};
 
 pub use runtime::live::LRuntime;
 pub use runtime::verified::{
-    VRuntime, VShapeDef, VShapeHandle, VShapeStore, vshape_register, vshape_view,
+    VRuntime, VShapeDef, VShapeHandle, VShapeStore, vshape_register, vshape_store,
+    vshape_store_reset, vshape_view,
 };
 pub use runtime::{IRuntime, LiveRuntime};
 

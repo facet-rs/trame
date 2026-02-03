@@ -1,4 +1,4 @@
-//! Fat pointer type for pointer-based backend.
+//! Fat pointer type for pointer-based heap.
 //!
 //! The `Ptr` type is a fat pointer that carries allocation metadata:
 //! - Which allocation it points into (`alloc_id`)

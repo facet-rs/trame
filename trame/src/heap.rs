@@ -719,6 +719,7 @@ mod tests {
 mod kani_proofs {
     use super::*;
     use crate::dyn_shape::{DynShapeDef, DynShapeStore, DynShapeView};
+    use core::alloc::Layout;
 
     type S<'a> = DynShapeView<'a, DynShapeStore>;
 
@@ -850,10 +851,10 @@ mod kani_proofs {
         // Total size: 12 bytes
 
         let mut store = DynShapeStore::new();
-        let outer_h = store.add(DynShapeDef::scalar(Layout::from_size_align(12, 4).unwrap()));
-        let outer_shape = store.view(outer_h);
-
         let u32_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 4).unwrap()));
+        let inner_h = store.add(DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]));
+        let outer_h = store.add(DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, inner_h)]));
+        let outer_shape = store.view(outer_h);
         let u32_shape = store.view(u32_h);
 
         let mut heap = VerifiedHeap::<S<'_>>::new();

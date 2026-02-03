@@ -1,7 +1,7 @@
 //! Byte range tracking for allocation initialization state.
 //!
 //! Tracks which byte ranges within an allocation are initialized.
-//! Used by the verified backend to ensure proper initialization discipline:
+//! Used by the verified heap to ensure proper initialization discipline:
 //! - No double-init (writing to already-initialized bytes)
 //! - No use-after-free (reading uninitialized bytes)
 //! - No leaks (deallocating while bytes are still initialized)

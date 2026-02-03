@@ -1,4 +1,4 @@
-//! Arena allocation with pluggable backends.
+//! Arena allocation with pluggable heaps.
 //!
 //! Two implementations:
 //! - `RealArena<T>`: Vec-based with free list (for production)

@@ -8,9 +8,9 @@
 //!
 //! ## Design Principles
 //!
-//! 1. **One implementation** - Business logic is generic over backend
-//! 2. **Verified backend** - Tracks state, asserts valid transitions, bounded for Kani
-//! 3. **Real backend** - Performs actual memory operations (zero-cost, unbounded)
+//! 1. **One implementation** - Business logic is generic over heap
+//! 2. **Verified heap** - Tracks state, asserts valid transitions, bounded for Kani
+//! 3. **Real heap** - Performs actual memory operations (zero-cost, unbounded)
 
 #![cfg_attr(kani, feature(stmt_expr_attributes))]
 #![cfg_attr(kani, feature(proc_macro_hygiene))]

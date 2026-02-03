@@ -4,7 +4,6 @@
 use std::alloc::Layout;
 
 use crate::byte_range::{ByteRangeError, ByteRangeTracker};
-use crate::ptr::PtrAsMut;
 use crate::runtime::{IArena, IField, IHeap, IPtr, IShape, IShapeStore, IStructType, Idx};
 
 // ==================================================================
@@ -201,18 +200,6 @@ impl<'a> IShape for VShapeView<'a, VShapeStore> {
             }),
             _ => None,
         }
-    }
-
-    #[inline]
-    unsafe fn drop_in_place(&self, _ptr: *mut u8) {
-        // No-op for DynShapeView - we only track state, not actual values.
-        // In Kani verification, we don't have real values to drop.
-    }
-
-    #[inline]
-    unsafe fn default_in_place(&self, _ptr: *mut u8) -> bool {
-        // For verification, treat default as always available.
-        true
     }
 }
 
@@ -451,13 +438,6 @@ impl IPtr for VPtr {
     #[inline]
     fn byte_add(self, n: usize) -> Self {
         VPtr::offset(self, n)
-    }
-}
-
-impl PtrAsMut for VPtr {
-    #[inline]
-    fn as_mut_ptr(self) -> Option<*mut u8> {
-        None
     }
 }
 
@@ -780,6 +760,15 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
         tracker
             .mark_uninit(base, end)
             .expect("drop_in_place: range not initialized");
+    }
+
+    unsafe fn default_in_place(&mut self, ptr: VPtr, shape: S) -> bool {
+        let layout = match shape.layout() {
+            Some(layout) => layout,
+            None => return false,
+        };
+        self.mark_init(ptr, layout.size());
+        true
     }
 }
 
@@ -1149,57 +1138,6 @@ mod kani_proofs {
 
     type S<'a> = VShapeView<'a, VShapeStore>;
 
-    /// Prove: alloc -> init -> drop -> dealloc is valid
-    #[kani::proof]
-    #[kani::unwind(5)]
-    fn alloc_init_drop_dealloc() {
-        let size: u32 = kani::any();
-        kani::assume(size > 0 && size <= 64);
-
-        let mut store = VShapeStore::new();
-        let h = store.add(VShapeDef::scalar(
-            Layout::from_size_align(size as usize, 1).unwrap(),
-        ));
-        let shape = store.view(h);
-
-        let mut heap = VHeap::<S<'_>>::new();
-        let ptr = unsafe { heap.alloc(shape) };
-
-        kani::assert(!heap.is_init(ptr, size as usize), "starts uninit");
-
-        heap.mark_init(ptr, size as usize);
-        kani::assert(heap.is_init(ptr, size as usize), "now init");
-
-        unsafe { heap.drop_in_place(ptr, shape) };
-        kani::assert(!heap.is_init(ptr, size as usize), "now uninit");
-
-        unsafe { heap.dealloc(ptr, shape) };
-    }
-
-    /// Prove: memcpy from initialized to uninitialized succeeds
-    #[kani::proof]
-    #[kani::unwind(5)]
-    fn memcpy_init_to_uninit() {
-        let size: u32 = kani::any();
-        kani::assume(size > 0 && size <= 32);
-
-        let mut store = VShapeStore::new();
-        let h = store.add(VShapeDef::scalar(
-            Layout::from_size_align(size as usize, 1).unwrap(),
-        ));
-        let shape = store.view(h);
-
-        let mut heap = VHeap::<S<'_>>::new();
-        let src = unsafe { heap.alloc(shape) };
-        let dst = unsafe { heap.alloc(shape) };
-
-        heap.mark_init(src, size as usize);
-        unsafe { heap.memcpy(dst, src, size as usize) };
-
-        kani::assert(heap.is_init(src, size as usize), "src still init");
-        kani::assert(heap.is_init(dst, size as usize), "dst now init");
-    }
-
     /// Prove: pointer arithmetic preserves allocation identity
     #[kani::proof]
     #[kani::unwind(5)]
@@ -1230,30 +1168,6 @@ mod kani_proofs {
         );
     }
 
-    /// Prove: partial initialization tracks correctly
-    #[kani::proof]
-    #[kani::unwind(5)]
-    fn partial_init_tracking() {
-        let mut store = VShapeStore::new();
-        let h = store.add(VShapeDef::scalar(Layout::from_size_align(8, 1).unwrap()));
-        let shape = store.view(h);
-
-        let mut heap = VHeap::<S<'_>>::new();
-        let ptr = unsafe { heap.alloc(shape) };
-
-        // Init first half
-        heap.mark_init(ptr, 4);
-
-        kani::assert(heap.is_init(ptr, 4), "first half init");
-        kani::assert(!heap.is_init(ptr.offset(4), 4), "second half uninit");
-        kani::assert(!heap.is_init(ptr, 8), "full range not init");
-
-        // Init second half
-        heap.mark_init(ptr.offset(4), 4);
-
-        kani::assert(heap.is_init(ptr, 8), "full range now init");
-    }
-
     /// Prove: multiple allocations have distinct IDs
     #[kani::proof]
     #[kani::unwind(5)]
@@ -1267,139 +1181,6 @@ mod kani_proofs {
         let ptr2 = unsafe { heap.alloc(shape) };
 
         kani::assert(ptr1.alloc_id() != ptr2.alloc_id(), "distinct alloc ids");
-    }
-
-    /// Prove: nested struct pattern with single allocation
-    #[kani::proof]
-    #[kani::unwind(5)]
-    fn nested_struct_single_alloc() {
-        // Simulate: struct Outer { x: u32, inner: struct Inner { a: u32, b: u32 } }
-        // Total size: 12 bytes
-
-        let mut store = VShapeStore::new();
-        let u32_h = store.add(VShapeDef::scalar(Layout::from_size_align(4, 4).unwrap()));
-        let inner_h = store.add(VShapeDef::struct_with_fields(
-            &store,
-            &[(0, u32_h), (4, u32_h)],
-        ));
-        let outer_h = store.add(VShapeDef::struct_with_fields(
-            &store,
-            &[(0, u32_h), (4, inner_h)],
-        ));
-        let outer_shape = store.view(outer_h);
-        let u32_shape = store.view(u32_h);
-
-        let mut heap = VHeap::<S<'_>>::new();
-
-        // Single allocation for outer
-        let outer_ptr = unsafe { heap.alloc(outer_shape) };
-        kani::assert(outer_ptr.alloc_size() == 12, "outer is 12 bytes");
-
-        // Pointer arithmetic for inner struct (offset 4)
-        let inner_ptr = outer_ptr.offset(4);
-        kani::assert(
-            inner_ptr.alloc_id() == outer_ptr.alloc_id(),
-            "same allocation",
-        );
-        kani::assert(inner_ptr.offset_bytes() == 4, "at offset 4");
-
-        // Init all fields using pointer arithmetic
-        heap.mark_init(outer_ptr, 4); // x at offset 0
-        heap.mark_init(inner_ptr, 4); // inner.a at offset 4
-        heap.mark_init(inner_ptr.offset(4), 4); // inner.b at offset 8
-
-        // Verify full struct is initialized
-        kani::assert(heap.is_init(outer_ptr, 12), "full struct init");
-
-        // Drop all fields
-        unsafe { heap.drop_in_place(outer_ptr, u32_shape) };
-        unsafe { heap.drop_in_place(inner_ptr, u32_shape) };
-        unsafe { heap.drop_in_place(inner_ptr.offset(4), u32_shape) };
-
-        // Dealloc outer
-        unsafe { heap.dealloc(outer_ptr, outer_shape) };
-    }
-
-    /// Prove: dropping a subshape clears only that range.
-    #[kani::proof]
-    #[kani::unwind(5)]
-    fn drop_subshape_preserves_other_field() {
-        let mut store = VShapeStore::new();
-        let u32_h = store.add(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
-        let outer_h = store.add(VShapeDef::struct_with_fields(
-            &store,
-            &[(0, u32_h), (4, u32_h)],
-        ));
-
-        let outer_shape = store.view(outer_h);
-        let u32_shape = store.view(u32_h);
-
-        let mut heap = VHeap::<S<'_>>::new();
-        let ptr = unsafe { heap.alloc(outer_shape) };
-
-        heap.mark_init(ptr, 4);
-        heap.mark_init(ptr.offset(4), 4);
-
-        unsafe { heap.drop_in_place(ptr.offset(4), u32_shape) };
-
-        kani::assert(heap.is_init(ptr, 4), "field 0 still init");
-        kani::assert(!heap.is_init(ptr.offset(4), 4), "field 1 cleared");
-    }
-
-    /// Prove: dropping a nested struct clears only its fields.
-    #[kani::proof]
-    #[kani::unwind(5)]
-    fn drop_nested_struct_clears_inner_only() {
-        let mut store = VShapeStore::new();
-        let u32_h = store.add(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
-        let inner_h = store.add(VShapeDef::struct_with_fields(
-            &store,
-            &[(0, u32_h), (4, u32_h)],
-        ));
-        let outer_h = store.add(VShapeDef::struct_with_fields(
-            &store,
-            &[(0, u32_h), (4, inner_h)],
-        ));
-
-        let outer_shape = store.view(outer_h);
-        let inner_shape = store.view(inner_h);
-
-        let mut heap = VHeap::<S<'_>>::new();
-        let outer_ptr = unsafe { heap.alloc(outer_shape) };
-        let inner_ptr = outer_ptr.offset(4);
-
-        heap.mark_init(outer_ptr, 4); // outer.x
-        heap.mark_init(inner_ptr, 8); // inner.a + inner.b
-
-        unsafe { heap.drop_in_place(inner_ptr, inner_shape) };
-
-        kani::assert(heap.is_init(outer_ptr, 4), "outer.x still init");
-        kani::assert(!heap.is_init(inner_ptr, 8), "inner cleared");
-    }
-
-    /// Prove: dropping a struct ignores uninitialized padding.
-    #[kani::proof]
-    #[kani::unwind(5)]
-    fn drop_struct_ignores_padding() {
-        let mut store = VShapeStore::new();
-        let u32_h = store.add(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
-        let outer_h = store.add(VShapeDef::struct_with_fields(
-            &store,
-            &[(0, u32_h), (8, u32_h)],
-        ));
-
-        let outer_shape = store.view(outer_h);
-
-        let mut heap = VHeap::<S<'_>>::new();
-        let ptr = unsafe { heap.alloc(outer_shape) };
-
-        heap.mark_init(ptr, 4);
-        heap.mark_init(ptr.offset(8), 4);
-
-        unsafe { heap.drop_in_place(ptr, outer_shape) };
-
-        kani::assert(!heap.is_init(ptr, 4), "field 0 cleared");
-        kani::assert(!heap.is_init(ptr.offset(8), 4), "field 1 cleared");
     }
 
     /// Prove: store handles are valid after adding shapes

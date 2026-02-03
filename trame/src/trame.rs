@@ -6,8 +6,7 @@
 use crate::{
     Op, Path, PathSegment, Source,
     node::{FieldSlot, MAX_NODE_FIELDS, Node, NodeKind, NodeState},
-    ptr::PtrAsMut,
-    runtime::{IArena, IHeap, IPtr, IRuntime, IShape, Idx},
+    runtime::{IArena, IField, IHeap, IPtr, IRuntime, IShape, IStructType, Idx},
 };
 
 type Heap<R> = <R as IRuntime>::Heap;
@@ -77,7 +76,7 @@ struct FieldMeta<S: IShape> {
 impl<R> Trame<R>
 where
     R: IRuntime,
-    Ptr<R>: IPtr + PtrAsMut,
+    Ptr<R>: IPtr,
 {
     /// Create a new Trame for the given shape.
     ///
@@ -85,8 +84,8 @@ where
     /// The caller must ensure the shape is valid and sized.
     pub unsafe fn new(mut heap: Heap<R>, mut arena: Arena<R>, shape: Shape<R>) -> Self {
         let data = unsafe { heap.alloc(shape) };
-        let Node = Node::new_root(data, shape);
-        let root = arena.alloc(Node);
+        let node = Node::new_root(data, shape);
+        let root = arena.alloc(node);
 
         Self {
             heap,
@@ -128,25 +127,25 @@ where
     }
 
     fn field_ptr(
-        Node: &Node<Heap<R>, Shape<R>>,
+        node: &Node<Heap<R>, Shape<R>>,
         field_idx: usize,
     ) -> Result<(Shape<R>, Ptr<R>, usize), TrameError> {
-        let meta = Self::field_meta(Node.shape, field_idx)?;
-        let Node_size = Node
+        let meta = Self::field_meta(node.shape, field_idx)?;
+        let node_size = node
             .shape
             .layout()
             .expect("IShape requires sized types")
             .size();
         assert!(
-            meta.offset + meta.layout.size() <= Node_size,
+            meta.offset + meta.layout.size() <= node_size,
             "field out of bounds: {} + {} > {}",
             meta.offset,
             meta.layout.size(),
-            Node_size
+            node_size
         );
         Ok((
             meta.shape,
-            Node.data.byte_add(meta.offset),
+            node.data.byte_add(meta.offset),
             meta.layout.size(),
         ))
     }
@@ -221,19 +220,16 @@ where
                             unsafe { self.heap.memcpy(dst, src_ptr, size) };
                         }
                         Source::Default => {
-                            if let Some(raw) = dst.as_mut_ptr() {
-                                let ok = unsafe { node.shape.default_in_place(raw) };
-                                if !ok {
-                                    return Err(TrameError::DefaultUnavailable);
-                                }
+                            let ok = unsafe { self.heap.default_in_place(dst, node.shape) };
+                            if !ok {
+                                return Err(TrameError::DefaultUnavailable);
                             }
-                            unsafe { self.heap.mark_init(dst, size) };
                         }
                         Source::Stage(_) => return Err(TrameError::UnsupportedSource),
                     }
 
-                    let Node = self.arena.get_mut(target_idx);
-                    if let NodeKind::Scalar { initialized } = &mut Node.kind {
+                    let node = self.arena.get_mut(target_idx);
+                    if let NodeKind::Scalar { initialized } = &mut node.kind {
                         *initialized = true;
                     }
                     Ok(())
@@ -259,7 +255,7 @@ where
                 if let Some(child) = child_idx {
                     if matches!(src, Source::Imm(_) | Source::Default) {
                         // We are overwriting a staged field: drop any initialized subfields.
-                        self.cleanup_Node(child);
+                        self.cleanup_node(child);
                         if self.current_in_subtree(child) {
                             self.current = target_idx;
                         }
@@ -291,13 +287,10 @@ where
                         Ok(())
                     }
                     Source::Default => {
-                        if let Some(raw) = dst.as_mut_ptr() {
-                            let ok = unsafe { field_shape.default_in_place(raw) };
-                            if !ok {
-                                return Err(TrameError::DefaultUnavailable);
-                            }
+                        let ok = unsafe { self.heap.default_in_place(dst, field_shape) };
+                        if !ok {
+                            return Err(TrameError::DefaultUnavailable);
                         }
-                        unsafe { self.heap.mark_init(dst, size) };
                         if let NodeKind::Struct { fields } =
                             &mut self.arena.get_mut(target_idx).kind
                         {
@@ -318,18 +311,18 @@ where
                                 return Ok(());
                             }
                             // Child is complete: clear it and restart staging.
-                            self.cleanup_Node(child);
+                            self.cleanup_node(child);
                             {
-                                let child_Node = self.arena.get_mut(child);
-                                child_Node.kind =
-                                    Node::<Heap<R>, Shape<R>>::kind_for_shape(child_Node.shape);
-                                child_Node.state = NodeState::Staged;
+                                let child_node = self.arena.get_mut(child);
+                                child_node.kind =
+                                    Node::<Heap<R>, Shape<R>>::kind_for_shape(child_node.shape);
+                                child_node.state = NodeState::Staged;
                             }
                             self.current = child;
                             return Ok(());
                         }
 
-                        let child_Node = Node {
+                        let child_node = Node {
                             data: dst,
                             shape: field_shape,
                             kind: Node::<Heap<R>, Shape<R>>::kind_for_shape(field_shape),
@@ -338,7 +331,7 @@ where
                             field_in_parent: field_idx as u32,
                         };
 
-                        let child_idx = self.arena.alloc(child_Node);
+                        let child_idx = self.arena.alloc(child_node);
                         if let NodeKind::Struct { fields } =
                             &mut self.arena.get_mut(target_idx).kind
                         {
@@ -406,7 +399,7 @@ where
     fn end_current_node(&mut self) -> Result<(), TrameError> {
         self.check_poisoned()?;
 
-        let Node = self.arena.get(self.current);
+        let node = self.arena.get(self.current);
 
         // Check current Node is complete
         if !self.node_is_complete(self.current) {
@@ -414,16 +407,14 @@ where
         }
 
         // Check we're not at root
-        let parent_idx = Node.parent;
+        let parent_idx = node.parent;
         if !parent_idx.is_valid() {
             return Err(TrameError::AtRoot);
         }
 
-        let field_in_parent = Node.field_in_parent as usize;
-
         // Mark this Node as complete.
-        let Node = self.arena.get_mut(self.current);
-        Node.state = NodeState::Sealed;
+        let node = self.arena.get_mut(self.current);
+        node.state = NodeState::Sealed;
 
         // Move cursor back to parent
         self.current = parent_idx;
@@ -436,12 +427,12 @@ where
         let mut depth = 0;
         let mut idx = self.current;
         while idx.is_valid() {
-            let Node = self.arena.get(idx);
-            if !Node.parent.is_valid() {
+            let node = self.arena.get(idx);
+            if !node.parent.is_valid() {
                 break;
             }
             depth += 1;
-            idx = Node.parent;
+            idx = node.parent;
         }
         depth
     }
@@ -464,8 +455,8 @@ where
             return Err(TrameError::Incomplete);
         }
 
-        let Node = self.arena.get(self.root);
-        let data = Node.data;
+        let node = self.arena.get(self.root);
+        let data = node.data;
 
         // Don't run Drop - we're transferring ownership
         let heap = unsafe { core::ptr::read(&self.heap) };
@@ -483,24 +474,28 @@ where
         self.poisoned = true;
 
         // Clean up from root, depth-first (leaves before parents)
-        self.cleanup_Node(self.root);
+        self.cleanup_node(self.root);
     }
 
     /// Recursively clean up a Node and all its children (depth-first).
-    fn cleanup_Node(&mut self, idx: Idx<Node<Heap<R>, Shape<R>>>) {
+    fn cleanup_node(&mut self, idx: Idx<Node<Heap<R>, Shape<R>>>) {
         if !idx.is_valid() {
             return;
         }
 
-        let Node = self.arena.get(idx);
-        if Node.state == NodeState::Sealed {
-            unsafe { self.heap.drop_in_place(Node.data, Node.shape) };
+        let (node_state, node_kind, node_data, node_shape, node_parent) = {
+            let node = self.arena.get(idx);
+            (node.state, node.kind, node.data, node.shape, node.parent)
+        };
+
+        if node_state == NodeState::Sealed {
+            unsafe { self.heap.drop_in_place(node_data, node_shape) };
         } else {
             // Collect children first to avoid borrow issues
             let mut children = [Idx::NOT_STARTED; MAX_NODE_FIELDS];
             let mut child_count = 0;
 
-            if let NodeKind::Struct { fields } = &Node.kind {
+            if let NodeKind::Struct { fields } = &node_kind {
                 for i in 0..(fields.count as usize) {
                     if let Some(child_idx) = fields.get_child(i) {
                         children[child_count] = child_idx;
@@ -511,18 +506,19 @@ where
 
             // Recursively clean up children first (depth-first)
             for i in 0..child_count {
-                self.cleanup_Node(children[i]);
+                self.cleanup_node(children[i]);
             }
 
             // Now clean up this Node's initialized slots
-            match &Node.kind {
+            match &node_kind {
                 NodeKind::Scalar { initialized: true } => {
-                    unsafe { self.heap.drop_in_place(Node.data, Node.shape) };
+                    unsafe { self.heap.drop_in_place(node_data, node_shape) };
                 }
                 NodeKind::Struct { fields } => {
+                    let node = self.arena.get(idx);
                     for i in 0..(fields.count as usize) {
                         if matches!(fields.slot(i), FieldSlot::Complete) {
-                            let (field_shape, ptr, _size) = Self::field_ptr(Node, i)
+                            let (field_shape, ptr, _size) = Self::field_ptr(node, i)
                                 .expect("field metadata should be valid during cleanup");
                             unsafe { self.heap.drop_in_place(ptr, field_shape) };
                         }
@@ -534,8 +530,8 @@ where
 
         // Only root owns the allocation.
         // FIXME: ^ this isn't true. arbitrary Nodes can own their allocations
-        if !Node.parent.is_valid() {
-            self.heap.dealloc(Node.data, Node.shape);
+        if !node_parent.is_valid() {
+            unsafe { self.heap.dealloc(node_data, node_shape) };
         }
     }
 }
@@ -543,7 +539,7 @@ where
 impl<R> Drop for Trame<R>
 where
     R: IRuntime,
-    Ptr<R>: IPtr + PtrAsMut,
+    Ptr<R>: IPtr,
 {
     fn drop(&mut self) {
         if !self.poisoned {

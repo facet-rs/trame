@@ -1,7 +1,7 @@
 //! Live implementations of all of trame's runtime traits: no verification involved, real memory
 //! allocations, etc.
 
-use crate::runtime::{IArena, IField, IHeap, IPtr, IShape, IShapeStore, IStructType, Idx};
+use crate::runtime::{IArena, IField, IHeap, IShape, IShapeStore, IStructType, Idx};
 use facet_core::{Field, Shape, StructType, Type, UserType};
 
 // ==================================================================
@@ -45,19 +45,6 @@ impl IShape for &'static Shape {
             _ => None,
         }
     }
-
-    #[inline]
-    unsafe fn drop_in_place(&self, ptr: *mut u8) {
-        unsafe { self.call_drop_in_place(facet_core::PtrMut::new(ptr)) };
-    }
-
-    #[inline]
-    unsafe fn default_in_place(&self, ptr: *mut u8) -> bool {
-        unsafe {
-            self.call_default_in_place(facet_core::PtrMut::new(ptr).into())
-                .is_some()
-        }
-    }
 }
 
 impl IStructType for &'static StructType {
@@ -94,29 +81,25 @@ impl IField for &'static Field {
 
 /// Live heap that performs actual memory operations.
 #[derive(Debug)]
-pub struct LHeap<S> {
-    _marker: core::marker::PhantomData<S>,
-}
+pub struct LHeap;
 
-impl<S> LHeap<S> {
+impl LHeap {
     /// Create a new live heap.
     pub const fn new() -> Self {
-        Self {
-            _marker: core::marker::PhantomData,
-        }
+        Self
     }
 }
 
-impl<S> Default for LHeap<S> {
+impl Default for LHeap {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<S: IShape> IHeap<S> for LHeap<S> {
+impl IHeap<&'static Shape> for LHeap {
     type Ptr = *mut u8;
 
-    unsafe fn alloc(&mut self, shape: S) -> *mut u8 {
+    unsafe fn alloc(&mut self, shape: &'static Shape) -> *mut u8 {
         let layout = shape.layout();
         if let Some(layout) = layout {
             if layout.size() == 0 {
@@ -142,7 +125,7 @@ impl<S: IShape> IHeap<S> for LHeap<S> {
         }
     }
 
-    unsafe fn dealloc(&mut self, ptr: *mut u8, shape: S) {
+    unsafe fn dealloc(&mut self, ptr: *mut u8, shape: &'static Shape) {
         if let Some(layout) = shape.layout() {
             if layout.size() > 0 {
                 // SAFETY: caller guarantees this is a live allocation
@@ -160,30 +143,16 @@ impl<S: IShape> IHeap<S> for LHeap<S> {
         }
     }
 
-    unsafe fn drop_in_place(&mut self, ptr: *mut u8, shape: S) {
-        // Use the shape's drop_in_place method
-        unsafe { shape.drop_in_place(ptr) };
+    unsafe fn drop_in_place(&mut self, ptr: *mut u8, shape: &'static Shape) {
+        unsafe { shape.call_drop_in_place(facet_core::PtrMut::new(ptr)) };
     }
-}
 
-/// Provide access to a raw pointer when available.
-pub trait PtrAsMut: Copy {
-    /// Returns a raw pointer if this pointer represents real memory.
-    fn as_mut_ptr(self) -> Option<*mut u8>;
-}
-
-impl IPtr for *mut u8 {
-    #[inline]
-    fn byte_add(self, n: usize) -> Self {
-        // SAFETY: caller ensures the resulting pointer is in-bounds.
-        unsafe { self.add(n) }
-    }
-}
-
-impl PtrAsMut for *mut u8 {
-    #[inline]
-    fn as_mut_ptr(self) -> Option<*mut u8> {
-        Some(self)
+    unsafe fn default_in_place(&mut self, ptr: *mut u8, shape: &'static Shape) -> bool {
+        unsafe {
+            shape
+                .call_default_in_place(facet_core::PtrMut::new(ptr).into())
+                .is_some()
+        }
     }
 }
 

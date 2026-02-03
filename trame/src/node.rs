@@ -1,4 +1,4 @@
-use crate::runtime::{IHeap, IShape, Idx};
+use crate::runtime::{IHeap, IShape, IStructType, Idx};
 
 /// Maximum fields tracked per node (for verification).
 pub const MAX_NODE_FIELDS: usize = 8;
@@ -63,7 +63,7 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
 // ============================================================================
 
 /// What kind of value a frame is building.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub(crate) enum NodeKind<F> {
     /// Scalar value (no internal structure).
     Scalar { initialized: bool },
@@ -71,14 +71,20 @@ pub(crate) enum NodeKind<F> {
     Struct { fields: FieldStates<F> },
 }
 
-impl<F> NodeKind<F> {}
+impl<F> Clone for NodeKind<F> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<F> Copy for NodeKind<F> {}
 
 // ============================================================================
 // FieldState - tracks which fields are initialized
 // ============================================================================
 
 /// Tracks per-field state within a struct frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum FieldSlot<F> {
     /// Field not touched.
     Untracked,
@@ -88,8 +94,16 @@ pub(crate) enum FieldSlot<F> {
     Child(Idx<F>),
 }
 
+impl<F> Clone for FieldSlot<F> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<F> Copy for FieldSlot<F> {}
+
 /// Tracks initialization state of struct fields.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub(crate) struct FieldStates<F> {
     /// State of each field.
     slots: [FieldSlot<F>; MAX_NODE_FIELDS],
@@ -98,6 +112,13 @@ pub(crate) struct FieldStates<F> {
     pub(crate) count: u8,
 }
 
+impl<F> Clone for FieldStates<F> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<F> Copy for FieldStates<F> {}
 impl<F> FieldStates<F> {
     /// Create field states for a struct with `count` fields.
     pub(crate) fn new(count: usize) -> Self {

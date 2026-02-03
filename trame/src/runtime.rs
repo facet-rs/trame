@@ -56,14 +56,6 @@ pub trait IShape: Copy + PartialEq {
 
     /// Get struct-specific information, if this is a struct.
     fn as_struct(&self) -> Option<Self::StructType>;
-
-    /// Drop the value at the given pointer.
-    #[deprecated(note = "this is divorced from the heap, therefore it can't help us catch bugs")]
-    unsafe fn drop_in_place(&self, ptr: *mut u8);
-
-    /// Default-initialize the value at the given pointer.
-    #[deprecated(note = "this is divorced from the heap, therefore it can't help us catch bugs")]
-    unsafe fn default_in_place(&self, ptr: *mut u8) -> bool;
 }
 
 /// Interface for struct type information.
@@ -110,12 +102,25 @@ pub trait IHeap<S: IShape> {
 
     /// Drop the value at `ptr` and mark the range as uninitialized.
     unsafe fn drop_in_place(&mut self, ptr: Self::Ptr, shape: S);
+
+    /// Default-initialize the value at `ptr` and mark the range as initialized.
+    ///
+    /// Returns `false` if the shape has no default.
+    unsafe fn default_in_place(&mut self, ptr: Self::Ptr, shape: S) -> bool;
 }
 
 /// Pointer type
 pub trait IPtr: Copy {
     /// Compute a new pointer at a byte offset from this one.
     fn byte_add(self, n: usize) -> Self;
+}
+
+impl IPtr for *mut u8 {
+    #[inline]
+    fn byte_add(self, n: usize) -> Self {
+        // SAFETY: caller ensures the resulting pointer is in-bounds.
+        unsafe { self.add(n) }
+    }
 }
 
 // ============================================================================

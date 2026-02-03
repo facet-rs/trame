@@ -803,3 +803,73 @@ fn depth_tracking_correct() {
     trame.apply(Op::End).unwrap();
     kani::assert(trame.depth() == 0, "depth back to 0 after end");
 }
+
+use crate::runtime::verified::VPtr;
+
+/// Generate an arbitrary field index (0-1 valid, 2-3 out of bounds for a 2-field struct)
+fn arb_field_idx() -> u32 {
+    let idx: u8 = kani::any();
+    kani::assume(idx < 4);
+    idx as u32
+}
+
+/// Apply one arbitrary operation to a trame (VRuntime-specific)
+fn apply_arb_op(trame: &mut Trame<VRuntime>, src: VPtr) {
+    let op_kind: u8 = kani::any();
+    kani::assume(op_kind < 3);
+
+    match op_kind {
+        0 => {
+            let path = [PathSegment::Field(arb_field_idx())];
+            let _ = trame.apply(Op::Set {
+                dst: &path,
+                src: Source::Imm(src),
+            });
+        }
+        1 => {
+            let _ = trame.apply(Op::End);
+        }
+        _ => {
+            let path = [PathSegment::Field(arb_field_idx())];
+            let _ = trame.apply(Op::Set {
+                dst: &path,
+                src: Source::Stage(None),
+            });
+        }
+    }
+}
+
+/// Arbitrary operations on a simple struct - let Kani explore all paths
+#[kani::proof]
+#[kani::unwind(5)]
+fn arbitrary_ops_simple_struct() {
+    // Simple struct with 2 scalar fields
+    let scalar_h = vshape_register(VShapeDef::scalar(Layout::from_size_align(4, 4).unwrap()));
+    let struct_def = VShapeDef {
+        layout: Layout::from_size_align(8, 4).unwrap(),
+        def: VDef::Struct(VStructDef {
+            field_count: 2,
+            fields: {
+                let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
+                arr[0] = VFieldDef::new(0, scalar_h);
+                arr[1] = VFieldDef::new(4, scalar_h);
+                arr
+            },
+        }),
+    };
+    let struct_h = vshape_register(struct_def);
+    let shape = vshape_view(struct_h);
+    let scalar_shape = vshape_view(scalar_h);
+
+    let mut heap = VRuntime::heap();
+    let src = unsafe { heap.alloc(scalar_shape) };
+    unsafe { heap.default_in_place(src, scalar_shape) };
+
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, shape) };
+
+    // 2 arbitrary operations (3+ causes exponential blowup)
+    apply_arb_op(&mut trame, src);
+    apply_arb_op(&mut trame, src);
+
+    // No build() - drop will exercise cleanup paths
+}

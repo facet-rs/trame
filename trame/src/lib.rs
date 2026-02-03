@@ -18,7 +18,6 @@
 // Important rule: we do not declare all modules as pub, we will be very intentional
 // about what our public interface is.
 mod arena;
-mod backend;
 mod byte_range;
 mod dyn_shape;
 mod heap;

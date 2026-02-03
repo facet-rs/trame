@@ -109,26 +109,51 @@ pub trait IHeap<S: IShape> {
     type Ptr: IPtr;
 
     /// Allocate a region for a value of the given shape.
+    ///
+    /// # Safety
+    /// The caller must ensure `shape` is valid for allocation and that any
+    /// constraints required by the heap implementation are satisfied.
     unsafe fn alloc(&mut self, shape: S) -> Self::Ptr;
 
     /// Deallocate a region.
+    ///
+    /// # Safety
+    /// The caller must ensure `ptr` points to the start of a live allocation
+    /// previously returned by `alloc`, that the allocation corresponds to
+    /// `shape`, and that no bytes in the region are still initialized.
     unsafe fn dealloc(&mut self, ptr: Self::Ptr, shape: S);
 
     /// Copy `len` bytes from `src` to `dst`.
+    ///
+    /// # Safety
+    /// The caller must ensure both ranges are in-bounds for their allocations,
+    /// that `src` is fully initialized, `dst` is fully uninitialized, and the
+    /// ranges do not overlap.
     unsafe fn memcpy(&mut self, dst: Self::Ptr, src: Self::Ptr, len: usize);
 
     /// Drop the value at `ptr` and mark the range as uninitialized.
+    ///
+    /// # Safety
+    /// The caller must ensure `ptr` points to a value of type `shape`, the
+    /// value is fully initialized, and the allocation is still live.
     unsafe fn drop_in_place(&mut self, ptr: Self::Ptr, shape: S);
 
     /// Default-initialize the value at `ptr` and mark the range as initialized.
     ///
     /// Returns `false` if the shape has no default.
+    ///
+    /// # Safety
+    /// The caller must ensure the destination range is uninitialized, in-bounds,
+    /// and corresponds to `shape`.
     unsafe fn default_in_place(&mut self, ptr: Self::Ptr, shape: S) -> bool;
 }
 
 /// Pointer type
 pub trait IPtr: Copy {
     /// Compute a new pointer at a byte offset from this one.
+    ///
+    /// # Safety
+    /// The caller must ensure the resulting pointer is in-bounds.
     unsafe fn byte_add(self, n: usize) -> Self;
 }
 

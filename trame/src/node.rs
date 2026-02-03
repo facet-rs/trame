@@ -21,9 +21,6 @@ pub struct Node<H: IHeap<S>, S: IShape> {
 
     /// Parent node index (NOT_STARTED if root).
     pub(crate) parent: Idx<Self>,
-
-    /// Field index within parent (if applicable).
-    pub(crate) field_in_parent: u32,
 }
 
 /// Completion state for a node.
@@ -55,7 +52,6 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
             kind: Self::kind_for_shape(shape),
             state: NodeState::Staged,
             parent: Idx::NOT_STARTED,
-            field_in_parent: 0,
         }
     }
 }
@@ -160,12 +156,6 @@ impl<F> FieldStates<F> {
     pub(crate) fn is_init(&self, idx: usize) -> bool {
         debug_assert!(idx < self.count as usize);
         matches!(self.slots[idx], FieldSlot::Complete)
-    }
-
-    /// Check if a field is not started.
-    pub(crate) fn is_not_started(&self, idx: usize) -> bool {
-        debug_assert!(idx < self.count as usize);
-        matches!(self.slots[idx], FieldSlot::Untracked)
     }
 
     /// Get the raw slot for a field.

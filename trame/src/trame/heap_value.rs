@@ -49,7 +49,7 @@ where
         }
         let mut this = core::mem::ManuallyDrop::new(self);
         let mut heap = core::mem::replace(&mut this.heap, R::heap());
-        let value = unsafe { core::ptr::read((this.ptr as *mut u8).cast::<T>()) };
+        let value = unsafe { core::ptr::read(this.ptr.cast::<T>()) };
         unsafe { heap.dealloc(this.ptr, this.shape) };
         Ok(value)
     }

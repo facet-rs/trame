@@ -17,7 +17,7 @@ use core::marker::PhantomData;
 
 type Heap<R> = <R as IRuntime>::Heap;
 type Shape<R> = <R as IRuntime>::Shape;
-type Arena<R> = <R as IRuntime>::Arena;
+type NodeIdx<R> = Idx<Node<Heap<R>, Shape<R>>>;
 type Ptr<R> = <Heap<R> as IHeap<Shape<R>>>::Ptr;
 
 // ============================================================================
@@ -132,10 +132,7 @@ where
         ))
     }
 
-    fn resolve_path(
-        &mut self,
-        path: Path<'_>,
-    ) -> Result<(Idx<Node<Heap<R>, Shape<R>>>, Option<usize>), TrameError> {
+    fn resolve_path(&mut self, path: Path<'_>) -> Result<(NodeIdx<R>, Option<usize>), TrameError> {
         if path.is_empty() {
             return Ok((self.current, None));
         }
@@ -167,7 +164,7 @@ where
         }
     }
 
-    fn ascend_to_root(&mut self) -> Result<Idx<Node<Heap<R>, Shape<R>>>, TrameError> {
+    fn ascend_to_root(&mut self) -> Result<NodeIdx<R>, TrameError> {
         while self.current != self.root {
             self.end_current_node()?;
         }
@@ -176,7 +173,7 @@ where
 
     fn apply_set(
         &mut self,
-        target_idx: Idx<Node<Heap<R>, Shape<R>>>,
+        target_idx: NodeIdx<R>,
         field_idx: Option<usize>,
         src: Source<Ptr<R>>,
     ) -> Result<(), TrameError> {
@@ -310,7 +307,6 @@ where
                             kind: Node::<Heap<R>, Shape<R>>::kind_for_shape(field_shape),
                             state: NodeState::Staged,
                             parent: target_idx,
-                            field_in_parent: field_idx as u32,
                         };
 
                         let child_idx = self.arena.alloc(child_node);
@@ -328,7 +324,7 @@ where
         }
     }
 
-    fn current_in_subtree(&self, ancestor: Idx<Node<Heap<R>, Shape<R>>>) -> bool {
+    fn current_in_subtree(&self, ancestor: NodeIdx<R>) -> bool {
         let mut idx = self.current;
         while idx.is_valid() {
             if idx == ancestor {
@@ -340,7 +336,7 @@ where
         false
     }
 
-    fn node_is_complete(&self, idx: Idx<Node<Heap<R>, Shape<R>>>) -> bool {
+    fn node_is_complete(&self, idx: NodeIdx<R>) -> bool {
         let node = self.arena.get(idx);
         match &node.kind {
             NodeKind::Scalar { initialized } => *initialized,
@@ -462,7 +458,7 @@ where
     }
 
     /// Recursively clean up a Node and all its children (depth-first).
-    fn cleanup_node(&mut self, idx: Idx<Node<Heap<R>, Shape<R>>>) {
+    fn cleanup_node(&mut self, idx: NodeIdx<R>) {
         if !idx.is_valid() {
             return;
         }
@@ -489,8 +485,8 @@ where
             }
 
             // Recursively clean up children first (depth-first)
-            for i in 0..child_count {
-                self.cleanup_node(children[i]);
+            for child in children.iter().take(child_count) {
+                self.cleanup_node(*child);
             }
 
             // Now clean up this Node's initialized slots

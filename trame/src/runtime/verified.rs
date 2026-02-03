@@ -135,7 +135,7 @@ pub struct VShapeStore {
 ///
 /// This is the common currency for working with shapes in the verified runtime.
 #[derive(Clone, Copy)]
-pub struct VShapeView<'a, Store: IShapeStore + ?Sized> {
+pub struct VShapeView<'a, Store: IShapeStore> {
     pub store: &'a Store,
     pub handle: Store::Handle,
 }
@@ -730,14 +730,14 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
         // Check src is initialized
         let (src_tracker, _) = self.get_tracker(src.alloc_id());
         assert!(
-            src_tracker.is_init(src.offset as u32, src.offset as u32 + len as u32),
+            src_tracker.is_init(src.offset, src.offset + len as u32),
             "memcpy: src range not initialized"
         );
 
         // Check dst is uninitialized and mark it initialized
         let (dst_tracker, _) = self.get_tracker_mut(dst.alloc_id());
         dst_tracker
-            .mark_init(dst.offset as u32, dst.offset as u32 + len as u32)
+            .mark_init(dst.offset, dst.offset + len as u32)
             .expect("memcpy: dst range already initialized (forgot to drop?)");
     }
 
@@ -759,7 +759,7 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
             "drop_in_place: out of bounds"
         );
 
-        let base = ptr.offset as u32;
+        let base = ptr.offset;
         let end = base + layout.size() as u32;
 
         if shape.is_struct() {
@@ -814,7 +814,7 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
 
         let (tracker, _) = self.get_tracker_mut(ptr.alloc_id());
         tracker
-            .mark_init(ptr.offset as u32, ptr.offset as u32 + len as u32)
+            .mark_init(ptr.offset, ptr.offset + len as u32)
             .expect("default_in_place: range already initialized");
         true
     }

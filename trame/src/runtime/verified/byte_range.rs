@@ -53,6 +53,7 @@ impl ByteRangeTracker {
     }
 
     /// Returns the number of disjoint initialized ranges.
+    #[cfg(any(test, kani))]
     pub fn range_count(&self) -> usize {
         self.count as usize
     }
@@ -252,6 +253,7 @@ impl ByteRangeTracker {
     }
 
     /// Get the initialized ranges as a slice.
+    #[cfg(any(test, kani))]
     pub fn ranges(&self) -> &[(u32, u32)] {
         &self.ranges[..self.count as usize]
     }

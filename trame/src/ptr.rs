@@ -28,6 +28,12 @@ pub trait PtrLike: Copy {
     fn offset(self, n: usize) -> Self;
 }
 
+/// Provide access to a raw pointer when available.
+pub trait PtrAsMut: Copy {
+    /// Returns a raw pointer if this pointer represents real memory.
+    fn as_mut_ptr(self) -> Option<*mut u8>;
+}
+
 impl PtrLike for Ptr {
     #[inline]
     fn offset(self, n: usize) -> Self {
@@ -40,6 +46,20 @@ impl PtrLike for *mut u8 {
     fn offset(self, n: usize) -> Self {
         // SAFETY: caller ensures the resulting pointer is in-bounds.
         unsafe { self.add(n) }
+    }
+}
+
+impl PtrAsMut for Ptr {
+    #[inline]
+    fn as_mut_ptr(self) -> Option<*mut u8> {
+        None
+    }
+}
+
+impl PtrAsMut for *mut u8 {
+    #[inline]
+    fn as_mut_ptr(self) -> Option<*mut u8> {
+        Some(self)
     }
 }
 

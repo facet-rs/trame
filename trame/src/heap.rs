@@ -543,7 +543,10 @@ mod tests {
         let mut store = DynShapeStore::new();
         let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
         // 8-byte struct with two u32 fields
-        let h = store.add(DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]));
+        let h = store.add(DynShapeDef::struct_with_fields(
+            &store,
+            &[(0, u32_h), (4, u32_h)],
+        ));
 
         let shape = store.view(h);
         let u32_shape = store.view(u32_h);
@@ -617,11 +620,17 @@ mod tests {
 
         // Inner struct: { a: u32, b: u32 } at 8 bytes
         let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
-        let inner_h = store.add(DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]));
+        let inner_h = store.add(DynShapeDef::struct_with_fields(
+            &store,
+            &[(0, u32_h), (4, u32_h)],
+        ));
 
         // Outer struct: { x: u32, inner: Inner } at 12 bytes
         // x at offset 0, inner at offset 4
-        let outer_h = store.add(DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, inner_h)]));
+        let outer_h = store.add(DynShapeDef::struct_with_fields(
+            &store,
+            &[(0, u32_h), (4, inner_h)],
+        ));
 
         let outer_shape = store.view(outer_h);
         let u32_shape = store.view(u32_h);
@@ -852,8 +861,14 @@ mod kani_proofs {
 
         let mut store = DynShapeStore::new();
         let u32_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 4).unwrap()));
-        let inner_h = store.add(DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]));
-        let outer_h = store.add(DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, inner_h)]));
+        let inner_h = store.add(DynShapeDef::struct_with_fields(
+            &store,
+            &[(0, u32_h), (4, u32_h)],
+        ));
+        let outer_h = store.add(DynShapeDef::struct_with_fields(
+            &store,
+            &[(0, u32_h), (4, inner_h)],
+        ));
         let outer_shape = store.view(outer_h);
         let u32_shape = store.view(u32_h);
 
@@ -894,8 +909,10 @@ mod kani_proofs {
     fn drop_subshape_preserves_other_field() {
         let mut store = DynShapeStore::new();
         let u32_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
-        let outer_h =
-            store.add(DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]));
+        let outer_h = store.add(DynShapeDef::struct_with_fields(
+            &store,
+            &[(0, u32_h), (4, u32_h)],
+        ));
 
         let outer_shape = store.view(outer_h);
         let u32_shape = store.view(u32_h);
@@ -918,10 +935,14 @@ mod kani_proofs {
     fn drop_nested_struct_clears_inner_only() {
         let mut store = DynShapeStore::new();
         let u32_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
-        let inner_h =
-            store.add(DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]));
-        let outer_h =
-            store.add(DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, inner_h)]));
+        let inner_h = store.add(DynShapeDef::struct_with_fields(
+            &store,
+            &[(0, u32_h), (4, u32_h)],
+        ));
+        let outer_h = store.add(DynShapeDef::struct_with_fields(
+            &store,
+            &[(0, u32_h), (4, inner_h)],
+        ));
 
         let outer_shape = store.view(outer_h);
         let inner_shape = store.view(inner_h);
@@ -945,8 +966,10 @@ mod kani_proofs {
     fn drop_struct_ignores_padding() {
         let mut store = DynShapeStore::new();
         let u32_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
-        let outer_h =
-            store.add(DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (8, u32_h)]));
+        let outer_h = store.add(DynShapeDef::struct_with_fields(
+            &store,
+            &[(0, u32_h), (8, u32_h)],
+        ));
 
         let outer_shape = store.view(outer_h);
 

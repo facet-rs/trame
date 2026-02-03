@@ -21,5 +21,6 @@ mod arena;
 mod byte_range;
 mod dyn_shape;
 mod heap;
+mod ops;
 mod partial;
 mod ptr;

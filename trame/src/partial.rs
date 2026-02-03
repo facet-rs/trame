@@ -6,7 +6,8 @@
 use crate::arena::{Arena, Idx};
 use crate::dyn_shape::{IField, IShape, IStructType};
 use crate::heap::Heap;
-use crate::ptr::PtrLike;
+use crate::ops::{Op, Path, PathSegment, Source};
+use crate::ptr::{PtrAsMut, PtrLike};
 use core::marker::PhantomData;
 
 /// Maximum fields tracked per frame (for verification).
@@ -161,7 +162,7 @@ impl<H: Heap<S>, S: IShape> Frame<H, S> {
 pub struct Partial<H, A, S>
 where
     H: Heap<S>,
-    H::Ptr: PtrLike,
+    H::Ptr: PtrLike + PtrAsMut,
     A: Arena<Frame<H, S>>,
     S: IShape,
 {
@@ -198,6 +199,12 @@ pub enum PartialError {
     AtRoot,
     /// Shape mismatch.
     ShapeMismatch,
+    /// Unsupported path segment.
+    UnsupportedPath { segment: PathSegment },
+    /// Unsupported source.
+    UnsupportedSource,
+    /// Default not available for this shape.
+    DefaultUnavailable,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -210,7 +217,7 @@ struct FieldMeta<S: IShape> {
 impl<H, A, S> Partial<H, A, S>
 where
     H: Heap<S>,
-    H::Ptr: PtrLike,
+    H::Ptr: PtrLike + PtrAsMut,
     A: Arena<Frame<H, S>>,
     S: IShape,
 {
@@ -277,6 +284,181 @@ where
             frame_size
         );
         Ok((meta.shape, frame.data.offset(meta.offset), meta.layout.size()))
+    }
+
+    fn resolve_path(&self, path: Path<'_>) -> Result<(Idx<Frame<H, S>>, Option<usize>), PartialError> {
+        if path.is_empty() {
+            return Ok((self.current, None));
+        }
+
+        let mut idx = self.current;
+        let mut segs = path;
+        if let Some(PathSegment::Root) = segs.first() {
+            idx = self.root;
+            segs = &segs[1..];
+        }
+
+        if segs.is_empty() {
+            return Ok((idx, None));
+        }
+
+        if segs.len() != 1 {
+            return Err(PartialError::UnsupportedPath {
+                segment: segs[0],
+            });
+        }
+
+        match segs[0] {
+            PathSegment::Field(n) => Ok((idx, Some(n as usize))),
+            PathSegment::Append => Err(PartialError::UnsupportedPath {
+                segment: PathSegment::Append,
+            }),
+            PathSegment::Root => Err(PartialError::UnsupportedPath {
+                segment: PathSegment::Root,
+            }),
+        }
+    }
+
+    fn apply_set(
+        &mut self,
+        target_idx: Idx<Frame<H, S>>,
+        field_idx: Option<usize>,
+        src: Source<H::Ptr>,
+    ) -> Result<(), PartialError> {
+        let frame = self.arena.get(target_idx);
+
+        match field_idx {
+            None => {
+                match frame.kind {
+                    FrameKind::Scalar { .. } => {
+                        let size = frame.shape.layout().size();
+                        let dst = frame.data;
+                        let already_init = matches!(frame.kind, FrameKind::Scalar { initialized: true });
+
+                        if already_init {
+                            unsafe { self.heap.drop_in_place(dst, frame.shape) };
+                        }
+
+                        match src {
+                            Source::Imm(src_ptr) => {
+                                self.heap.memcpy(dst, src_ptr, size);
+                            }
+                            Source::Default => {
+                                if let Some(raw) = dst.as_mut_ptr() {
+                                    let ok = unsafe { frame.shape.default_in_place(raw) };
+                                    if !ok {
+                                        return Err(PartialError::DefaultUnavailable);
+                                    }
+                                }
+                                self.heap.mark_init(dst, size);
+                            }
+                            Source::Stage(_) => return Err(PartialError::UnsupportedSource),
+                        }
+
+                        let frame = self.arena.get_mut(target_idx);
+                        if let FrameKind::Scalar { initialized } = &mut frame.kind {
+                            *initialized = true;
+                        }
+                        Ok(())
+                    }
+                    FrameKind::Struct { .. } => Err(PartialError::NotAStruct),
+                }
+            }
+            Some(field_idx) => {
+                match &frame.kind {
+                    FrameKind::Struct { fields } => {
+                        if field_idx >= fields.count as usize {
+                            return Err(PartialError::FieldOutOfBounds {
+                                index: field_idx,
+                                count: fields.count as usize,
+                            });
+                        }
+                        if fields.get_child(field_idx).is_some() {
+                            return Err(PartialError::FieldAlreadyInit { index: field_idx });
+                        }
+                    }
+                    FrameKind::Scalar { .. } => return Err(PartialError::NotAStruct),
+                }
+
+                let already_init = if let FrameKind::Struct { fields } = &frame.kind {
+                    fields.is_init(field_idx)
+                } else {
+                    false
+                };
+
+                let (field_shape, dst, size) = Self::field_ptr(frame, field_idx)?;
+
+                if already_init {
+                    unsafe { self.heap.drop_in_place(dst, field_shape) };
+                    if let FrameKind::Struct { fields } = &mut self.arena.get_mut(target_idx).kind {
+                        fields.mark_not_started(field_idx);
+                    }
+                }
+
+                match src {
+                    Source::Imm(src_ptr) => {
+                        self.heap.memcpy(dst, src_ptr, size);
+                        if let FrameKind::Struct { fields } = &mut self.arena.get_mut(target_idx).kind
+                        {
+                            fields.mark_complete(field_idx);
+                        }
+                        Ok(())
+                    }
+                    Source::Default => {
+                        if let Some(raw) = dst.as_mut_ptr() {
+                            let ok = unsafe { field_shape.default_in_place(raw) };
+                            if !ok {
+                                return Err(PartialError::DefaultUnavailable);
+                            }
+                        }
+                        self.heap.mark_init(dst, size);
+                        if let FrameKind::Struct { fields } = &mut self.arena.get_mut(target_idx).kind
+                        {
+                            fields.mark_complete(field_idx);
+                        }
+                        Ok(())
+                    }
+                    Source::Stage(_cap) => {
+                        if !field_shape.is_struct() {
+                            return Err(PartialError::NotAStruct);
+                        }
+
+                        let child_frame = Frame {
+                            data: dst,
+                            shape: field_shape,
+                            kind: Frame::<H, S>::kind_for_shape(field_shape),
+                            parent: target_idx,
+                            field_in_parent: field_idx as u32,
+                        };
+
+                        let child_idx = self.arena.alloc(child_frame);
+                        if let FrameKind::Struct { fields } = &mut self.arena.get_mut(target_idx).kind
+                        {
+                            fields.set_child(field_idx, child_idx);
+                        }
+                        self.current = child_idx;
+                        Ok(())
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn apply(&mut self, op: Op<'_, H::Ptr>) -> Result<(), PartialError> {
+        self.check_poisoned()?;
+
+        match op {
+            Op::End => self.end_field(),
+            Op::Set { dst, src } => {
+                let (target, field_idx) = self.resolve_path(dst)?;
+                if matches!(src, Source::Stage(_)) && target != self.current {
+                    return Err(PartialError::UnsupportedPath {
+                        segment: PathSegment::Root,
+                    });
+                }
+                self.apply_set(target, field_idx, src)
+            }
+        }
     }
 
     /// Mark a struct field as initialized (for scalar fields).
@@ -558,7 +740,7 @@ where
 impl<H, A, S> Drop for Partial<H, A, S>
 where
     H: Heap<S>,
-    H::Ptr: PtrLike,
+    H::Ptr: PtrLike + PtrAsMut,
     A: Arena<Frame<H, S>>,
     S: IShape,
 {
@@ -876,6 +1058,94 @@ mod tests {
         // Try to end_field at root - should fail
         let err = partial.end_field();
         assert_eq!(err, Err(PartialError::AtRoot));
+    }
+
+    #[test]
+    fn apply_set_imm_field() {
+        let mut store = DynShapeStore::new();
+        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
+        let struct_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h)]);
+        let struct_h = store.add(struct_def);
+        let shape = store.view(struct_h);
+        let u32_shape = store.view(u32_h);
+
+        let mut heap = TestHeap::new();
+        let src = heap.alloc(u32_shape);
+        heap.mark_init(src, 4);
+
+        let arena = TestArena::new();
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+
+        let path = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &path,
+                src: Source::Imm(src),
+            })
+            .unwrap();
+
+        assert!(partial.is_complete());
+        let _ = partial.finish().unwrap();
+    }
+
+    #[test]
+    fn apply_stage_and_end() {
+        let mut store = DynShapeStore::new();
+        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
+        let inner_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
+        let inner_h = store.add(inner_def);
+        let outer_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, inner_h)]);
+        let outer_h = store.add(outer_def);
+
+        let shape = store.view(outer_h);
+        let u32_shape = store.view(u32_h);
+
+        let mut heap = TestHeap::new();
+        let src1 = heap.alloc(u32_shape);
+        let src2 = heap.alloc(u32_shape);
+        heap.mark_init(src1, 4);
+        heap.mark_init(src2, 4);
+
+        let arena = TestArena::new();
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+
+        let outer_x = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &outer_x,
+                src: Source::Imm(src1),
+            })
+            .unwrap();
+
+        let inner_field = [PathSegment::Field(1)];
+        partial
+            .apply(Op::Set {
+                dst: &inner_field,
+                src: Source::Stage(None),
+            })
+            .unwrap();
+
+        let inner_a = [PathSegment::Field(0)];
+        partial
+            .apply(Op::Set {
+                dst: &inner_a,
+                src: Source::Imm(src2),
+            })
+            .unwrap();
+
+        let inner_b = [PathSegment::Field(1)];
+        let src3 = partial.heap.alloc(u32_shape);
+        partial.heap.mark_init(src3, 4);
+        partial
+            .apply(Op::Set {
+                dst: &inner_b,
+                src: Source::Imm(src3),
+            })
+            .unwrap();
+
+        partial.apply(Op::End).unwrap();
+        assert!(partial.is_complete());
+        let _ = partial.finish().unwrap();
     }
 }
 

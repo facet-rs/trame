@@ -95,6 +95,14 @@ pub trait IShape: Copy + PartialEq {
     /// # Safety
     /// - `ptr` must point to a valid, initialized value of this shape's type
     unsafe fn drop_in_place(&self, ptr: *mut u8);
+
+    /// Default-initialize the value at the given pointer.
+    ///
+    /// Returns `true` if the value was initialized, `false` if no default exists.
+    ///
+    /// # Safety
+    /// - `ptr` must point to valid, writable memory for this shape.
+    unsafe fn default_in_place(&self, ptr: *mut u8) -> bool;
 }
 
 /// Interface for struct type information.
@@ -305,6 +313,12 @@ impl<'a> IShape for DynShapeView<'a, DynShapeStore> {
     unsafe fn drop_in_place(&self, _ptr: *mut u8) {
         // No-op for DynShapeView - we only track state, not actual values.
         // In Kani verification, we don't have real values to drop.
+    }
+
+    #[inline]
+    unsafe fn default_in_place(&self, _ptr: *mut u8) -> bool {
+        // For verification, treat default as always available.
+        true
     }
 }
 
@@ -577,6 +591,14 @@ impl IShape for &'static Shape {
         // Use the shape's call_drop_in_place method.
         // This handles types with destructors through the vtable.
         unsafe { self.call_drop_in_place(facet_core::PtrMut::new(ptr)) };
+    }
+
+    #[inline]
+    unsafe fn default_in_place(&self, ptr: *mut u8) -> bool {
+        unsafe {
+            self.call_default_in_place(facet_core::PtrMut::new(ptr).into())
+                .is_some()
+        }
     }
 }
 

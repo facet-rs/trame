@@ -7,11 +7,7 @@ use std::alloc::Layout;
 mod byte_range;
 use byte_range::{ByteRangeError, ByteRangeTracker};
 
-use crate::{
-    IRuntime,
-    node::Node,
-    runtime::{IArena, IField, IHeap, IPtr, IShape, IShapeStore, IStructType, Idx},
-};
+use crate::{IArena, IField, IHeap, IPtr, IRuntime, IShape, IShapeStore, IStructType, Idx};
 
 /// A runtime that verifies all operations
 pub struct VRuntime;
@@ -39,16 +35,14 @@ pub fn vshape_view(handle: VShapeHandle) -> VShapeView<'static, VShapeStore> {
 
 impl IRuntime for VRuntime {
     type Shape = VShapeView<'static, VShapeStore>;
-
     type Heap = VHeap<Self::Shape>;
-
-    type Arena = VArena<Node<Self::Heap, Self::Shape>, MAX_VARENA_SLOTS>;
+    type Arena<T> = VArena<T, MAX_VARENA_SLOTS>;
 
     fn heap() -> Self::Heap {
         VHeap::new()
     }
 
-    fn arena() -> Self::Arena {
+    fn arena<T>() -> Self::Arena<T> {
         VArena::new()
     }
 }

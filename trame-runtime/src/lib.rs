@@ -1,20 +1,21 @@
 //! All traits used to represent a runtime on which trame can operate.
 
+#![cfg_attr(kani, feature(stmt_expr_attributes))]
+#![cfg_attr(kani, feature(proc_macro_hygiene))]
+
 pub mod live;
 pub mod verified;
 
 use std::{alloc::Layout, marker::PhantomData};
 
-use crate::node::Node;
-
 /// A heap and a shape implementation, over which Trame can be parameterized
 pub trait IRuntime {
     type Shape: IShape;
     type Heap: IHeap<Self::Shape, Ptr: IPtr>;
-    type Arena: IArena<Node<Self::Heap, Self::Shape>>;
+    type Arena<T>: IArena<T>;
 
     fn heap() -> Self::Heap;
-    fn arena() -> Self::Arena;
+    fn arena<T>() -> Self::Arena<T>;
 }
 
 /// Marker trait for runtimes that use real facet shapes and raw pointers.
@@ -198,7 +199,7 @@ pub trait IArena<T> {
 /// The phantom type prevents mixing indices from different arenas.
 #[derive(Debug)]
 pub struct Idx<T> {
-    raw: u32,
+    pub raw: u32,
     _ty: PhantomData<fn() -> T>,
 }
 

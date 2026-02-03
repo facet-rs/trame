@@ -33,7 +33,7 @@ where
     heap: R::Heap,
 
     /// Arena holding Nodes.
-    arena: R::Arena,
+    arena: R::Arena<Node<R::Heap, R::Shape>>,
 
     /// Root Node index.
     root: Idx<Node<R::Heap, R::Shape>>,

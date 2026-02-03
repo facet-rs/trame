@@ -21,7 +21,8 @@ mod node;
 mod ops;
 mod trame;
 
-pub mod runtime;
+// Re-export trame-runtime
+pub use trame_runtime as runtime;
 
 pub use ops::{Op, Path, PathSegment, Source};
 

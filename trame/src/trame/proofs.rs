@@ -29,68 +29,67 @@ fn scalar_init_complete() {
     kani::assert(trame.is_complete(), "complete after init");
 }
 
-//     #[kani::proof]
-//     #[kani::unwind(10)]
-//     fn struct_all_fields_required() {
-//         let field_count: u8 = kani::any();
-//         kani::assume(field_count > 0 && field_count <= 3);
+#[kani::proof]
+#[kani::unwind(10)]
+fn struct_all_fields_required() {
+    let field_count: u8 = kani::any();
+    kani::assume(field_count > 0 && field_count <= 3);
 
-//         let mut store = VShapeStore::new();
-//         let scalar_h = store.add(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+    let scalar_h = vshape_register(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
 
-//         let mut fields_arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
-//         for i in 0..(field_count as usize) {
-//             fields_arr[i] = VFieldDef::new(i * 4, scalar_h);
-//         }
+    let mut fields_arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
+    for i in 0..(field_count as usize) {
+        fields_arr[i] = VFieldDef::new(i * 4, scalar_h);
+    }
 
-//         let struct_def = VShapeDef {
-//             layout: Layout::from_size_align((field_count as usize) * 4, 1).unwrap(),
-//             def: VDef::Struct(VStructDef {
-//                 field_count,
-//                 fields: fields_arr,
-//             }),
-//         };
-//         let struct_h = store.add(struct_def);
-//         let shape = store.view(struct_h);
+    let struct_def = VShapeDef {
+        layout: Layout::from_size_align((field_count as usize) * 4, 1).unwrap(),
+        def: VDef::Struct(VStructDef {
+            field_count,
+            fields: fields_arr,
+        }),
+    };
+    let struct_h = vshape_register(struct_def);
+    let shape = vshape_view(struct_h);
+    let scalar_shape = vshape_view(scalar_h);
 
-//         let mut heap = TestHeap::new();
-//         let scalar_shape = store.view(scalar_h);
-//         let src = unsafe { heap.alloc(scalar_shape) };
-//         heap.mark_init(src, 4);
-//         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(shape) };
+    let mut heap = VRuntime::heap();
+    let src = unsafe { heap.alloc(scalar_shape) };
+    unsafe { heap.default_in_place(src, scalar_shape) };
 
-//         // Init all but one field
-//         let skip_field: u8 = kani::any();
-//         kani::assume(skip_field < field_count);
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, shape) };
 
-//         for i in 0..(field_count as usize) {
-//             if i != skip_field as usize {
-//                 let path = [PathSegment::Field(i as u32)];
-//                 trame
-//                     .apply(Op::Set {
-//                         dst: &path,
-//                         src: Source::Imm(src),
-//                     })
-//                     .unwrap();
-//             }
-//         }
+    // Init all but one field
+    let skip_field: u8 = kani::any();
+    kani::assume(skip_field < field_count);
 
-//         // Should not be complete
-//         kani::assert(!trame.is_complete(), "incomplete without all fields");
+    for i in 0..(field_count as usize) {
+        if i != skip_field as usize {
+            let path = [PathSegment::Field(i as u32)];
+            trame
+                .apply(Op::Set {
+                    dst: &path,
+                    src: Source::Imm(src),
+                })
+                .unwrap();
+        }
+    }
 
-//         // Init the skipped field
-//         let path = [PathSegment::Field(skip_field as u32)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &path,
-//                 src: Source::Imm(src),
-//             })
-//             .unwrap();
+    // Should not be complete
+    kani::assert(!trame.is_complete(), "incomplete without all fields");
 
-//         // Now should be complete
-//         kani::assert(trame.is_complete(), "complete with all fields");
-//     }
+    // Init the skipped field
+    let path = [PathSegment::Field(skip_field as u32)];
+    trame
+        .apply(Op::Set {
+            dst: &path,
+            src: Source::Imm(src),
+        })
+        .unwrap();
+
+    // Now should be complete
+    kani::assert(trame.is_complete(), "complete with all fields");
+}
 
 //     /// Prove: staging the same field via Root while in a child re-enters
 //     #[kani::proof]

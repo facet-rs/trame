@@ -14,7 +14,6 @@ use crate::{
     runtime::{IArena, IField, IHeap, IPtr, IRuntime, IShape, IStructType, Idx, LiveRuntime},
 };
 use core::marker::PhantomData;
-use core::mem::ManuallyDrop;
 
 type Heap<R> = <R as IRuntime>::Heap;
 type Shape<R> = <R as IRuntime>::Shape;
@@ -446,6 +445,7 @@ where
         let heap = core::mem::replace(&mut this.heap, R::heap());
         let arena = core::mem::replace(&mut this.arena, R::arena());
         drop(arena);
+        this.poisoned = true;
 
         Ok(HeapValue::new(heap, data, shape))
     }

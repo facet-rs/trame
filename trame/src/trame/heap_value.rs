@@ -44,7 +44,7 @@ where
 {
     /// Materialize a concrete value from this heap allocation.
     pub fn materialize<T: facet_core::Facet<'facet>>(self) -> Result<T, crate::trame::TrameError> {
-        if !core::ptr::eq(self.shape, T::SHAPE) {
+        if self.shape != T::SHAPE {
             return Err(crate::trame::TrameError::ShapeMismatch);
         }
         let mut this = core::mem::ManuallyDrop::new(self);

@@ -4,7 +4,9 @@
 //! fields have been initialized and ensuring proper cleanup on failure.
 
 mod errors;
+mod heap_value;
 pub use errors::TrameError;
+pub use heap_value::HeapValue;
 
 use crate::{
     Op, Path, PathSegment, Source,
@@ -12,6 +14,7 @@ use crate::{
     runtime::{IArena, IField, IHeap, IPtr, IRuntime, IShape, IStructType, Idx, LiveRuntime},
 };
 use core::marker::PhantomData;
+use core::mem::ManuallyDrop;
 
 type Heap<R> = <R as IRuntime>::Heap;
 type Shape<R> = <R as IRuntime>::Shape;
@@ -425,25 +428,26 @@ where
         self.node_is_complete(self.current)
     }
 
-    /// Build the value, returning ownership of heap and arena.
+    /// Build the value, returning a HeapValue wrapper.
     ///
     /// Returns error if not all fields are initialized.
-    pub fn build(self) -> Result<(Heap<R>, Arena<R>, Ptr<R>), TrameError> {
+    pub fn build(self) -> Result<HeapValue<'facet, R>, TrameError> {
         self.check_poisoned()?;
 
         if !self.node_is_complete(self.current) {
             return Err(TrameError::Incomplete);
         }
 
-        let node = self.arena.get(self.root);
-        let data = node.data;
+        let mut this = self;
+        let (data, shape) = {
+            let node = this.arena.get(this.root);
+            (node.data, node.shape)
+        };
+        let heap = core::mem::replace(&mut this.heap, R::heap());
+        let arena = core::mem::replace(&mut this.arena, R::arena());
+        drop(arena);
 
-        // Don't run Drop - we're transferring ownership
-        let heap = unsafe { core::ptr::read(&self.heap) };
-        let arena = unsafe { core::ptr::read(&self.arena) };
-        core::mem::forget(self);
-
-        Ok((heap, arena, data))
+        Ok(HeapValue::new(heap, data, shape))
     }
 
     /// Poison the Trame, cleaning up all initialized fields.

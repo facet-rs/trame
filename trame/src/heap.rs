@@ -887,4 +887,78 @@ mod kani_proofs {
         // Dealloc outer
         heap.dealloc(outer_ptr, outer_shape);
     }
+
+    /// Prove: dropping a subshape clears only that range.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn drop_subshape_preserves_other_field() {
+        let mut store = DynShapeStore::new();
+        let u32_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+        let outer_h =
+            store.add(DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]));
+
+        let outer_shape = store.view(outer_h);
+        let u32_shape = store.view(u32_h);
+
+        let mut heap = VerifiedHeap::<S<'_>>::new();
+        let ptr = heap.alloc(outer_shape);
+
+        heap.mark_init(ptr, 4);
+        heap.mark_init(ptr.offset(4), 4);
+
+        unsafe { heap.drop_in_place(ptr.offset(4), u32_shape) };
+
+        kani::assert(heap.is_init(ptr, 4), "field 0 still init");
+        kani::assert(!heap.is_init(ptr.offset(4), 4), "field 1 cleared");
+    }
+
+    /// Prove: dropping a nested struct clears only its fields.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn drop_nested_struct_clears_inner_only() {
+        let mut store = DynShapeStore::new();
+        let u32_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+        let inner_h =
+            store.add(DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]));
+        let outer_h =
+            store.add(DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, inner_h)]));
+
+        let outer_shape = store.view(outer_h);
+        let inner_shape = store.view(inner_h);
+
+        let mut heap = VerifiedHeap::<S<'_>>::new();
+        let outer_ptr = heap.alloc(outer_shape);
+        let inner_ptr = outer_ptr.offset(4);
+
+        heap.mark_init(outer_ptr, 4); // outer.x
+        heap.mark_init(inner_ptr, 8); // inner.a + inner.b
+
+        unsafe { heap.drop_in_place(inner_ptr, inner_shape) };
+
+        kani::assert(heap.is_init(outer_ptr, 4), "outer.x still init");
+        kani::assert(!heap.is_init(inner_ptr, 8), "inner cleared");
+    }
+
+    /// Prove: dropping a struct ignores uninitialized padding.
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn drop_struct_ignores_padding() {
+        let mut store = DynShapeStore::new();
+        let u32_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+        let outer_h =
+            store.add(DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (8, u32_h)]));
+
+        let outer_shape = store.view(outer_h);
+
+        let mut heap = VerifiedHeap::<S<'_>>::new();
+        let ptr = heap.alloc(outer_shape);
+
+        heap.mark_init(ptr, 4);
+        heap.mark_init(ptr.offset(8), 4);
+
+        unsafe { heap.drop_in_place(ptr, outer_shape) };
+
+        kani::assert(!heap.is_init(ptr, 4), "field 0 cleared");
+        kani::assert(!heap.is_init(ptr.offset(8), 4), "field 1 cleared");
+    }
 }

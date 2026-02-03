@@ -166,6 +166,33 @@ impl<S: IShape> Default for VerifiedHeap<S> {
     }
 }
 
+impl<S: IShape> VerifiedHeap<S> {
+    fn matches_subshape(stored: S, offset: usize, target: S) -> bool {
+        if offset == 0 && stored == target {
+            return true;
+        }
+
+        if !stored.is_struct() {
+            return false;
+        }
+
+        let st = stored.as_struct().expect("struct shape");
+        let field_count = st.field_count();
+        for i in 0..field_count {
+            let field = st.field(i).expect("field index in range");
+            let field_shape = field.shape();
+            let field_size = field_shape.layout().size();
+            let start = field.offset();
+            let end = start + field_size;
+            if offset >= start && offset < end {
+                return Self::matches_subshape(field_shape, offset - start, target);
+            }
+        }
+
+        false
+    }
+}
+
 impl<S: IShape> Heap<S> for VerifiedHeap<S> {
     type Ptr = Ptr;
 
@@ -239,7 +266,15 @@ impl<S: IShape> Heap<S> for VerifiedHeap<S> {
 
         let (tracker, stored_shape) = self.get_tracker_mut(ptr.alloc_id());
 
-        assert!(*stored_shape == shape, "drop_in_place: shape mismatch");
+        assert!(
+            Self::matches_subshape(*stored_shape, ptr.offset_bytes(), shape),
+            "drop_in_place: shape mismatch"
+        );
+
+        assert!(
+            ptr.offset_bytes() + layout.size() <= ptr.alloc_size(),
+            "drop_in_place: out of bounds"
+        );
 
         let base = ptr.offset as u32;
         let end = base + layout.size() as u32;
@@ -506,10 +541,9 @@ mod tests {
     #[test]
     fn verified_partial_init() {
         let mut store = DynShapeStore::new();
-        // 8-byte allocation
-        let h = store.add(DynShapeDef::scalar(Layout::from_size_align(8, 4).unwrap()));
-        // Add u32 shape for dropping individual fields
         let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
+        // 8-byte struct with two u32 fields
+        let h = store.add(DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]));
 
         let shape = store.view(h);
         let u32_shape = store.view(u32_h);
@@ -582,14 +616,12 @@ mod tests {
         let mut store = DynShapeStore::new();
 
         // Inner struct: { a: u32, b: u32 } at 8 bytes
-        let _inner_h = store.add(DynShapeDef::scalar(Layout::from_size_align(8, 4).unwrap()));
+        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
+        let inner_h = store.add(DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]));
 
         // Outer struct: { x: u32, inner: Inner } at 12 bytes
         // x at offset 0, inner at offset 4
-        let outer_h = store.add(DynShapeDef::scalar(Layout::from_size_align(12, 4).unwrap()));
-
-        // u32 shape for dropping individual fields
-        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
+        let outer_h = store.add(DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, inner_h)]));
 
         let outer_shape = store.view(outer_h);
         let u32_shape = store.view(u32_h);

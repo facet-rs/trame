@@ -12,10 +12,9 @@ pub trait IRuntime {
     type Shape: IShape;
     type Heap: IHeap<Self::Shape, Ptr: IPtr>;
     type Arena: IArena<Node<Self::Heap, Self::Shape>>;
-    type ShapeStore: IShapeStore;
 
-    /// Construct the runtime components.
-    fn parts() -> (Self::ShapeStore, Self::Heap, Self::Arena);
+    fn heap() -> Self::Heap;
+    fn arena() -> Self::Arena;
 }
 
 // ==================================================================

@@ -81,7 +81,9 @@ where
     ///
     /// # Safety
     /// The caller must ensure the shape is valid and sized.
-    pub unsafe fn new(mut heap: Heap<R>, mut arena: Arena<R>, shape: Shape<R>) -> Self {
+    pub unsafe fn new(shape: Shape<R>) -> Self {
+        let mut heap = R::heap();
+        let mut arena = R::arena();
         let data = unsafe { heap.alloc(shape) };
         let node = Node::new_root(data, shape);
         let root = arena.alloc(node);
@@ -558,16 +560,12 @@ mod tests {
 
     #[test]
     fn scalar_lifecycle() {
-        let mut store = VShapeStore::new();
-        let h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
-        let shape = store.view(h);
-
-        let mut heap = TestHeap::new();
+        let h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
+        let shape = vshape_view(h);
+        let mut heap = VRuntime::heap();
         let src = unsafe { heap.alloc(shape) };
         unsafe { heap.default_in_place(src, shape) };
-
-        let arena = TestArena::new();
-        let mut trame = unsafe { Trame::new(heap, arena, shape) };
+        let mut trame = unsafe { Trame::<VRuntime>::new(shape) };
 
         assert!(!trame.is_complete());
         let root: [PathSegment; 0] = [];
@@ -598,7 +596,7 @@ mod tests {
     //         unsafe { heap.default_in_place(src1, u32_shape) };
 
     //         let arena = TestArena::new();
-    //         let mut trame = unsafe { Trame::new(heap, arena, shape) };
+    //         let mut trame = unsafe { Trame::new(shape) };
 
     //         assert!(!trame.is_complete());
 
@@ -642,7 +640,7 @@ mod tests {
     //         unsafe { heap.default_in_place(src2, u32_shape) };
 
     //         let arena = TestArena::new();
-    //         let mut trame = unsafe { Trame::new(heap, arena, shape) };
+    //         let mut trame = unsafe { Trame::new(shape) };
 
     //         // Init in reverse order
     //         let f2 = [PathSegment::Field(2)];
@@ -684,7 +682,7 @@ mod tests {
     //         let heap = TestHeap::new();
     //         let arena = TestArena::new();
 
-    //         let mut trame = unsafe { Trame::new(heap, arena, shape) };
+    //         let mut trame = unsafe { Trame::new(shape) };
 
     //         let field0 = [PathSegment::Field(0)];
     //         trame
@@ -729,7 +727,7 @@ mod tests {
     //         unsafe { heap.default_in_place(src, u32_shape) };
 
     //         let arena = TestArena::new();
-    //         let mut trame = unsafe { Trame::new(heap, arena, shape) };
+    //         let mut trame = unsafe { Trame::new(shape) };
 
     //         let f0 = [PathSegment::Field(0)];
     //         trame
@@ -757,7 +755,7 @@ mod tests {
     //         unsafe { heap.default_in_place(src, u32_shape) };
 
     //         let arena = TestArena::new();
-    //         let mut trame = unsafe { Trame::new(heap, arena, shape) };
+    //         let mut trame = unsafe { Trame::new(shape) };
 
     //         let f0 = [PathSegment::Field(0)];
     //         trame
@@ -796,7 +794,7 @@ mod tests {
     //         unsafe { heap.default_in_place(src_b, u32_shape) };
 
     //         let arena = TestArena::new();
-    //         let mut trame = unsafe { Trame::new(heap, arena, shape) };
+    //         let mut trame = unsafe { Trame::new(shape) };
 
     //         assert_eq!(trame.depth(), 0);
     //         assert!(!trame.is_complete());
@@ -862,7 +860,7 @@ mod tests {
     //         unsafe { heap.default_in_place(src, u32_shape) };
 
     //         let arena = TestArena::new();
-    //         let mut trame = unsafe { Trame::new(heap, arena, shape) };
+    //         let mut trame = unsafe { Trame::new(shape) };
 
     //         let inner_field = [PathSegment::Field(0)];
     //         trame
@@ -902,7 +900,7 @@ mod tests {
     //         unsafe { heap.default_in_place(src, u32_shape) };
 
     //         let arena = TestArena::new();
-    //         let mut trame = unsafe { Trame::new(heap, arena, shape) };
+    //         let mut trame = unsafe { Trame::new(shape) };
 
     //         let inner_field = [PathSegment::Field(0)];
     //         trame
@@ -942,7 +940,7 @@ mod tests {
     //         unsafe { heap.default_in_place(src, u32_shape) };
 
     //         let arena = TestArena::new();
-    //         let mut trame = unsafe { Trame::new(heap, arena, shape) };
+    //         let mut trame = unsafe { Trame::new(shape) };
 
     //         let inner_field = [PathSegment::Field(0)];
     //         trame
@@ -977,7 +975,7 @@ mod tests {
     //         unsafe { heap.default_in_place(src, u32_shape) };
 
     //         let arena = TestArena::new();
-    //         let mut trame = unsafe { Trame::new(heap, arena, shape) };
+    //         let mut trame = unsafe { Trame::new(shape) };
 
     //         let f0 = [PathSegment::Field(0)];
     //         trame
@@ -1005,7 +1003,7 @@ mod tests {
     //         unsafe { heap.default_in_place(src, u32_shape) };
 
     //         let arena = TestArena::new();
-    //         let mut trame = unsafe { Trame::new(heap, arena, shape) };
+    //         let mut trame = unsafe { Trame::new(shape) };
 
     //         let path = [PathSegment::Field(0)];
     //         trame
@@ -1038,7 +1036,7 @@ mod tests {
     //         unsafe { heap.default_in_place(src2, u32_shape) };
 
     //         let arena = TestArena::new();
-    //         let mut trame = unsafe { Trame::new(heap, arena, shape) };
+    //         let mut trame = unsafe { Trame::new(shape) };
 
     //         let outer_x = [PathSegment::Field(0)];
     //         trame
@@ -1107,7 +1105,7 @@ mod tests {
 //         heap.mark_init(src, 4);
 //         let arena = TestArena::new();
 
-//         let mut trame = unsafe { Trame::new(heap, arena, shape) };
+//         let mut trame = unsafe { Trame::new(shape) };
 
 //         kani::assert(!trame.is_complete(), "not complete initially");
 //         let root: [PathSegment; 0] = [];
@@ -1149,7 +1147,7 @@ mod tests {
 //         let src = unsafe { heap.alloc(scalar_shape) };
 //         heap.mark_init(src, 4);
 //         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(heap, arena, shape) };
+//         let mut trame = unsafe { Trame::new(shape) };
 
 //         // Init all but one field
 //         let skip_field: u8 = kani::any();
@@ -1218,7 +1216,7 @@ mod tests {
 
 //         let heap = TestHeap::new();
 //         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(heap, arena, shape) };
+//         let mut trame = unsafe { Trame::new(shape) };
 
 //         let path = [PathSegment::Field(0)];
 //         trame
@@ -1279,7 +1277,7 @@ mod tests {
 //         let src = unsafe { heap.alloc(scalar_shape) };
 //         heap.mark_init(src, 4);
 //         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(heap, arena, shape) };
+//         let mut trame = unsafe { Trame::new(shape) };
 
 //         // Init only first field
 //         let f0 = [PathSegment::Field(0)];
@@ -1329,7 +1327,7 @@ mod tests {
 //         let src = unsafe { heap.alloc(scalar_shape) };
 //         heap.mark_init(src, 4);
 //         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(heap, arena, shape) };
+//         let mut trame = unsafe { Trame::new(shape) };
 
 //         // Try to init field beyond bounds
 //         let bad_idx: u8 = kani::any();
@@ -1380,7 +1378,7 @@ mod tests {
 //         heap.mark_init(src1, 4);
 //         heap.mark_init(src2, 4);
 //         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(heap, arena, shape) };
+//         let mut trame = unsafe { Trame::new(shape) };
 
 //         // Choose arbitrary init order
 //         let first: u8 = kani::any();
@@ -1473,7 +1471,7 @@ mod tests {
 //         heap.mark_init(src_a, 4);
 //         heap.mark_init(src_b, 4);
 //         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(heap, arena, shape) };
+//         let mut trame = unsafe { Trame::new(shape) };
 
 //         let outer_x = [PathSegment::Field(0)];
 //         trame
@@ -1557,7 +1555,7 @@ mod tests {
 //         heap.mark_init(src_a, 4);
 //         heap.mark_init(src_b, 4);
 //         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(heap, arena, shape) };
+//         let mut trame = unsafe { Trame::new(shape) };
 
 //         // Verify initial state
 //         kani::assert(trame.depth() == 0, "starts at depth 0");
@@ -1645,7 +1643,7 @@ mod tests {
 
 //         let heap = TestHeap::new();
 //         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(heap, arena, shape) };
+//         let mut trame = unsafe { Trame::new(shape) };
 
 //         let path = [PathSegment::Field(0)];
 //         trame
@@ -1701,7 +1699,7 @@ mod tests {
 //         let src = unsafe { heap.alloc(scalar_shape) };
 //         heap.mark_init(src, 4);
 //         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(heap, arena, shape) };
+//         let mut trame = unsafe { Trame::new(shape) };
 
 //         let f0 = [PathSegment::Field(0)];
 //         trame
@@ -1759,7 +1757,7 @@ mod tests {
 //         let src = unsafe { heap.alloc(scalar_shape) };
 //         heap.mark_init(src, 4);
 //         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(heap, arena, shape) };
+//         let mut trame = unsafe { Trame::new(shape) };
 
 //         let inner_field = [PathSegment::Field(0)];
 //         trame
@@ -1823,7 +1821,7 @@ mod tests {
 //         let src = unsafe { heap.alloc(scalar_shape) };
 //         heap.mark_init(src, 4);
 //         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(heap, arena, shape) };
+//         let mut trame = unsafe { Trame::new(shape) };
 
 //         // Enter nested struct
 //         let inner_field = [PathSegment::Field(0)];
@@ -1886,7 +1884,7 @@ mod tests {
 //         let src = unsafe { heap.alloc(scalar_shape) };
 //         heap.mark_init(src, 4);
 //         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(heap, arena, shape) };
+//         let mut trame = unsafe { Trame::new(shape) };
 
 //         kani::assert(trame.depth() == 0, "initial depth is 0");
 
@@ -1926,7 +1924,7 @@ mod tests {
 
 //         let heap = TestHeap::new();
 //         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(heap, arena, shape) };
+//         let mut trame = unsafe { Trame::new(shape) };
 
 //         let inner_field = [PathSegment::Field(1)];
 //         trame

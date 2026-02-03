@@ -44,10 +44,12 @@ impl IRuntime for VRuntime {
 
     type Arena = VArena<Node<Self::Heap, Self::Shape>, MAX_VARENA_SLOTS>;
 
-    type ShapeStore = &'static VShapeStore;
+    fn heap() -> Self::Heap {
+        VHeap::new()
+    }
 
-    fn parts() -> (Self::ShapeStore, Self::Heap, Self::Arena) {
-        (vshape_store(), VHeap::new(), VArena::new())
+    fn arena() -> Self::Arena {
+        VArena::new()
     }
 }
 

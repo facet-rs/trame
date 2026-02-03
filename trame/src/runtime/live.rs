@@ -12,10 +12,13 @@ impl IRuntime for LRuntime {
     type Shape = &'static Shape;
     type Heap = LHeap;
     type Arena = LArena<Node<Self::Heap, Self::Shape>>;
-    type ShapeStore = LShapeStore;
 
-    fn parts() -> (Self::ShapeStore, Self::Heap, Self::Arena) {
-        (LShapeStore, LHeap::new(), LArena::new())
+    fn heap() -> Self::Heap {
+        LHeap::new()
+    }
+
+    fn arena() -> Self::Arena {
+        LArena::new()
     }
 }
 

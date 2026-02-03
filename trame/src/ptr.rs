@@ -246,6 +246,25 @@ mod kani_proofs {
         kani::assert(ptr_chained == ptr_direct, "chained offsets equal direct");
     }
 
+    /// Prove: chained offsets preserve alloc_id and size.
+    #[kani::proof]
+    fn chained_offsets_preserve_metadata() {
+        let alloc_id: u8 = kani::any();
+        let size: u32 = kani::any();
+        let offset1: u32 = kani::any();
+        let offset2: u32 = kani::any();
+
+        kani::assume(size <= 256);
+        kani::assume(offset1 <= size);
+        kani::assume(offset2 <= size - offset1);
+
+        let ptr = Ptr::new(alloc_id, size);
+        let ptr2 = ptr.offset(offset1 as usize).offset(offset2 as usize);
+
+        kani::assert(ptr2.alloc_id() == alloc_id, "alloc_id preserved");
+        kani::assert(ptr2.alloc_size() == size as usize, "size preserved");
+    }
+
     /// Prove: remaining + offset_bytes == size
     #[kani::proof]
     fn remaining_plus_offset_equals_size() {

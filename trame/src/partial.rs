@@ -1501,4 +1501,33 @@ mod kani_proofs {
         partial.end_field().unwrap();
         kani::assert(partial.depth() == 0, "depth back to 0 after end");
     }
+
+    /// Prove: begin_field uses the same allocation as the parent.
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn begin_field_same_alloc_id() {
+        let mut store = DynShapeStore::new();
+        let u32_h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+        let inner_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, u32_h)]);
+        let inner_h = store.add(inner_def);
+        let outer_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (4, inner_h)]);
+        let outer_h = store.add(outer_def);
+        let shape = store.view(outer_h);
+
+        let heap = TestHeap::new();
+        let arena = TestArena::new();
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
+
+        unsafe { partial.begin_field(1).unwrap() };
+
+        let child = partial.current;
+        let child_frame = partial.arena.get(child);
+        let parent_frame = partial.arena.get(child_frame.parent);
+
+        kani::assert(
+            child_frame.data.alloc_id() == parent_frame.data.alloc_id(),
+            "same allocation id",
+        );
+        kani::assert(child_frame.data.offset_bytes() == 4, "offset is field offset");
+    }
 }

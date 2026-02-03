@@ -253,71 +253,70 @@ fn out_of_bounds_rejected() {
     );
 }
 
-//     /// Prove: any init order works for completion
-//     #[kani::proof]
-//     #[kani::unwind(10)]
-//     fn any_init_order_completes() {
-//         let mut store = VShapeStore::new();
-//         let scalar_h = store.add(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+/// Prove: any init order works for completion
+#[kani::proof]
+#[kani::unwind(10)]
+fn any_init_order_completes() {
+    let scalar_h = vshape_register(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
 
-//         let struct_def = VShapeDef {
-//             layout: Layout::from_size_align(12, 1).unwrap(),
-//             def: VDef::Struct(VStructDef {
-//                 field_count: 3,
-//                 fields: {
-//                     let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
-//                     arr[0] = VFieldDef::new(0, scalar_h);
-//                     arr[1] = VFieldDef::new(4, scalar_h);
-//                     arr[2] = VFieldDef::new(8, scalar_h);
-//                     arr
-//                 },
-//             }),
-//         };
-//         let struct_h = store.add(struct_def);
-//         let shape = store.view(struct_h);
+    let struct_def = VShapeDef {
+        layout: Layout::from_size_align(12, 1).unwrap(),
+        def: VDef::Struct(VStructDef {
+            field_count: 3,
+            fields: {
+                let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
+                arr[0] = VFieldDef::new(0, scalar_h);
+                arr[1] = VFieldDef::new(4, scalar_h);
+                arr[2] = VFieldDef::new(8, scalar_h);
+                arr
+            },
+        }),
+    };
+    let struct_h = vshape_register(struct_def);
+    let shape = vshape_view(struct_h);
+    let scalar_shape = vshape_view(scalar_h);
 
-//         let mut heap = TestHeap::new();
-//         let scalar_shape = store.view(scalar_h);
-//         let src0 = unsafe { heap.alloc(scalar_shape) };
-//         let src1 = unsafe { heap.alloc(scalar_shape) };
-//         let src2 = unsafe { heap.alloc(scalar_shape) };
-//         heap.mark_init(src0, 4);
-//         heap.mark_init(src1, 4);
-//         heap.mark_init(src2, 4);
-//         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(shape) };
+    let mut heap = VRuntime::heap();
+    let src0 = unsafe { heap.alloc(scalar_shape) };
+    let src1 = unsafe { heap.alloc(scalar_shape) };
+    let src2 = unsafe { heap.alloc(scalar_shape) };
+    unsafe { heap.default_in_place(src0, scalar_shape) };
+    unsafe { heap.default_in_place(src1, scalar_shape) };
+    unsafe { heap.default_in_place(src2, scalar_shape) };
 
-//         // Choose arbitrary init order
-//         let first: u8 = kani::any();
-//         let second: u8 = kani::any();
-//         let third: u8 = kani::any();
-//         kani::assume(first < 3 && second < 3 && third < 3);
-//         kani::assume(first != second && second != third && first != third);
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, shape) };
 
-//         let paths = [
-//             [PathSegment::Field(0)],
-//             [PathSegment::Field(1)],
-//             [PathSegment::Field(2)],
-//         ];
-//         let srcs = [src0, src1, src2];
-//         let order = [first as usize, second as usize, third as usize];
-//         for idx in order {
-//             trame
-//                 .apply(Op::Set {
-//                     dst: &paths[idx],
-//                     src: Source::Imm(srcs[idx]),
-//                 })
-//                 .unwrap();
-//         }
+    // Choose arbitrary init order
+    let first: u8 = kani::any();
+    let second: u8 = kani::any();
+    let third: u8 = kani::any();
+    kani::assume(first < 3 && second < 3 && third < 3);
+    kani::assume(first != second && second != third && first != third);
 
-//         kani::assert(
-//             trame.is_complete(),
-//             "complete after all fields in any order",
-//         );
+    let paths = [
+        [PathSegment::Field(0)],
+        [PathSegment::Field(1)],
+        [PathSegment::Field(2)],
+    ];
+    let srcs = [src0, src1, src2];
+    let order = [first as usize, second as usize, third as usize];
+    for idx in order {
+        trame
+            .apply(Op::Set {
+                dst: &paths[idx],
+                src: Source::Imm(srcs[idx]),
+            })
+            .unwrap();
+    }
 
-//         let result = trame.build();
-//         kani::assert(result.is_ok(), "build succeeds when complete");
-//     }
+    kani::assert(
+        trame.is_complete(),
+        "complete after all fields in any order",
+    );
+
+    let result = trame.build();
+    kani::assert(result.is_ok(), "build succeeds when complete");
+}
 
 //     /// Prove: nested struct fields are properly tracked
 //     /// A struct containing another struct as a field should work correctly.

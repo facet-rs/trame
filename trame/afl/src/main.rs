@@ -2,12 +2,12 @@
 use afl::fuzz;
 use arbitrary::Arbitrary;
 use facet::Facet;
-use facet_core::{Field, Shape, StructType, Type, UserType};
+use facet_core::Shape;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use trame::{IRuntime, LRuntime, Op, PathSegment, Source, Trame};
 
 // ============================================================================
-// Compound types for fuzzing (these need Facet derive)
+// Compound types for fuzzing
 // ============================================================================
 
 #[derive(Clone, Debug, Facet, Arbitrary)]
@@ -257,17 +257,9 @@ macro_rules! fuzz_types {
         }
 
         impl FuzzValue {
-            fn as_ptr_and_shape(&mut self) -> (*mut u8, &'static Shape) {
+            fn as_ptr(&mut self) -> *mut u8 {
                 match self {
-                    $( FuzzValue::$val_variant(v) => (v as *mut $val_type as *mut u8, <$val_type>::SHAPE), )*
-                }
-            }
-        }
-
-        impl std::fmt::Debug for FuzzValue {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                match self {
-                    $( FuzzValue::$val_variant(v) => write!(f, "{}({:?})", stringify!($val_variant), v), )*
+                    $( FuzzValue::$val_variant(v) => v as *mut $val_type as *mut u8, )*
                 }
             }
         }
@@ -383,48 +375,43 @@ fuzz_types! {
 }
 
 // ============================================================================
-// FuzzSource + FuzzPath + FuzzOp
+// FuzzOp
 // ============================================================================
 
-#[derive(Clone, Debug, Arbitrary)]
+#[derive(Clone, Arbitrary)]
 pub enum FuzzSource {
     Imm(FuzzValue),
     Default,
     Stage { len_hint: Option<u8> },
 }
 
-#[derive(Clone, Debug, Arbitrary)]
+#[derive(Clone, Copy, Arbitrary)]
 pub enum FuzzPathSegment {
     Field(u8),
     Append,
     Root,
 }
 
-#[derive(Clone, Debug, Arbitrary)]
-pub struct FuzzPath {
-    segments: Vec<FuzzPathSegment>,
-}
-
-impl FuzzPath {
-    fn to_path(&self) -> Vec<PathSegment> {
-        self.segments
-            .iter()
-            .map(|seg| match seg {
-                FuzzPathSegment::Field(n) => PathSegment::Field(*n as u32),
-                FuzzPathSegment::Append => PathSegment::Append,
-                FuzzPathSegment::Root => PathSegment::Root,
-            })
-            .collect()
+impl From<FuzzPathSegment> for PathSegment {
+    fn from(seg: FuzzPathSegment) -> Self {
+        match seg {
+            FuzzPathSegment::Field(n) => PathSegment::Field(n as u32),
+            FuzzPathSegment::Append => PathSegment::Append,
+            FuzzPathSegment::Root => PathSegment::Root,
+        }
     }
 }
 
-#[derive(Clone, Debug, Arbitrary)]
+#[derive(Clone, Arbitrary)]
 pub enum FuzzOp {
-    Set { path: FuzzPath, source: FuzzSource },
+    Set {
+        path: Vec<FuzzPathSegment>,
+        source: FuzzSource,
+    },
     End,
 }
 
-#[derive(Debug, Clone, Arbitrary)]
+#[derive(Clone, Arbitrary)]
 pub struct FuzzInput {
     pub target: FuzzTargetType,
     pub ops: Vec<FuzzOp>,
@@ -437,7 +424,7 @@ pub struct FuzzInput {
 #[cfg(not(feature = "standalone"))]
 fn main() {
     fuzz!(|input: FuzzInput| {
-        run_fuzz(input, false);
+        run_fuzz(input);
     });
 }
 
@@ -449,139 +436,39 @@ fn main() {
     let mut data = Vec::new();
     std::io::stdin().read_to_end(&mut data).unwrap();
     if let Ok(input) = FuzzInput::arbitrary(&mut Unstructured::new(&data)) {
-        run_fuzz(input, true);
+        run_fuzz(input);
     }
 }
 
-fn struct_field_shape(shape: &'static Shape, idx: usize) -> Option<&'static Shape> {
-    match &shape.ty {
-        Type::User(UserType::Struct(StructType { fields, .. })) => {
-            fields.get(idx).map(|field: &Field| field.shape.get())
-        }
-        _ => None,
-    }
-}
-
-fn expected_shape_for_path(
-    root: &'static Shape,
-    current: &'static Shape,
-    path: &[PathSegment],
-) -> Option<&'static Shape> {
-    if path.is_empty() {
-        return Some(current);
-    }
-
-    let mut idx_shape = current;
-    let mut segs = path;
-
-    if let Some(PathSegment::Root) = segs.first() {
-        idx_shape = root;
-        segs = &segs[1..];
-    }
-
-    if segs.is_empty() {
-        return Some(idx_shape);
-    }
-
-    if segs.len() != 1 {
-        return None;
-    }
-
-    match segs[0] {
-        PathSegment::Field(n) => struct_field_shape(idx_shape, n as usize),
-        PathSegment::Append => None,
-        PathSegment::Root => None,
-    }
-}
-
-fn run_fuzz(input: FuzzInput, log: bool) {
+fn run_fuzz(input: FuzzInput) {
     let target_shape = input.target.shape();
-
-    if log {
-        eprintln!("=== Allocating {:?} ===", input.target);
-    }
-
     let heap = LRuntime::heap();
     let mut trame = unsafe { Trame::<LRuntime>::new(heap, target_shape) };
 
-    let mut shape_stack = vec![target_shape];
-
-    for (idx, op) in input.ops.into_iter().enumerate() {
-        let current_shape = *shape_stack.last().unwrap_or(&target_shape);
-
+    for op in input.ops {
         match op {
             FuzzOp::Set { path, mut source } => {
-                let path_buf = path.to_path();
-                let expected = expected_shape_for_path(target_shape, current_shape, &path_buf);
-
-                let result = match &mut source {
-                    FuzzSource::Imm(value) => {
-                        let (ptr, val_shape) = value.as_ptr_and_shape();
-                        let shape_matches = expected
-                            .map(|s| std::ptr::eq(s, val_shape))
-                            .unwrap_or(false);
-
-                        if !shape_matches {
-                            if log {
-                                eprintln!(
-                                    "  [{idx}] skip Imm: shape mismatch expected={:?} got={:?}",
-                                    expected.map(|s| s.id),
-                                    val_shape.id
-                                );
-                            }
-                            continue;
-                        }
-
-                        if log {
-                            eprintln!("  [{idx}] Set dst={:?} src=Imm", path_buf);
-                        }
-
-                        trame.apply(Op::Set {
-                            dst: &path_buf,
-                            src: Source::Imm(ptr),
-                        })
-                    }
-                    FuzzSource::Default => {
-                        if log {
-                            eprintln!("  [{idx}] Set dst={:?} src=Default", path_buf);
-                        }
-                        trame.apply(Op::Set {
-                            dst: &path_buf,
-                            src: Source::Default,
-                        })
-                    }
-                    FuzzSource::Stage { len_hint } => {
-                        if log {
-                            eprintln!("  [{idx}] Set dst={:?} src=Stage({:?})", path_buf, len_hint);
-                        }
-                        trame.apply(Op::Set {
-                            dst: &path_buf,
-                            src: Source::Stage(len_hint.map(|n| n as usize)),
-                        })
-                    }
+                let path_buf: Vec<PathSegment> = path.into_iter().map(Into::into).collect();
+                let src = match &mut source {
+                    FuzzSource::Imm(value) => Source::Imm(value.as_ptr()),
+                    FuzzSource::Default => Source::Default,
+                    FuzzSource::Stage { len_hint } => Source::Stage(len_hint.map(|n| n as usize)),
                 };
-
-                if let Ok(()) = result {
-                    if matches!(source, FuzzSource::Stage { .. }) {
-                        if let Some(child_shape) = expected {
-                            shape_stack.push(child_shape);
-                        }
-                    }
+                if trame
+                    .apply(Op::Set {
+                        dst: &path_buf,
+                        src,
+                    })
+                    .is_err()
+                {
+                    return;
                 }
             }
             FuzzOp::End => {
-                if log {
-                    eprintln!("  [{idx}] End");
-                }
-                let result = trame.apply(Op::End);
-                if result.is_ok() && shape_stack.len() > 1 {
-                    shape_stack.pop();
+                if trame.apply(Op::End).is_err() {
+                    return;
                 }
             }
         }
-    }
-
-    if log {
-        eprintln!("=== Dropping trame ===");
     }
 }

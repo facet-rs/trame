@@ -318,101 +318,99 @@ fn any_init_order_completes() {
     kani::assert(result.is_ok(), "build succeeds when complete");
 }
 
-//     /// Prove: nested struct fields are properly tracked
-//     /// A struct containing another struct as a field should work correctly.
-//     #[kani::proof]
-//     #[kani::unwind(10)]
-//     fn nested_struct_field_tracking() {
-//         let mut store = VShapeStore::new();
+/// Prove: nested struct fields are properly tracked
+/// A struct containing another struct as a field should work correctly.
+#[kani::proof]
+#[kani::unwind(10)]
+fn nested_struct_field_tracking() {
+    // Inner struct: { a: u32, b: u32 }
+    let scalar_h = vshape_register(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
+    let inner_def = VShapeDef {
+        layout: Layout::from_size_align(8, 1).unwrap(),
+        def: VDef::Struct(VStructDef {
+            field_count: 2,
+            fields: {
+                let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
+                arr[0] = VFieldDef::new(0, scalar_h);
+                arr[1] = VFieldDef::new(4, scalar_h);
+                arr
+            },
+        }),
+    };
+    let inner_h = vshape_register(inner_def);
 
-//         // Inner struct: { a: u32, b: u32 }
-//         let scalar_h = store.add(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
-//         let inner_def = VShapeDef {
-//             layout: Layout::from_size_align(8, 1).unwrap(),
-//             def: VDef::Struct(VStructDef {
-//                 field_count: 2,
-//                 fields: {
-//                     let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
-//                     arr[0] = VFieldDef::new(0, scalar_h);
-//                     arr[1] = VFieldDef::new(4, scalar_h);
-//                     arr
-//                 },
-//             }),
-//         };
-//         let inner_h = store.add(inner_def);
+    // Outer struct: { x: u32, inner: Inner }
+    let outer_def = VShapeDef {
+        layout: Layout::from_size_align(12, 1).unwrap(),
+        def: VDef::Struct(VStructDef {
+            field_count: 2,
+            fields: {
+                let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
+                arr[0] = VFieldDef::new(0, scalar_h); // x: u32
+                arr[1] = VFieldDef::new(4, inner_h); // inner: Inner (nested struct!)
+                arr
+            },
+        }),
+    };
+    let outer_h = vshape_register(outer_def);
+    let shape = vshape_view(outer_h);
+    let scalar_shape = vshape_view(scalar_h);
 
-//         // Outer struct: { x: u32, inner: Inner }
-//         let outer_def = VShapeDef {
-//             layout: Layout::from_size_align(12, 1).unwrap(),
-//             def: VDef::Struct(VStructDef {
-//                 field_count: 2,
-//                 fields: {
-//                     let mut arr = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
-//                     arr[0] = VFieldDef::new(0, scalar_h); // x: u32
-//                     arr[1] = VFieldDef::new(4, inner_h); // inner: Inner (nested struct!)
-//                     arr
-//                 },
-//             }),
-//         };
-//         let outer_h = store.add(outer_def);
-//         let shape = store.view(outer_h);
+    // Verify shape structure via IShape trait
+    kani::assert(shape.is_struct(), "outer is struct");
+    let outer_st = shape.as_struct().unwrap();
+    kani::assert(outer_st.field_count() == 2, "outer has 2 fields");
 
-//         // Verify shape structure via IShape trait
-//         kani::assert(shape.is_struct(), "outer is struct");
-//         let outer_st = shape.as_struct().unwrap();
-//         kani::assert(outer_st.field_count() == 2, "outer has 2 fields");
+    // Field 1 should be the nested struct
+    let field1 = outer_st.field(1).unwrap();
+    let field1_shape = field1.shape();
+    kani::assert(field1_shape.is_struct(), "field 1 is nested struct");
 
-//         // Field 1 should be the nested struct
-//         let field1 = outer_st.field(1).unwrap();
-//         let field1_shape = field1.shape();
-//         kani::assert(field1_shape.is_struct(), "field 1 is nested struct");
+    // Construct the outer struct
+    let mut heap = VRuntime::heap();
+    let src_x = unsafe { heap.alloc(scalar_shape) };
+    let src_a = unsafe { heap.alloc(scalar_shape) };
+    let src_b = unsafe { heap.alloc(scalar_shape) };
+    unsafe { heap.default_in_place(src_x, scalar_shape) };
+    unsafe { heap.default_in_place(src_a, scalar_shape) };
+    unsafe { heap.default_in_place(src_b, scalar_shape) };
 
-//         // Construct the outer struct
-//         let mut heap = TestHeap::new();
-//         let scalar_shape = store.view(scalar_h);
-//         let src_x = unsafe { heap.alloc(scalar_shape) };
-//         let src_a = unsafe { heap.alloc(scalar_shape) };
-//         let src_b = unsafe { heap.alloc(scalar_shape) };
-//         heap.mark_init(src_x, 4);
-//         heap.mark_init(src_a, 4);
-//         heap.mark_init(src_b, 4);
-//         let arena = TestArena::new();
-//         let mut trame = unsafe { Trame::new(shape) };
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, shape) };
 
-//         let outer_x = [PathSegment::Field(0)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &outer_x,
-//                 src: Source::Imm(src_x),
-//             })
-//             .unwrap();
-//         let inner_field = [PathSegment::Field(1)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &inner_field,
-//                 src: Source::Stage(None),
-//             })
-//             .unwrap();
-//         let inner_a = [PathSegment::Field(0)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &inner_a,
-//                 src: Source::Imm(src_a),
-//             })
-//             .unwrap();
-//         let inner_b = [PathSegment::Field(1)];
-//         trame
-//             .apply(Op::Set {
-//                 dst: &inner_b,
-//                 src: Source::Imm(src_b),
-//             })
-//             .unwrap();
-//         trame.apply(Op::End).unwrap();
+    let outer_x = [PathSegment::Field(0)];
+    trame
+        .apply(Op::Set {
+            dst: &outer_x,
+            src: Source::Imm(src_x),
+        })
+        .unwrap();
+    let inner_field = [PathSegment::Field(1)];
+    trame
+        .apply(Op::Set {
+            dst: &inner_field,
+            src: Source::Stage(None),
+        })
+        .unwrap();
+    let inner_a = [PathSegment::Field(0)];
+    trame
+        .apply(Op::Set {
+            dst: &inner_a,
+            src: Source::Imm(src_a),
+        })
+        .unwrap();
+    let inner_b = [PathSegment::Field(1)];
+    trame
+        .apply(Op::Set {
+            dst: &inner_b,
+            src: Source::Imm(src_b),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
 
-//         kani::assert(trame.is_complete(), "outer complete after both fields");
-//         let result = trame.build();
-//         kani::assert(result.is_ok(), "build succeeds");
-//     }
+    kani::assert(trame.is_complete(), "outer complete after both fields");
+    let result = trame.build();
+    kani::assert(result.is_ok(), "build succeeds");
+}
 
 //     /// Prove: Stage/End lifecycle works correctly
 //     #[kani::proof]

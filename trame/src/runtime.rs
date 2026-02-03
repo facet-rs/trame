@@ -17,6 +17,11 @@ pub trait IRuntime {
     fn arena() -> Self::Arena;
 }
 
+/// Marker trait for runtimes that use real facet shapes.
+pub trait LiveRuntime: IRuntime<Shape = &'static facet_core::Shape> {}
+
+impl<T> LiveRuntime for T where T: IRuntime<Shape = &'static facet_core::Shape> {}
+
 // ==================================================================
 // Shape
 // ==================================================================

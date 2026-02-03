@@ -9,8 +9,9 @@ pub use errors::TrameError;
 use crate::{
     Op, Path, PathSegment, Source,
     node::{FieldSlot, MAX_NODE_FIELDS, Node, NodeKind, NodeState},
-    runtime::{IArena, IField, IHeap, IPtr, IRuntime, IShape, IStructType, Idx},
+    runtime::{IArena, IField, IHeap, IPtr, IRuntime, IShape, IStructType, Idx, LiveRuntime},
 };
+use core::marker::PhantomData;
 
 type Heap<R> = <R as IRuntime>::Heap;
 type Shape<R> = <R as IRuntime>::Shape;
@@ -22,7 +23,7 @@ type Ptr<R> = <Heap<R> as IHeap<Shape<R>>>::Ptr;
 // ============================================================================
 
 /// Manages incremental construction of a value.
-pub struct Trame<R>
+pub struct Trame<'facet, R>
 where
     R: IRuntime,
 {
@@ -40,6 +41,8 @@ where
 
     /// Whether we've been poisoned (error occurred).
     poisoned: bool,
+
+    _marker: PhantomData<&'facet ()>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -49,7 +52,7 @@ struct FieldMeta<S: IShape> {
     layout: core::alloc::Layout,
 }
 
-impl<R> Trame<R>
+impl<'facet, R> Trame<'facet, R>
 where
     R: IRuntime,
 {
@@ -69,6 +72,7 @@ where
             root,
             current: root,
             poisoned: false,
+            _marker: PhantomData,
         }
     }
 
@@ -512,7 +516,26 @@ where
     }
 }
 
-impl<R> Drop for Trame<R>
+impl<'facet, R> Trame<'facet, R>
+where
+    R: LiveRuntime,
+{
+    /// Allocate a Trame using a concrete Facet type.
+    pub fn alloc<T: facet_core::Facet<'facet>>() -> Result<Self, TrameError> {
+        let shape = T::SHAPE;
+        Ok(unsafe { Trame::new(R::heap(), shape) })
+    }
+
+    /// Allocate a Trame using a shape directly.
+    ///
+    /// # Safety
+    /// The caller must ensure `shape` matches the type that will be materialized.
+    pub unsafe fn alloc_shape(shape: &'static facet_core::Shape) -> Result<Self, TrameError> {
+        Ok(unsafe { Trame::new(R::heap(), shape) })
+    }
+}
+
+impl<'facet, R> Drop for Trame<'facet, R>
 where
     R: IRuntime,
 {

@@ -57,8 +57,7 @@ where
     ///
     /// # Safety
     /// The caller must ensure the shape is valid and sized.
-    pub unsafe fn new(shape: Shape<R>) -> Self {
-        let mut heap = R::heap();
+    pub unsafe fn new(mut heap: R::Heap, shape: Shape<R>) -> Self {
         let mut arena = R::arena();
         let data = unsafe { heap.alloc(shape) };
         let node = Node::new_root(data, shape);
@@ -541,7 +540,7 @@ mod tests {
         let mut heap = VRuntime::heap();
         let src = unsafe { heap.alloc(shape) };
         unsafe { heap.default_in_place(src, shape) };
-        let mut trame = unsafe { Trame::<VRuntime>::new(shape) };
+        let mut trame = unsafe { Trame::<VRuntime>::new(heap, shape) };
 
         assert!(!trame.is_complete());
         let root: [PathSegment; 0] = [];

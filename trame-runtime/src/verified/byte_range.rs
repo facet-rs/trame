@@ -253,7 +253,6 @@ impl ByteRangeTracker {
     }
 
     /// Get the initialized ranges as a slice.
-    #[cfg(any(test, kani))]
     pub fn ranges(&self) -> &[(u32, u32)] {
         &self.ranges[..self.count as usize]
     }

@@ -1,11 +1,32 @@
 use super::*;
 use crate::runtime::live::*;
 use crate::runtime::verified::*;
+use crate::vshape_store_reset;
 use core::alloc::Layout;
 use facet_core::Facet;
 
+/// Guard that resets the global shape store on creation and drop.
+struct FreshStore;
+
+impl FreshStore {
+    fn new() -> Self {
+        unsafe { vshape_store_reset() };
+        Self
+    }
+}
+
+impl Drop for FreshStore {
+    fn drop(&mut self) {
+        // Don't reset during panic - could cause double-panic
+        if !std::thread::panicking() {
+            unsafe { vshape_store_reset() };
+        }
+    }
+}
+
 #[test]
 fn scalar_lifecycle_verified() {
+    let _g = FreshStore::new();
     let h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
     let shape = vshape_view(h);
     let mut heap = VRuntime::heap();
@@ -89,6 +110,7 @@ fn scalar_lifecycle_live_alloc() {
 
 #[test]
 fn struct_lifecycle() {
+    let _g = FreshStore::new();
     let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
     let struct_h = vshape_register(VShapeDef::struct_with_fields(
         vshape_store(),
@@ -130,6 +152,7 @@ fn struct_lifecycle() {
 
 #[test]
 fn struct_any_order() {
+    let _g = FreshStore::new();
     let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
     let struct_h = vshape_register(VShapeDef::struct_with_fields(
         vshape_store(),
@@ -177,6 +200,7 @@ fn struct_any_order() {
 
 #[test]
 fn stage_field_twice_reenters() {
+    let _g = FreshStore::new();
     let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
     let inner_h = vshape_register(VShapeDef::struct_with_fields(vshape_store(), &[(0, u32_h)]));
     let outer_h = vshape_register(VShapeDef::struct_with_fields(
@@ -220,6 +244,7 @@ fn stage_field_twice_reenters() {
 
 #[test]
 fn incomplete_build_fails() {
+    let _g = FreshStore::new();
     let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
     let struct_h = vshape_register(VShapeDef::struct_with_fields(
         vshape_store(),
@@ -246,9 +271,9 @@ fn incomplete_build_fails() {
     assert!(matches!(err, Err(TrameError::Incomplete)));
 }
 
-//     #[test]
 #[test]
 fn drop_cleans_up() {
+    let _g = FreshStore::new();
     let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
     let struct_h = vshape_register(VShapeDef::struct_with_fields(
         vshape_store(),
@@ -278,6 +303,7 @@ fn drop_cleans_up() {
 
 #[test]
 fn nested_struct_begin_end() {
+    let _g = FreshStore::new();
     // Inner struct: { a: u32, b: u32 }
     let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
     let inner_h = vshape_register(VShapeDef::struct_with_fields(
@@ -349,6 +375,7 @@ fn nested_struct_begin_end() {
 
 #[test]
 fn nested_struct_drop_cleans_up() {
+    let _g = FreshStore::new();
     // Inner struct: { a: u32 }
     let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
     let inner_h = vshape_register(VShapeDef::struct_with_fields(vshape_store(), &[(0, u32_h)]));
@@ -387,6 +414,7 @@ fn nested_struct_drop_cleans_up() {
 
 #[test]
 fn nested_struct_trame_inner_cleanup() {
+    let _g = FreshStore::new();
     // Inner struct: { a: u32, b: u32 }
     let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
     let inner_h = vshape_register(VShapeDef::struct_with_fields(
@@ -428,6 +456,7 @@ fn nested_struct_trame_inner_cleanup() {
 
 #[test]
 fn end_op_incomplete_fails() {
+    let _g = FreshStore::new();
     // Inner struct: { a: u32, b: u32 }
     let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
     let inner_h = vshape_register(VShapeDef::struct_with_fields(
@@ -470,6 +499,7 @@ fn end_op_incomplete_fails() {
 
 #[test]
 fn end_op_at_root_fails() {
+    let _g = FreshStore::new();
     let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
     let struct_h = vshape_register(VShapeDef::struct_with_fields(vshape_store(), &[(0, u32_h)]));
     let shape = vshape_view(struct_h);
@@ -495,6 +525,7 @@ fn end_op_at_root_fails() {
 
 #[test]
 fn apply_set_imm_field() {
+    let _g = FreshStore::new();
     let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
     let struct_h = vshape_register(VShapeDef::struct_with_fields(vshape_store(), &[(0, u32_h)]));
     let shape = vshape_view(struct_h);
@@ -520,6 +551,7 @@ fn apply_set_imm_field() {
 
 #[test]
 fn apply_stage_and_end() {
+    let _g = FreshStore::new();
     let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
     let inner_h = vshape_register(VShapeDef::struct_with_fields(
         vshape_store(),

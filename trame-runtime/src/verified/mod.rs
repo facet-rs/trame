@@ -599,6 +599,181 @@ impl From<ByteRangeError> for VHeapError {
     }
 }
 
+// ============================================================================
+// Operation history tracking (for debugging, not for Kani)
+// ============================================================================
+
+/// An operation that was performed on an allocation.
+#[cfg(not(kani))]
+#[derive(Clone)]
+pub struct HeapOp {
+    /// What kind of operation
+    pub kind: HeapOpKind,
+    /// Byte range affected (if applicable)
+    pub range: Option<(u32, u32)>,
+    /// Backtrace at the time of the operation (stored as string since Backtrace isn't Clone)
+    pub backtrace: String,
+}
+
+#[cfg(not(kani))]
+impl std::fmt::Debug for HeapOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.kind)?;
+        if let Some((start, end)) = self.range {
+            write!(f, " [{}..{}]", start, end)?;
+        }
+        write!(f, "\n{}", self.backtrace)
+    }
+}
+
+/// The kind of heap operation.
+#[cfg(not(kani))]
+#[derive(Debug, Clone, Copy)]
+pub enum HeapOpKind {
+    Alloc,
+    MarkInit,
+    MarkUninit,
+    DropInPlace,
+    Dealloc,
+    Memcpy,
+    DefaultInPlace,
+}
+
+/// History of operations for one allocation.
+#[cfg(not(kani))]
+#[derive(Clone, Default, Debug)]
+pub struct AllocHistory {
+    pub ops: Vec<HeapOp>,
+}
+
+#[cfg(not(kani))]
+impl AllocHistory {
+    fn new() -> Self {
+        Self { ops: Vec::new() }
+    }
+
+    fn record(&mut self, kind: HeapOpKind, range: Option<(u32, u32)>) {
+        let bt = std::backtrace::Backtrace::capture();
+        self.ops.push(HeapOp {
+            kind,
+            range,
+            backtrace: bt.to_string(),
+        });
+    }
+
+    fn print(&self, alloc_id: u8) {
+        eprintln!("=== History for allocation {} ===", alloc_id);
+        for (i, op) in self.ops.iter().enumerate() {
+            eprintln!("--- Op {} ---", i);
+            eprintln!("{:?}", op);
+        }
+        eprintln!("=== End history ===");
+    }
+}
+
+/// A range in the allocation with its init status and shape info.
+#[cfg(not(kani))]
+struct LayoutRange {
+    start: u32,
+    end: u32,
+    depth: usize,
+    shape_kind: &'static str,
+    is_init: bool,
+}
+
+/// Print the allocation layout like a "layer cake" or flame graph.
+#[cfg(not(kani))]
+fn print_allocation_layout<S: IShape>(tracker: &ByteRangeTracker, shape: S, alloc_size: u32) {
+    let mut ranges: Vec<LayoutRange> = Vec::new();
+
+    // Recursively collect all ranges from the shape hierarchy
+    fn collect_ranges<S: IShape>(
+        ranges: &mut Vec<LayoutRange>,
+        tracker: &ByteRangeTracker,
+        shape: S,
+        base_offset: u32,
+        depth: usize,
+    ) {
+        let layout = shape.layout().expect("IShape requires sized types");
+        let size = layout.size() as u32;
+        if size == 0 {
+            return;
+        }
+
+        let start = base_offset;
+        let end = base_offset + size;
+        let is_init = tracker.is_init(start, end);
+
+        let shape_kind = if shape.is_struct() {
+            "struct"
+        } else {
+            "scalar"
+        };
+
+        ranges.push(LayoutRange {
+            start,
+            end,
+            depth,
+            shape_kind,
+            is_init,
+        });
+
+        // If struct, recurse into fields
+        if let Some(st) = shape.as_struct() {
+            for i in 0..st.field_count() {
+                if let Some(field) = st.field(i) {
+                    let field_shape = field.shape();
+                    let field_offset = base_offset + field.offset() as u32;
+                    collect_ranges(ranges, tracker, field_shape, field_offset, depth + 1);
+                }
+            }
+        }
+    }
+
+    collect_ranges(&mut ranges, tracker, shape, 0, 0);
+
+    // Sort by depth (deepest first for printing), then by start
+    ranges.sort_by(|a, b| b.depth.cmp(&a.depth).then(a.start.cmp(&b.start)));
+
+    eprintln!("=== Allocation Layout (size={}) ===", alloc_size);
+    eprintln!("Legend: [####] = initialized, [....] = uninitialized");
+    eprintln!();
+
+    // Find max depth for indentation
+    let _max_depth = ranges.iter().map(|r| r.depth).max().unwrap_or(0);
+
+    // Print from shallowest to deepest (reverse the sort for display)
+    ranges.sort_by(|a, b| a.depth.cmp(&b.depth).then(a.start.cmp(&b.start)));
+
+    for range in &ranges {
+        let indent = "  ".repeat(range.depth);
+        let width = (range.end - range.start) as usize;
+        let bar = if range.is_init {
+            "#".repeat(width.min(40))
+        } else {
+            ".".repeat(width.min(40))
+        };
+        let status = if range.is_init { "INIT" } else { "UNINIT" };
+        eprintln!(
+            "{}[{:3}..{:3}] {} {} [{}]",
+            indent, range.start, range.end, range.shape_kind, status, bar
+        );
+    }
+
+    // Also show the raw init ranges from the tracker
+    eprintln!();
+    eprintln!("Raw initialized ranges:");
+    let init_ranges = tracker.ranges();
+    if init_ranges.is_empty() {
+        eprintln!("  (none)");
+    } else {
+        for (start, end) in init_ranges {
+            eprintln!("  [{}..{})", start, end);
+        }
+    }
+    eprintln!("=== End Layout ===");
+}
+
 /// Verified heap that tracks state for Kani proofs.
 ///
 /// This heap doesn't do any real memory operations - it just tracks
@@ -610,6 +785,9 @@ pub struct VHeap<S: IShape> {
     allocs: [Option<(ByteRangeTracker, S)>; MAX_VHEAP_ALLOCS],
     /// Next allocation ID to assign.
     next_id: u8,
+    /// Operation history for each allocation (only when not running under Kani).
+    #[cfg(not(kani))]
+    history: [AllocHistory; MAX_VHEAP_ALLOCS],
 }
 
 impl<S: IShape> VHeap<S> {
@@ -618,6 +796,55 @@ impl<S: IShape> VHeap<S> {
         Self {
             allocs: [const { None }; MAX_VHEAP_ALLOCS],
             next_id: 0,
+            #[cfg(not(kani))]
+            history: [const { AllocHistory { ops: Vec::new() } }; MAX_VHEAP_ALLOCS],
+        }
+    }
+
+    /// Record an operation in the history (no-op under Kani).
+    #[cfg(not(kani))]
+    fn record_op(&mut self, alloc_id: u8, kind: HeapOpKind, range: Option<(u32, u32)>) {
+        self.history[alloc_id as usize].record(kind, range);
+    }
+
+    #[cfg(kani)]
+    fn record_op(&mut self, _alloc_id: u8, _kind: HeapOpKind, _range: Option<(u32, u32)>) {}
+
+    /// Print the history for an allocation (no-op under Kani).
+    #[cfg(not(kani))]
+    fn print_history(&self, alloc_id: u8) {
+        self.history[alloc_id as usize].print(alloc_id);
+        // Also print the current layout if allocation is still live
+        if let Some((tracker, shape)) = &self.allocs[alloc_id as usize] {
+            let alloc_size = shape.layout().map(|l| l.size() as u32).unwrap_or(0);
+            print_allocation_layout(tracker, *shape, alloc_size);
+        }
+    }
+
+    #[cfg(kani)]
+    fn print_history(&self, _alloc_id: u8) {}
+
+    /// Assert a condition, printing history and panicking with message if false.
+    fn assert_with_history(&self, cond: bool, alloc_id: u8, msg: &str) {
+        if !cond {
+            self.print_history(alloc_id);
+            panic!("{}", msg);
+        }
+    }
+
+    /// Expect a Result, printing history and panicking with message if Err.
+    fn expect_with_history<T, E: std::fmt::Debug>(
+        &self,
+        result: Result<T, E>,
+        alloc_id: u8,
+        msg: &str,
+    ) -> T {
+        match result {
+            Ok(v) => v,
+            Err(e) => {
+                self.print_history(alloc_id);
+                panic!("{}: {:?}", msg, e);
+            }
         }
     }
 
@@ -693,25 +920,29 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
         self.allocs[id as usize] = Some((ByteRangeTracker::new(), shape));
         self.next_id += 1;
 
+        self.record_op(id, HeapOpKind::Alloc, Some((0, layout.size() as u32)));
+
         VPtr::new(id, layout.size() as u32)
     }
 
     unsafe fn dealloc(&mut self, ptr: VPtr, shape: S) {
-        assert!(
+        let id = ptr.alloc_id();
+        self.assert_with_history(
             ptr.is_at_start(),
-            "dealloc requires pointer to allocation start (offset {} != 0)",
-            ptr.offset_bytes()
+            id,
+            "dealloc: pointer not at allocation start",
         );
 
-        let (tracker, stored_shape) = self.get_tracker(ptr.alloc_id());
-
-        assert!(*stored_shape == shape, "dealloc: shape mismatch");
-        assert!(
+        let (tracker, stored_shape) = self.get_tracker(id);
+        self.assert_with_history(*stored_shape == shape, id, "dealloc: shape mismatch");
+        self.assert_with_history(
             tracker.is_empty(),
-            "dealloc: allocation still has initialized bytes (did you forget to drop?)"
+            id,
+            "dealloc: allocation still has initialized bytes",
         );
 
-        self.allocs[ptr.alloc_id() as usize] = None;
+        self.record_op(id, HeapOpKind::Dealloc, None);
+        self.allocs[id as usize] = None;
     }
 
     unsafe fn memcpy(&mut self, dst: VPtr, src: VPtr, len: usize) {
@@ -720,27 +951,38 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
         }
 
         // Bounds checks
-        assert!(
-            dst.offset_bytes() + len <= dst.alloc_size(),
-            "memcpy: dst out of bounds"
-        );
-        assert!(
-            src.offset_bytes() + len <= src.alloc_size(),
-            "memcpy: src out of bounds"
-        );
+        if dst.offset_bytes() + len > dst.alloc_size() {
+            self.print_history(dst.alloc_id());
+            panic!("memcpy: dst out of bounds");
+        }
+        if src.offset_bytes() + len > src.alloc_size() {
+            self.print_history(src.alloc_id());
+            panic!("memcpy: src out of bounds");
+        }
 
         // Check src is initialized
         let (src_tracker, _) = self.get_tracker(src.alloc_id());
-        assert!(
-            src_tracker.is_init(src.offset, src.offset + len as u32),
-            "memcpy: src range not initialized"
+        if !src_tracker.is_init(src.offset, src.offset + len as u32) {
+            self.print_history(src.alloc_id());
+            panic!("memcpy: src range not initialized");
+        }
+
+        // Record the memcpy on dst
+        self.record_op(
+            dst.alloc_id(),
+            HeapOpKind::Memcpy,
+            Some((dst.offset, dst.offset + len as u32)),
         );
 
         // Check dst is uninitialized and mark it initialized
         let (dst_tracker, _) = self.get_tracker_mut(dst.alloc_id());
-        dst_tracker
-            .mark_init(dst.offset, dst.offset + len as u32)
-            .expect("memcpy: dst range already initialized (forgot to drop?)");
+        if let Err(e) = dst_tracker.mark_init(dst.offset, dst.offset + len as u32) {
+            self.print_history(dst.alloc_id());
+            panic!(
+                "memcpy: dst range already initialized (forgot to drop?): {:?}",
+                e
+            );
+        }
     }
 
     unsafe fn drop_in_place(&mut self, ptr: VPtr, shape: S) {
@@ -749,17 +991,24 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
             return; // ZST - nothing to drop
         }
 
-        let (tracker, stored_shape) = self.get_tracker_mut(ptr.alloc_id());
-
-        assert!(
-            Self::matches_subshape(*stored_shape, ptr.offset_bytes(), shape),
-            "drop_in_place: shape mismatch"
+        let alloc_id = ptr.alloc_id();
+        self.record_op(
+            alloc_id,
+            HeapOpKind::DropInPlace,
+            Some((ptr.offset, ptr.offset + layout.size() as u32)),
         );
 
-        assert!(
-            ptr.offset_bytes() + layout.size() <= ptr.alloc_size(),
-            "drop_in_place: out of bounds"
-        );
+        let (tracker, stored_shape) = self.get_tracker_mut(alloc_id);
+
+        if !Self::matches_subshape(*stored_shape, ptr.offset_bytes(), shape) {
+            self.print_history(alloc_id);
+            panic!("drop_in_place: shape mismatch");
+        }
+
+        if ptr.offset_bytes() + layout.size() > ptr.alloc_size() {
+            self.print_history(alloc_id);
+            panic!("drop_in_place: out of bounds");
+        }
 
         let base = ptr.offset;
         let end = base + layout.size() as u32;
@@ -780,22 +1029,28 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
                 }
                 let start = base + field.offset() as u32;
                 let field_end = start + field_size;
-                assert!(field_end <= end, "drop_in_place: field out of bounds");
+                if field_end > end {
+                    self.print_history(alloc_id);
+                    panic!("drop_in_place: field out of bounds");
+                }
 
-                tracker
-                    .mark_uninit(start, field_end)
-                    .expect("drop_in_place: field range not initialized");
+                if let Err(e) = tracker.mark_uninit(start, field_end) {
+                    self.print_history(alloc_id);
+                    panic!("drop_in_place: field range not initialized: {:?}", e);
+                }
             }
 
-            tracker
-                .clear_range(base, end)
-                .expect("drop_in_place: clear_range failed");
+            if let Err(e) = tracker.clear_range(base, end) {
+                self.print_history(alloc_id);
+                panic!("drop_in_place: clear_range failed: {:?}", e);
+            }
             return;
         }
 
-        tracker
-            .mark_uninit(base, end)
-            .expect("drop_in_place: range not initialized");
+        if let Err(e) = tracker.mark_uninit(base, end) {
+            self.print_history(alloc_id);
+            panic!("drop_in_place: range not initialized: {:?}", e);
+        }
     }
 
     unsafe fn default_in_place(&mut self, ptr: VPtr, shape: S) -> bool {
@@ -808,16 +1063,25 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
             return true;
         }
 
+        let alloc_id = ptr.alloc_id();
+
         // Bounds check
-        assert!(
-            ptr.offset_bytes() + len <= ptr.alloc_size(),
-            "default_in_place: out of bounds"
+        if ptr.offset_bytes() + len > ptr.alloc_size() {
+            self.print_history(alloc_id);
+            panic!("default_in_place: out of bounds");
+        }
+
+        self.record_op(
+            alloc_id,
+            HeapOpKind::DefaultInPlace,
+            Some((ptr.offset, ptr.offset + len as u32)),
         );
 
-        let (tracker, _) = self.get_tracker_mut(ptr.alloc_id());
-        tracker
-            .mark_init(ptr.offset, ptr.offset + len as u32)
-            .expect("default_in_place: range already initialized");
+        let (tracker, _) = self.get_tracker_mut(alloc_id);
+        if let Err(e) = tracker.mark_init(ptr.offset, ptr.offset + len as u32) {
+            self.print_history(alloc_id);
+            panic!("default_in_place: range already initialized: {:?}", e);
+        }
         true
     }
 }

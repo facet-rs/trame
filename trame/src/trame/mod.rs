@@ -183,16 +183,19 @@ where
         match field_idx {
             None => match node.kind {
                 NodeKind::Scalar { .. } => {
-                    let size = node
-                        .shape
-                        .layout()
-                        .expect("IShape requires sized types")
-                        .size();
+                    let shape = node.shape;
+                    let size = shape.layout().expect("IShape requires sized types").size();
                     let dst = node.data;
                     let already_init = matches!(node.kind, NodeKind::Scalar { initialized: true });
 
                     if already_init {
-                        unsafe { self.heap.drop_in_place(dst, node.shape) };
+                        unsafe { self.heap.drop_in_place(dst, shape) };
+                        // Mark as uninitialized immediately after drop - if the subsequent
+                        // write fails, we must not leave the node claiming to be initialized
+                        let node = self.arena.get_mut(target_idx);
+                        if let NodeKind::Scalar { initialized } = &mut node.kind {
+                            *initialized = false;
+                        }
                     }
 
                     match src.kind {
@@ -200,13 +203,13 @@ where
                             ptr: src_ptr,
                             shape: src_shape,
                         } => {
-                            if src_shape != node.shape {
+                            if src_shape != shape {
                                 return Err(TrameError::ShapeMismatch);
                             }
                             unsafe { self.heap.memcpy(dst, src_ptr, size) };
                         }
                         SourceKind::Default => {
-                            let ok = unsafe { self.heap.default_in_place(dst, node.shape) };
+                            let ok = unsafe { self.heap.default_in_place(dst, shape) };
                             if !ok {
                                 return Err(TrameError::DefaultUnavailable);
                             }

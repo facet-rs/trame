@@ -22,6 +22,27 @@ pub struct Ptr {
     pub size: u32,
 }
 
+/// Pointer-like behavior used by the Heap and Partial layers.
+pub trait PtrLike: Copy {
+    /// Compute a new pointer at a byte offset from this one.
+    fn offset(self, n: usize) -> Self;
+}
+
+impl PtrLike for Ptr {
+    #[inline]
+    fn offset(self, n: usize) -> Self {
+        Ptr::offset(self, n)
+    }
+}
+
+impl PtrLike for *mut u8 {
+    #[inline]
+    fn offset(self, n: usize) -> Self {
+        // SAFETY: caller ensures the resulting pointer is in-bounds.
+        unsafe { self.add(n) }
+    }
+}
+
 impl Ptr {
     /// Create a new pointer to the start of an allocation.
     #[inline]

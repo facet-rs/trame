@@ -215,6 +215,42 @@ impl ByteRangeTracker {
         Ok(())
     }
 
+    /// Clear any initialized bytes within a range.
+    ///
+    /// Unlike `mark_uninit`, this does not require the range to be fully
+    /// initialized; it removes any overlap with existing ranges.
+    pub fn clear_range(&mut self, start: u32, end: u32) -> Result<(), ByteRangeError> {
+        if start >= end {
+            return Err(ByteRangeError::InvalidRange { start, end });
+        }
+
+        let mut new_ranges = [(0, 0); MAX_RANGES];
+        let mut new_count = 0usize;
+
+        for i in 0..self.count as usize {
+            let (r_start, r_end) = self.ranges[i];
+            if end <= r_start || start >= r_end {
+                new_ranges[new_count] = (r_start, r_end);
+                new_count += 1;
+                continue;
+            }
+
+            if r_start < start {
+                new_ranges[new_count] = (r_start, start);
+                new_count += 1;
+            }
+
+            if r_end > end {
+                new_ranges[new_count] = (end, r_end);
+                new_count += 1;
+            }
+        }
+
+        self.ranges = new_ranges;
+        self.count = new_count as u8;
+        Ok(())
+    }
+
     /// Get the initialized ranges as a slice.
     pub fn ranges(&self) -> &[(u32, u32)] {
         &self.ranges[..self.count as usize]
@@ -352,6 +388,28 @@ mod tests {
         assert!(tracker.is_init(0, 4));
         assert!(tracker.is_init(8, 12));
         assert!(!tracker.is_init(4, 8));
+    }
+
+    #[test]
+    fn clear_range_partial_overlap() {
+        let mut tracker = ByteRangeTracker::new();
+        tracker.mark_init(0, 12).unwrap();
+        tracker.clear_range(4, 8).unwrap();
+
+        assert_eq!(tracker.range_count(), 2);
+        assert!(tracker.is_init(0, 4));
+        assert!(tracker.is_init(8, 12));
+        assert!(!tracker.is_init(4, 8));
+    }
+
+    #[test]
+    fn clear_range_full_overlap() {
+        let mut tracker = ByteRangeTracker::new();
+        tracker.mark_init(0, 4).unwrap();
+        tracker.mark_init(6, 10).unwrap();
+        tracker.clear_range(0, 10).unwrap();
+
+        assert!(tracker.is_empty());
     }
 
     #[test]

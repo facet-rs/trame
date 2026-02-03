@@ -14,8 +14,8 @@
 //! needed for nested struct construction without separate allocations.
 
 use crate::byte_range::{ByteRangeError, ByteRangeTracker};
-use crate::dyn_shape::IShape;
-use crate::ptr::Ptr;
+use crate::dyn_shape::{IField, IShape, IStructType};
+use crate::ptr::{Ptr, PtrLike};
 
 /// Maximum number of allocations tracked by VerifiedHeap.
 pub const MAX_ALLOCS: usize = 8;
@@ -29,7 +29,7 @@ pub const MAX_ALLOCS: usize = 8;
 /// - The verified heap catches safety bugs by tracking byte ranges
 pub trait Heap<S: IShape> {
     /// Pointer type used by this heap.
-    type Ptr: Copy;
+    type Ptr: PtrLike;
 
     /// Allocate a region for a value of the given shape.
     ///
@@ -241,8 +241,37 @@ impl<S: IShape> Heap<S> for VerifiedHeap<S> {
 
         assert!(*stored_shape == shape, "drop_in_place: shape mismatch");
 
+        let base = ptr.offset as u32;
+        let end = base + layout.size() as u32;
+
+        if shape.is_struct() {
+            let st = shape.as_struct().expect("struct shape");
+            let field_count = st.field_count();
+
+            for i in 0..field_count {
+                let field = st.field(i).expect("field index in range");
+                let field_shape = field.shape();
+                let field_size = field_shape.layout().size() as u32;
+                if field_size == 0 {
+                    continue;
+                }
+                let start = base + field.offset() as u32;
+                let field_end = start + field_size;
+                assert!(field_end <= end, "drop_in_place: field out of bounds");
+
+                tracker
+                    .mark_uninit(start, field_end)
+                    .expect("drop_in_place: field range not initialized");
+            }
+
+            tracker
+                .clear_range(base, end)
+                .expect("drop_in_place: clear_range failed");
+            return;
+        }
+
         tracker
-            .mark_uninit(ptr.offset as u32, ptr.offset as u32 + layout.size() as u32)
+            .mark_uninit(base, end)
             .expect("drop_in_place: range not initialized");
     }
 
@@ -500,6 +529,47 @@ mod tests {
         // Cleanup (drop in reverse order for variety)
         unsafe { heap.drop_in_place(ptr.offset(4), u32_shape) };
         unsafe { heap.drop_in_place(ptr, u32_shape) };
+
+        heap.dealloc(ptr, shape);
+        heap.assert_no_leaks();
+    }
+
+    #[test]
+    fn verified_struct_drop_ignores_padding() {
+        let mut store = DynShapeStore::new();
+        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
+        let struct_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (8, u32_h)]);
+        let struct_h = store.add(struct_def);
+        let shape = store.view(struct_h);
+
+        let mut heap = VerifiedHeap::<S<'_>>::new();
+        let ptr = heap.alloc(shape);
+
+        // Initialize only the fields (leave padding uninitialized).
+        heap.mark_init(ptr, 4);
+        heap.mark_init(ptr.offset(8), 4);
+
+        unsafe { heap.drop_in_place(ptr, shape) };
+
+        heap.dealloc(ptr, shape);
+        heap.assert_no_leaks();
+    }
+
+    #[test]
+    fn verified_struct_drop_clears_padding_if_initialized() {
+        let mut store = DynShapeStore::new();
+        let u32_h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
+        let struct_def = DynShapeDef::struct_with_fields(&store, &[(0, u32_h), (8, u32_h)]);
+        let struct_h = store.add(struct_def);
+        let shape = store.view(struct_h);
+
+        let mut heap = VerifiedHeap::<S<'_>>::new();
+        let ptr = heap.alloc(shape);
+
+        // Initialize the full struct range including padding.
+        heap.mark_init(ptr, 12);
+
+        unsafe { heap.drop_in_place(ptr, shape) };
 
         heap.dealloc(ptr, shape);
         heap.assert_no_leaks();

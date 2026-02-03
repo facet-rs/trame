@@ -4,8 +4,9 @@
 //! fields have been initialized and ensuring proper cleanup on failure.
 
 use crate::arena::{Arena, Idx};
-use crate::backend::Backend;
 use crate::dyn_shape::{IField, IShape, IStructType};
+use crate::heap::Heap;
+use crate::ptr::PtrLike;
 use core::marker::PhantomData;
 
 /// Maximum fields tracked per frame (for verification).
@@ -115,9 +116,9 @@ impl<F> FrameKind<F> {
 // ============================================================================
 
 /// A frame tracking construction of a single value.
-pub struct Frame<B: Backend<S>, S: IShape> {
-    /// The allocation this frame's data lives in.
-    pub alloc: B::Alloc,
+pub struct Frame<H: Heap<S>, S: IShape> {
+    /// Pointer to this frame's data.
+    pub data: H::Ptr,
     /// Shape of the value being built.
     pub shape: S,
     /// What kind of value and its init state.
@@ -128,7 +129,7 @@ pub struct Frame<B: Backend<S>, S: IShape> {
     pub field_in_parent: u32,
 }
 
-impl<B: Backend<S>, S: IShape> Frame<B, S> {
+impl<H: Heap<S>, S: IShape> Frame<H, S> {
     /// Create the appropriate FrameKind for a shape.
     fn kind_for_shape(shape: S) -> FrameKind<Self> {
         if let Some(st) = shape.as_struct() {
@@ -141,9 +142,9 @@ impl<B: Backend<S>, S: IShape> Frame<B, S> {
     }
 
     /// Create a new root frame.
-    pub fn new_root(alloc: B::Alloc, shape: S) -> Self {
+    pub fn new_root(data: H::Ptr, shape: S) -> Self {
         Self {
-            alloc,
+            data,
             shape,
             kind: Self::kind_for_shape(shape),
             parent: Idx::NOT_STARTED,
@@ -157,20 +158,21 @@ impl<B: Backend<S>, S: IShape> Frame<B, S> {
 // ============================================================================
 
 /// Manages incremental construction of a value.
-pub struct Partial<B, A, S>
+pub struct Partial<H, A, S>
 where
-    B: Backend<S>,
-    A: Arena<Frame<B, S>>,
+    H: Heap<S>,
+    H::Ptr: PtrLike,
+    A: Arena<Frame<H, S>>,
     S: IShape,
 {
-    /// The backend for memory operations.
-    backend: B,
+    /// The heap for memory operations.
+    heap: H,
     /// Arena holding frames.
     arena: A,
     /// Root frame index.
-    root: Idx<Frame<B, S>>,
+    root: Idx<Frame<H, S>>,
     /// Current frame we're building.
-    current: Idx<Frame<B, S>>,
+    current: Idx<Frame<H, S>>,
     /// Whether we've been poisoned (error occurred).
     poisoned: bool,
     /// Marker for shape type.
@@ -198,23 +200,31 @@ pub enum PartialError {
     ShapeMismatch,
 }
 
-impl<B, A, S> Partial<B, A, S>
+#[derive(Debug, Clone, Copy)]
+struct FieldMeta<S: IShape> {
+    shape: S,
+    offset: usize,
+    layout: core::alloc::Layout,
+}
+
+impl<H, A, S> Partial<H, A, S>
 where
-    B: Backend<S>,
-    A: Arena<Frame<B, S>>,
+    H: Heap<S>,
+    H::Ptr: PtrLike,
+    A: Arena<Frame<H, S>>,
     S: IShape,
 {
     /// Create a new Partial for the given shape.
     ///
     /// # Safety
     /// The caller must ensure the shape is valid and sized.
-    pub unsafe fn new(mut backend: B, mut arena: A, shape: S) -> Self {
-        let alloc = unsafe { backend.alloc(shape) };
-        let frame = Frame::new_root(alloc, shape);
+    pub unsafe fn new(mut heap: H, mut arena: A, shape: S) -> Self {
+        let data = heap.alloc(shape);
+        let frame = Frame::new_root(data, shape);
         let root = arena.alloc(frame);
 
         Self {
-            backend,
+            heap,
             arena,
             root,
             current: root,
@@ -230,6 +240,43 @@ where
         } else {
             Ok(())
         }
+    }
+
+    fn struct_type(shape: S) -> Result<S::StructType, PartialError> {
+        shape.as_struct().ok_or(PartialError::NotAStruct)
+    }
+
+    fn field_meta(shape: S, field_idx: usize) -> Result<FieldMeta<S>, PartialError> {
+        let st = Self::struct_type(shape)?;
+        let field_count = st.field_count();
+        let field = st.field(field_idx).ok_or(PartialError::FieldOutOfBounds {
+            index: field_idx,
+            count: field_count,
+        })?;
+        let field_shape = field.shape();
+        let offset = field.offset();
+        let layout = field_shape.layout();
+        Ok(FieldMeta {
+            shape: field_shape,
+            offset,
+            layout,
+        })
+    }
+
+    fn field_ptr(
+        frame: &Frame<H, S>,
+        field_idx: usize,
+    ) -> Result<(S, H::Ptr, usize), PartialError> {
+        let meta = Self::field_meta(frame.shape, field_idx)?;
+        let frame_size = frame.shape.layout().size();
+        assert!(
+            meta.offset + meta.layout.size() <= frame_size,
+            "field out of bounds: {} + {} > {}",
+            meta.offset,
+            meta.layout.size(),
+            frame_size
+        );
+        Ok((meta.shape, frame.data.offset(meta.offset), meta.layout.size()))
     }
 
     /// Mark a struct field as initialized (for scalar fields).
@@ -256,10 +303,9 @@ where
                     return Err(PartialError::FieldAlreadyInit { index: field_idx });
                 }
 
-                // Mark in backend
-                let alloc = frame.alloc;
-                let slot = unsafe { self.backend.slot(alloc, field_idx) };
-                unsafe { self.backend.mark_init(slot) };
+                let frame = self.arena.get(self.current);
+                let (_shape, ptr, size) = Self::field_ptr(frame, field_idx)?;
+                self.heap.mark_init(ptr, size);
 
                 // Mark in frame as complete
                 let frame = self.arena.get_mut(self.current);
@@ -288,10 +334,9 @@ where
                     return Err(PartialError::FieldAlreadyInit { index: 0 });
                 }
 
-                // Mark in backend
-                let alloc = frame.alloc;
-                let slot = unsafe { self.backend.slot(alloc, 0) };
-                unsafe { self.backend.mark_init(slot) };
+                let frame = self.arena.get(self.current);
+                let size = frame.shape.layout().size();
+                self.heap.mark_init(frame.data, size);
 
                 // Mark in frame
                 let frame = self.arena.get_mut(self.current);
@@ -339,27 +384,18 @@ where
             }
         }
 
-        // Get the field's shape
+        // Get the field's shape and pointer
         let frame = self.arena.get(self.current);
-        let parent_shape = frame.shape;
-        let field_shape = parent_shape
-            .as_struct()
-            .and_then(|st| st.field(field_idx))
-            .map(|f| f.shape())
-            .ok_or(PartialError::FieldOutOfBounds {
-                index: field_idx,
-                count: field_count,
-            })?;
-
-        // Allocate for the nested struct (or reuse parent's allocation at offset)
-        // For now, we allocate separately - in production we'd compute offset
-        let child_alloc = unsafe { self.backend.alloc(field_shape) };
+        let (field_shape, child_ptr, _size) = Self::field_ptr(frame, field_idx)?;
+        if !field_shape.is_struct() {
+            return Err(PartialError::NotAStruct);
+        }
 
         // Create child frame
         let child_frame = Frame {
-            alloc: child_alloc,
+            data: child_ptr,
             shape: field_shape,
-            kind: Frame::<B, S>::kind_for_shape(field_shape),
+            kind: Frame::<H, S>::kind_for_shape(field_shape),
             parent: self.current,
             field_in_parent: field_idx as u32,
         };
@@ -407,11 +443,6 @@ where
             fields.mark_complete(field_in_parent);
         }
 
-        // Mark in backend
-        let parent_alloc = parent.alloc;
-        let slot = unsafe { self.backend.slot(parent_alloc, field_in_parent) };
-        unsafe { self.backend.mark_init(slot) };
-
         // Pop back to parent
         self.current = parent_idx;
 
@@ -442,10 +473,10 @@ where
         frame.kind.is_complete()
     }
 
-    /// Finish building, returning ownership of backend and arena.
+    /// Finish building, returning ownership of heap and arena.
     ///
     /// Returns error if not all fields are initialized.
-    pub fn finish(self) -> Result<(B, A, B::Alloc), PartialError> {
+    pub fn finish(self) -> Result<(H, A, H::Ptr), PartialError> {
         self.check_poisoned()?;
 
         let frame = self.arena.get(self.current);
@@ -453,14 +484,14 @@ where
             return Err(PartialError::Incomplete);
         }
 
-        let alloc = frame.alloc;
+        let data = frame.data;
 
         // Don't run Drop - we're transferring ownership
-        let backend = unsafe { core::ptr::read(&self.backend) };
+        let heap = unsafe { core::ptr::read(&self.heap) };
         let arena = unsafe { core::ptr::read(&self.arena) };
         core::mem::forget(self);
 
-        Ok((backend, arena, alloc))
+        Ok((heap, arena, data))
     }
 
     /// Poison the partial, cleaning up all initialized fields.
@@ -475,7 +506,7 @@ where
     }
 
     /// Recursively clean up a frame and all its children (depth-first).
-    fn cleanup_frame(&mut self, idx: Idx<Frame<B, S>>) {
+    fn cleanup_frame(&mut self, idx: Idx<Frame<H, S>>) {
         if !idx.is_valid() {
             return;
         }
@@ -503,31 +534,32 @@ where
 
         // Now clean up this frame's initialized slots
         let frame = self.arena.get(idx);
-        let alloc = frame.alloc;
-
         match &frame.kind {
             FrameKind::Scalar { initialized: true } => {
-                let slot = unsafe { self.backend.slot(alloc, 0) };
-                unsafe { self.backend.mark_uninit(slot) };
+                unsafe { self.heap.drop_in_place(frame.data, frame.shape) };
             }
             FrameKind::Struct { fields } => {
                 for i in fields.iter_init() {
-                    let slot = unsafe { self.backend.slot(alloc, i) };
-                    unsafe { self.backend.mark_uninit(slot) };
+                    let (field_shape, ptr, _size) = Self::field_ptr(frame, i)
+                        .expect("field metadata should be valid during cleanup");
+                    unsafe { self.heap.drop_in_place(ptr, field_shape) };
                 }
             }
             _ => {}
         }
 
-        // Dealloc this frame
-        unsafe { self.backend.dealloc(alloc) };
+        // Only root owns the allocation.
+        if !frame.parent.is_valid() {
+            self.heap.dealloc(frame.data, frame.shape);
+        }
     }
 }
 
-impl<B, A, S> Drop for Partial<B, A, S>
+impl<H, A, S> Drop for Partial<H, A, S>
 where
-    B: Backend<S>,
-    A: Arena<Frame<B, S>>,
+    H: Heap<S>,
+    H::Ptr: PtrLike,
+    A: Arena<Frame<H, S>>,
     S: IShape,
 {
     fn drop(&mut self) {
@@ -545,13 +577,13 @@ where
 mod tests {
     use super::*;
     use crate::arena::VerifiedArena;
-    use crate::backend::VerifiedBackend;
+    use crate::heap::VerifiedHeap;
     use crate::dyn_shape::{DynShapeDef, DynShapeStore, DynShapeView};
     use core::alloc::Layout;
 
     type S<'a> = DynShapeView<'a, DynShapeStore>;
-    type TestBackend<'a> = VerifiedBackend<S<'a>>;
-    type TestArena<'a> = VerifiedArena<Frame<TestBackend<'a>, S<'a>>, 8>;
+    type TestHeap<'a> = VerifiedHeap<S<'a>>;
+    type TestArena<'a> = VerifiedArena<Frame<TestHeap<'a>, S<'a>>, 8>;
 
     #[test]
     fn scalar_lifecycle() {
@@ -559,16 +591,16 @@ mod tests {
         let h = store.add(DynShapeDef::scalar(Layout::new::<u32>()));
         let shape = store.view(h);
 
-        let backend = TestBackend::new();
+        let heap = TestHeap::new();
         let arena = TestArena::new();
 
-        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         assert!(!partial.is_complete());
         unsafe { partial.mark_scalar_init().unwrap() };
         assert!(partial.is_complete());
 
-        let (_, _, _alloc) = partial.finish().unwrap();
+        let (_, _, _ptr) = partial.finish().unwrap();
     }
 
     #[test]
@@ -579,10 +611,10 @@ mod tests {
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
 
-        let backend = TestBackend::new();
+        let heap = TestHeap::new();
         let arena = TestArena::new();
 
-        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         assert!(!partial.is_complete());
 
@@ -592,7 +624,7 @@ mod tests {
         unsafe { partial.mark_field_init(1).unwrap() };
         assert!(partial.is_complete());
 
-        let (_, _, _alloc) = partial.finish().unwrap();
+        let (_, _, _ptr) = partial.finish().unwrap();
     }
 
     #[test]
@@ -604,10 +636,10 @@ mod tests {
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
 
-        let backend = TestBackend::new();
+        let heap = TestHeap::new();
         let arena = TestArena::new();
 
-        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         // Init in reverse order
         unsafe { partial.mark_field_init(2).unwrap() };
@@ -626,10 +658,10 @@ mod tests {
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
 
-        let backend = TestBackend::new();
+        let heap = TestHeap::new();
         let arena = TestArena::new();
 
-        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         unsafe { partial.mark_field_init(0).unwrap() };
         let err = unsafe { partial.mark_field_init(0) };
@@ -644,10 +676,10 @@ mod tests {
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
 
-        let backend = TestBackend::new();
+        let heap = TestHeap::new();
         let arena = TestArena::new();
 
-        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         unsafe { partial.mark_field_init(0).unwrap() };
         // Don't init field 1
@@ -664,10 +696,10 @@ mod tests {
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
 
-        let backend = TestBackend::new();
+        let heap = TestHeap::new();
         let arena = TestArena::new();
 
-        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         // Partial init
         unsafe { partial.mark_field_init(0).unwrap() };
@@ -692,10 +724,10 @@ mod tests {
         let outer_h = store.add(outer_def);
         let shape = store.view(outer_h);
 
-        let backend = TestBackend::new();
+        let heap = TestHeap::new();
         let arena = TestArena::new();
 
-        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         assert_eq!(partial.depth(), 0);
         assert!(!partial.is_complete());
@@ -736,10 +768,10 @@ mod tests {
         let outer_h = store.add(outer_def);
         let shape = store.view(outer_h);
 
-        let backend = TestBackend::new();
+        let heap = TestHeap::new();
         let arena = TestArena::new();
 
-        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         // Begin nested struct but don't finish
         unsafe { partial.begin_field(0).unwrap() };
@@ -764,10 +796,10 @@ mod tests {
         let outer_h = store.add(outer_def);
         let shape = store.view(outer_h);
 
-        let backend = TestBackend::new();
+        let heap = TestHeap::new();
         let arena = TestArena::new();
 
-        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         // Begin nested struct, partially init
         unsafe { partial.begin_field(0).unwrap() };
@@ -786,10 +818,10 @@ mod tests {
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
 
-        let backend = TestBackend::new();
+        let heap = TestHeap::new();
         let arena = TestArena::new();
 
-        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         // Init field 0 as scalar
         unsafe { partial.mark_field_init(0).unwrap() };
@@ -813,10 +845,10 @@ mod tests {
         let outer_h = store.add(outer_def);
         let shape = store.view(outer_h);
 
-        let backend = TestBackend::new();
+        let heap = TestHeap::new();
         let arena = TestArena::new();
 
-        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         unsafe { partial.begin_field(0).unwrap() };
         unsafe { partial.mark_field_init(0).unwrap() }; // only inner.a
@@ -835,10 +867,10 @@ mod tests {
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
 
-        let backend = TestBackend::new();
+        let heap = TestHeap::new();
         let arena = TestArena::new();
 
-        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
         unsafe { partial.mark_field_init(0).unwrap() };
 
         // Try to end_field at root - should fail
@@ -851,7 +883,7 @@ mod tests {
 mod kani_proofs {
     use super::*;
     use crate::arena::VerifiedArena;
-    use crate::backend::VerifiedBackend;
+    use crate::heap::VerifiedHeap;
     use crate::dyn_shape::{
         DynDef, DynFieldDef, DynShapeDef, DynShapeHandle, DynShapeStore, DynShapeView,
         DynStructDef, IField, IShape, IStructType, MAX_FIELDS,
@@ -859,8 +891,8 @@ mod kani_proofs {
     use core::alloc::Layout;
 
     type S<'a> = DynShapeView<'a, DynShapeStore>;
-    type TestBackend<'a> = VerifiedBackend<S<'a>>;
-    type TestArena<'a> = VerifiedArena<Frame<TestBackend<'a>, S<'a>>, 4>;
+    type TestHeap<'a> = VerifiedHeap<S<'a>>;
+    type TestArena<'a> = VerifiedArena<Frame<TestHeap<'a>, S<'a>>, 4>;
 
     #[kani::proof]
     #[kani::unwind(10)]
@@ -869,10 +901,10 @@ mod kani_proofs {
         let h = store.add(DynShapeDef::scalar(Layout::from_size_align(4, 4).unwrap()));
         let shape = store.view(h);
 
-        let backend = TestBackend::new();
+        let heap = TestHeap::new();
         let arena = TestArena::new();
 
-        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         kani::assert(!partial.is_complete(), "not complete initially");
         unsafe { partial.mark_scalar_init().unwrap() };
@@ -903,9 +935,9 @@ mod kani_proofs {
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
 
-        let backend = TestBackend::new();
+        let heap = TestHeap::new();
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         // Init all but one field
         let skip_field: u8 = kani::any();
@@ -949,9 +981,9 @@ mod kani_proofs {
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
 
-        let backend = TestBackend::new();
+        let heap = TestHeap::new();
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         let field_to_double: u8 = kani::any();
         kani::assume(field_to_double < 2);
@@ -994,9 +1026,9 @@ mod kani_proofs {
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
 
-        let backend = TestBackend::new();
+        let heap = TestHeap::new();
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         // Init only first field
         unsafe { partial.mark_field_init(0).unwrap() };
@@ -1035,9 +1067,9 @@ mod kani_proofs {
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
 
-        let backend = TestBackend::new();
+        let heap = TestHeap::new();
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         // Try to init field beyond bounds
         let bad_idx: u8 = kani::any();
@@ -1075,9 +1107,9 @@ mod kani_proofs {
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
 
-        let backend = TestBackend::new();
+        let heap = TestHeap::new();
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         // Choose arbitrary init order
         let first: u8 = kani::any();
@@ -1151,9 +1183,9 @@ mod kani_proofs {
         kani::assert(field1_shape.is_struct(), "field 1 is nested struct");
 
         // Construct the outer struct
-        let backend = TestBackend::new();
+        let heap = TestHeap::new();
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         // Init both fields (the nested struct field is treated as one unit at this level)
         unsafe {
@@ -1204,9 +1236,9 @@ mod kani_proofs {
         let outer_h = store.add(outer_def);
         let shape = store.view(outer_h);
 
-        let backend = TestBackend::new();
+        let heap = TestHeap::new();
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         // Verify initial state
         kani::assert(partial.depth() == 0, "starts at depth 0");
@@ -1272,9 +1304,9 @@ mod kani_proofs {
         let outer_h = store.add(outer_def);
         let shape = store.view(outer_h);
 
-        let backend = TestBackend::new();
+        let heap = TestHeap::new();
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         // Mark field 0 as init directly
         unsafe { partial.mark_field_init(0).unwrap() };
@@ -1308,9 +1340,9 @@ mod kani_proofs {
         let struct_h = store.add(struct_def);
         let shape = store.view(struct_h);
 
-        let backend = TestBackend::new();
+        let heap = TestHeap::new();
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         unsafe { partial.mark_field_init(0).unwrap() };
 
@@ -1357,9 +1389,9 @@ mod kani_proofs {
         let outer_h = store.add(outer_def);
         let shape = store.view(outer_h);
 
-        let backend = TestBackend::new();
+        let heap = TestHeap::new();
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         unsafe { partial.begin_field(0).unwrap() };
         unsafe { partial.mark_field_init(0).unwrap() }; // only one of two inner fields
@@ -1406,9 +1438,9 @@ mod kani_proofs {
         let outer_h = store.add(outer_def);
         let shape = store.view(outer_h);
 
-        let backend = TestBackend::new();
+        let heap = TestHeap::new();
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         // Enter nested struct
         unsafe { partial.begin_field(0).unwrap() };
@@ -1454,9 +1486,9 @@ mod kani_proofs {
         let outer_h = store.add(outer_def);
         let shape = store.view(outer_h);
 
-        let backend = TestBackend::new();
+        let heap = TestHeap::new();
         let arena = TestArena::new();
-        let mut partial = unsafe { Partial::new(backend, arena, shape) };
+        let mut partial = unsafe { Partial::new(heap, arena, shape) };
 
         kani::assert(partial.depth() == 0, "initial depth is 0");
 

@@ -1,6 +1,8 @@
 use core::alloc::Layout;
 use facet_core::{Field, Shape, StructType, Type, UserType};
 
+use crate::runtime::{IField, IShape, IShapeStore, IStructType};
+
 // ============================================================================
 // Traits
 // ============================================================================
@@ -18,12 +20,13 @@ pub struct StaticShapeStore;
 
 impl IShapeStore for StaticShapeStore {
     type Handle = &'static Shape;
+    type View<'a>
+        = &'static Shape
+    where
+        Self: 'a;
 
-    fn get(&self, handle: Self::Handle) -> DynShapeView<'_, Self> {
-        DynShapeView {
-            store: self,
-            handle,
-        }
+    fn get<'a>(&'a self, handle: Self::Handle) -> Self::View<'a> {
+        handle
     }
 }
 

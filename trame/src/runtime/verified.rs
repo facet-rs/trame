@@ -3,7 +3,7 @@
 
 use std::alloc::Layout;
 
-use crate::runtime::{DynShapeView, IField, IShape, IShapeStore, IStructType};
+use crate::runtime::{IField, IShape, IShapeStore, IStructType};
 
 // ==================================================================
 // Shape
@@ -19,29 +19,29 @@ pub const MAX_FIELDS_PER_STRUCT: usize = 8;
 ///
 /// This is just an index into the store's shape array.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DynShapeHandle(pub u8);
+pub struct VShapeHandle(pub u8);
 
 /// A synthetic field for Kani verification.
 ///
 /// Fields reference their type's shape by handle (index) rather than
 /// containing the shape directly. This avoids recursive type definitions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DynFieldDef {
+pub struct VFieldDef {
     /// Byte offset of this field within the struct.
     pub offset: usize,
 
     /// Handle to the shape of this field's type.
-    pub shape_handle: DynShapeHandle,
+    pub shape_handle: VShapeHandle,
 }
 
 /// A synthetic struct type for Kani verification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DynStructDef {
+pub struct VStructDef {
     /// Number of fields.
     pub field_count: u8,
 
     /// Field information (only first `field_count` entries are valid).
-    pub fields: [DynFieldDef; MAX_FIELDS_PER_STRUCT],
+    pub fields: [VFieldDef; MAX_FIELDS_PER_STRUCT],
 }
 
 /// A bounded shape definition for Kani verification.
@@ -51,7 +51,7 @@ pub struct DynStructDef {
 ///
 /// Shape definitions live in a `DynShapeStore` and are referenced by handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DynShapeDef {
+pub struct VShapeDef {
     /// Layout of this type.
     pub layout: Layout,
     ///
@@ -65,7 +65,7 @@ pub enum DynDef {
     /// A scalar type (no internal structure to track).
     Scalar,
     /// A struct with indexed fields.
-    Struct(DynStructDef),
+    Struct(VStructDef),
     // TODO: Enum, Option, Result, List, Map, etc.
 }
 
@@ -75,20 +75,29 @@ pub enum DynDef {
 /// This allows shapes to reference other shapes (nested structs) without
 /// creating recursive type definitions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DynShapeStore {
+pub struct VShapeStore {
     /// Number of shapes in the store.
     pub shape_count: u8,
 
     /// Shape definitions (only first `shape_count` entries are valid).
-    pub shapes: [DynShapeDef; MAX_SHAPES_PER_STORE],
+    pub shapes: [VShapeDef; MAX_SHAPES_PER_STORE],
 }
 
-impl DynShapeStore {
+/// A view into a shape, borrowing from a store.
+///
+/// This is the common currency for working with shapes in the verified runtime.
+#[derive(Clone, Copy)]
+pub struct VShapeView<'a, Store: IShapeStore + ?Sized> {
+    pub store: &'a Store,
+    pub handle: Store::Handle,
+}
+
+impl VShapeStore {
     /// Create a new empty store.
     pub const fn new() -> Self {
         Self {
             shape_count: 0,
-            shapes: [DynShapeDef {
+            shapes: [VShapeDef {
                 layout: Layout::new::<()>(),
                 def: DynDef::Scalar,
             }; MAX_SHAPES_PER_STORE],
@@ -96,19 +105,19 @@ impl DynShapeStore {
     }
 
     /// Add a shape to the store and return its handle.
-    pub fn add(&mut self, shape: DynShapeDef) -> DynShapeHandle {
+    pub fn add(&mut self, shape: VShapeDef) -> VShapeHandle {
         assert!(
             (self.shape_count as usize) < MAX_SHAPES_PER_STORE,
             "shape store full"
         );
-        let handle = DynShapeHandle(self.shape_count);
+        let handle = VShapeHandle(self.shape_count);
         self.shapes[self.shape_count as usize] = shape;
         self.shape_count += 1;
         handle
     }
 
     /// Get a shape definition by handle.
-    pub fn get_def(&self, handle: DynShapeHandle) -> &DynShapeDef {
+    pub fn get_def(&self, handle: VShapeHandle) -> &VShapeDef {
         assert!(
             (handle.0 as usize) < self.shape_count as usize,
             "invalid handle"
@@ -117,43 +126,47 @@ impl DynShapeStore {
     }
 
     /// Get a view into a shape.
-    pub fn view(&self, handle: DynShapeHandle) -> DynShapeView<'_, Self> {
-        DynShapeView {
+    pub fn view(&self, handle: VShapeHandle) -> VShapeView<'_, Self> {
+        VShapeView {
             store: self,
             handle,
         }
     }
 }
 
-impl Default for DynShapeStore {
+impl Default for VShapeStore {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl IShapeStore for DynShapeStore {
-    type Handle = DynShapeHandle;
+impl IShapeStore for VShapeStore {
+    type Handle = VShapeHandle;
+    type View<'a>
+        = VShapeView<'a, VShapeStore>
+    where
+        Self: 'a;
 
-    fn get(&self, handle: Self::Handle) -> DynShapeView<'_, Self> {
+    fn get<'a>(&'a self, handle: Self::Handle) -> Self::View<'a> {
         self.view(handle)
     }
 }
 
 /// A field view that borrows from a store.
 #[derive(Clone, Copy)]
-pub struct DynFieldView<'a> {
-    pub store: &'a DynShapeStore,
-    pub def: &'a DynFieldDef,
+pub struct VFieldView<'a> {
+    pub store: &'a VShapeStore,
+    pub def: &'a VFieldDef,
 }
 
 /// A struct type view that borrows from a store.
 #[derive(Clone, Copy)]
-pub struct DynStructView<'a> {
-    pub store: &'a DynShapeStore,
-    pub def: &'a DynStructDef,
+pub struct VStructView<'a> {
+    pub store: &'a VShapeStore,
+    pub def: &'a VStructDef,
 }
 
-impl<'a> PartialEq for DynShapeView<'a, DynShapeStore> {
+impl<'a> PartialEq for VShapeView<'a, VShapeStore> {
     fn eq(&self, other: &Self) -> bool {
         // Two views are equal if they point to the same store and handle.
         // We compare store pointers and handle values.
@@ -161,11 +174,11 @@ impl<'a> PartialEq for DynShapeView<'a, DynShapeStore> {
     }
 }
 
-impl<'a> Eq for DynShapeView<'a, DynShapeStore> {}
+impl<'a> Eq for VShapeView<'a, VShapeStore> {}
 
-impl<'a> IShape for DynShapeView<'a, DynShapeStore> {
-    type StructType = DynStructView<'a>;
-    type Field = DynFieldView<'a>;
+impl<'a> IShape for VShapeView<'a, VShapeStore> {
+    type StructType = VStructView<'a>;
+    type Field = VFieldView<'a>;
 
     #[inline]
     fn layout(&self) -> Layout {
@@ -180,7 +193,7 @@ impl<'a> IShape for DynShapeView<'a, DynShapeStore> {
     #[inline]
     fn as_struct(&self) -> Option<Self::StructType> {
         match &self.store.get_def(self.handle).def {
-            DynDef::Struct(s) => Some(DynStructView {
+            DynDef::Struct(s) => Some(VStructView {
                 store: self.store,
                 def: s,
             }),
@@ -201,8 +214,8 @@ impl<'a> IShape for DynShapeView<'a, DynShapeStore> {
     }
 }
 
-impl<'a> IStructType for DynStructView<'a> {
-    type Field = DynFieldView<'a>;
+impl<'a> IStructType for VStructView<'a> {
+    type Field = VFieldView<'a>;
 
     #[inline]
     fn field_count(&self) -> usize {
@@ -212,7 +225,7 @@ impl<'a> IStructType for DynStructView<'a> {
     #[inline]
     fn field(&self, idx: usize) -> Option<Self::Field> {
         if idx < self.def.field_count as usize {
-            Some(DynFieldView {
+            Some(VFieldView {
                 store: self.store,
                 def: &self.def.fields[idx],
             })
@@ -222,8 +235,8 @@ impl<'a> IStructType for DynStructView<'a> {
     }
 }
 
-impl<'a> IField for DynFieldView<'a> {
-    type Shape = DynShapeView<'a, DynShapeStore>;
+impl<'a> IField for VFieldView<'a> {
+    type Shape = VShapeView<'a, VShapeStore>;
 
     #[inline]
     fn offset(&self) -> usize {
@@ -241,7 +254,7 @@ impl<'a> IField for DynFieldView<'a> {
 // Constructors
 // ============================================================================
 
-impl DynShapeDef {
+impl VShapeDef {
     /// Create a scalar shape with the given layout.
     pub const fn scalar(layout: Layout) -> Self {
         Self {
@@ -254,7 +267,7 @@ impl DynShapeDef {
     ///
     /// The `field_shapes` parameter provides the shape handle for each field.
     /// Use `store.get_def(handle).layout` to get layouts for size calculation.
-    pub fn struct_with_fields(store: &DynShapeStore, fields: &[(usize, DynShapeHandle)]) -> Self {
+    pub fn struct_with_fields(store: &VShapeStore, fields: &[(usize, VShapeHandle)]) -> Self {
         assert!(fields.len() <= MAX_FIELDS_PER_STRUCT, "too many fields");
 
         // Calculate overall layout from fields
@@ -273,12 +286,12 @@ impl DynShapeDef {
 
         let layout = Layout::from_size_align(size, align).expect("valid layout");
 
-        let mut field_array = [DynFieldDef {
+        let mut field_array = [VFieldDef {
             offset: 0,
-            shape_handle: DynShapeHandle(0),
+            shape_handle: VShapeHandle(0),
         }; MAX_FIELDS_PER_STRUCT];
         for (i, &(offset, shape_handle)) in fields.iter().enumerate() {
-            field_array[i] = DynFieldDef {
+            field_array[i] = VFieldDef {
                 offset,
                 shape_handle,
             };
@@ -286,7 +299,7 @@ impl DynShapeDef {
 
         Self {
             layout,
-            def: DynDef::Struct(DynStructDef {
+            def: DynDef::Struct(VStructDef {
                 field_count: fields.len() as u8,
                 fields: field_array,
             }),
@@ -294,9 +307,9 @@ impl DynShapeDef {
     }
 }
 
-impl DynFieldDef {
+impl VFieldDef {
     /// Create a new field definition.
-    pub const fn new(offset: usize, shape_handle: DynShapeHandle) -> Self {
+    pub const fn new(offset: usize, shape_handle: VShapeHandle) -> Self {
         Self {
             offset,
             shape_handle,
@@ -309,7 +322,7 @@ impl DynFieldDef {
 // ============================================================================
 
 #[cfg(kani)]
-impl kani::Arbitrary for DynShapeDef {
+impl kani::Arbitrary for VShapeDef {
     fn any() -> Self {
         let is_struct: bool = kani::any();
 
@@ -318,9 +331,9 @@ impl kani::Arbitrary for DynShapeDef {
             let field_count: u8 = kani::any();
             kani::assume(field_count > 0 && field_count <= 4);
 
-            let mut fields = [DynFieldDef {
+            let mut fields = [VFieldDef {
                 offset: 0,
-                shape_handle: DynShapeHandle(0),
+                shape_handle: VShapeHandle(0),
             }; MAX_FIELDS_PER_STRUCT];
 
             let mut offset = 0usize;
@@ -330,7 +343,7 @@ impl kani::Arbitrary for DynShapeDef {
 
                 // For arbitrary shapes, fields point to shape 0 (a placeholder)
                 // In real use, the store would be populated first
-                fields[i] = DynFieldDef::new(offset, DynShapeHandle(0));
+                fields[i] = VFieldDef::new(offset, VShapeHandle(0));
                 offset += field_size;
             }
 
@@ -338,9 +351,9 @@ impl kani::Arbitrary for DynShapeDef {
 
             let layout = Layout::from_size_align(offset, 1).unwrap();
 
-            DynShapeDef {
+            VShapeDef {
                 layout,
-                def: DynDef::Struct(DynStructDef {
+                def: DynDef::Struct(VStructDef {
                     field_count,
                     fields,
                 }),
@@ -355,16 +368,16 @@ impl kani::Arbitrary for DynShapeDef {
             kani::assume(size == 0 || size % align == 0);
 
             let layout = Layout::from_size_align(size, align).unwrap();
-            DynShapeDef::scalar(layout)
+            VShapeDef::scalar(layout)
         }
     }
 }
 
 /// Generate an arbitrary shape store with nested struct support.
 #[cfg(kani)]
-impl kani::Arbitrary for DynShapeStore {
+impl kani::Arbitrary for VShapeStore {
     fn any() -> Self {
-        let mut store = DynShapeStore::new();
+        let mut store = VShapeStore::new();
 
         // First, add some scalar shapes that can be used by struct fields
         let num_scalars: u8 = kani::any();
@@ -374,7 +387,7 @@ impl kani::Arbitrary for DynShapeStore {
             let size: usize = kani::any();
             kani::assume(size > 0 && size <= 8);
             let layout = Layout::from_size_align(size, 1).unwrap();
-            store.add(DynShapeDef::scalar(layout));
+            store.add(VShapeDef::scalar(layout));
         }
 
         // Then optionally add a struct that uses those scalars as fields
@@ -383,9 +396,9 @@ impl kani::Arbitrary for DynShapeStore {
             let field_count: u8 = kani::any();
             kani::assume(field_count > 0 && field_count <= 4);
 
-            let mut fields = [DynFieldDef {
+            let mut fields = [VFieldDef {
                 offset: 0,
-                shape_handle: DynShapeHandle(0),
+                shape_handle: VShapeHandle(0),
             }; MAX_FIELDS_PER_STRUCT];
 
             let mut offset = 0usize;
@@ -394,17 +407,17 @@ impl kani::Arbitrary for DynShapeStore {
                 let shape_idx: u8 = kani::any();
                 kani::assume(shape_idx < num_scalars);
 
-                let field_layout = store.get_def(DynShapeHandle(shape_idx)).layout;
-                fields[i] = DynFieldDef::new(offset, DynShapeHandle(shape_idx));
+                let field_layout = store.get_def(VShapeHandle(shape_idx)).layout;
+                fields[i] = VFieldDef::new(offset, VShapeHandle(shape_idx));
                 offset += field_layout.size();
             }
 
             kani::assume(offset <= 64);
 
             let layout = Layout::from_size_align(offset, 1).unwrap();
-            store.add(DynShapeDef {
+            store.add(VShapeDef {
                 layout,
-                def: DynDef::Struct(DynStructDef {
+                def: DynDef::Struct(VStructDef {
                     field_count,
                     fields,
                 }),
@@ -419,6 +432,10 @@ impl kani::Arbitrary for DynShapeStore {
 // Heap
 // ==================================================================
 
+// TODO: import from arena.rs, rename to VHeap
+
 // ==================================================================
 // Arena
 // ==================================================================
+
+// TODO: import from arena.rs, rename to VArena

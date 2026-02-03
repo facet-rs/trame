@@ -21,25 +21,20 @@ pub trait IShapeStore: Clone {
     /// The handle type used to reference shapes in this store.
     type Handle: Copy;
 
-    /// Look up a shape by handle.
-    fn get(&self, handle: Self::Handle) -> DynShapeView<'_, Self>;
-}
+    /// The view type produced by this store.
+    type View<'a>: IShape
+    where
+        Self: 'a;
 
-/// A view into a shape, borrowing from a store.
-///
-/// This is the common currency for working with shapes regardless of
-/// whether they come from static memory or a DynShapeStore.
-#[derive(Clone, Copy)]
-pub struct DynShapeView<'a, Store: IShapeStore + ?Sized> {
-    pub store: &'a Store,
-    pub handle: Store::Handle,
+    /// Look up a shape by handle.
+    fn get<'a>(&'a self, handle: Self::Handle) -> Self::View<'a>;
 }
 
 /// Common interface for shapes.
 ///
 /// Implemented by:
 /// - `&'static facet_core::Shape` (real shapes)
-/// - `DynShapeView` (synthetic shapes for Kani)
+/// - store-specific shape views (synthetic shapes for verification)
 ///
 /// The `PartialEq` bound allows the Heap to verify shapes match on dealloc/drop.
 pub trait IShape: Copy + PartialEq {

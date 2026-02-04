@@ -69,14 +69,15 @@ initialized directly or via sealed child nodes.
 Trame models construction as a tree of nodes with a cursor pointing at the
 current node. The diagrams below show node state explicitly.
 
+Legend: `⟨...⟩` node, `○` uninitialized, `●` initialized, `🔒` sealed, `▶` cursor.
+
 #### Scalar: `u32`
 
-A new `Trame<u32>` starts with a single root node that is not initialized yet.
+A new `Trame<u32>` starts with a single root node that is not initialized yet
+(`○`).
 
 ```
-Cursor
-  |
-[Root: u32] (uninitialized)
+▶ ⟨Root: u32⟩ ○
 ```
 
 Once you have a Trame, you apply operations. Each node has a data pointer, and
@@ -84,14 +85,12 @@ Once you have a Trame, you apply operations. Each node has a data pointer, and
 
 For a `u32`, the two useful `Set` modes are:
 - Immediate source: writes the provided `u32` bytes (for example, `42`) into
-  the node's data and records that the node is now initialized.
+  the node's data and records that the node is now initialized (`●`).
 - Default source: writes the type's default value into the node's data and
-  records the same initialized state.
+  records the same initialized state (`●`).
 
 ```
-Cursor
-  |
-[Root: u32] (initialized)
+▶ ⟨Root: u32⟩ ●
 ```
 
 `build()` requires the root node to be fully initialized. In this example it
@@ -100,34 +99,54 @@ materialized as a `u32`.
 
 #### Structs (strict mode)
 
-For structs, construction is still a tree but now includes child nodes per
-field. You can initialize fields directly or step into a field to build it
-incrementally, then use `End` to seal that node and move the cursor back to the
-parent. In strict mode, `End` acts as early validation: it requires that the
-current node is fully initialized before sealing.
+Rust allows grouping several values in a struct. For example:
+
+```rust
+struct Pair {
+    a: u32,
+    b: u32,
+}
+```
+
+This struct is a single allocation, but Trame models it as three possible
+nodes: the root node for the struct itself and one node for each field. We
+start with a single node that represents the struct, and that root node starts
+staged.
+
+Initial state (only the root node exists; fields are uninitialized slots `○`):
 
 ```
-Before:
-Cursor
-  |
-[Root: Struct]
-  |- field 0 (uninitialized)
-  |- field 1 (uninitialized)
-
-After staging field 0:
-        Cursor
-          |
-[Root: Struct]
-  |- field 0 -> [Child Node]
-  |- field 1 (uninitialized)
-
-After End on field 0:
-Cursor
-  |
-[Root: Struct]
-  |- field 0 (initialized)
-  |- field 1 (uninitialized)
+▶ ⟨Root: Pair⟩
+  ├─ a ○
+  └─ b ○
 ```
+
+Set the entire struct directly (immediate or default source):
+
+```rust
+set(&[], imm(some_struct))
+```
+
+```
+▶ ⟨Root: Pair⟩
+  ├─ a ●
+  └─ b ●
+```
+
+Set a single field directly with a path of size one:
+
+```rust
+set(&[Field(0)], imm(13))
+```
+
+```
+▶ ⟨Root: Pair⟩
+  ├─ a ●
+  └─ b ○
+```
+
+After setting the entire struct, the node is fully initialized but still
+staged, so a later field `Set` overwrites just that field.
 
 #### Smart pointers
 
@@ -182,3 +201,10 @@ arena; verification uses a fixed-size arena with explicit occupancy checks.
 The `Trame` type is instantiated with either the real implementations or the
 verified ones. This makes verification a compile-time swap with zero runtime
 cost in production builds.
+
+## Notes
+
+TODO: Deferred mode + maps. Sealed is one-way: a sealed map cannot be
+re-entered or re-staged. Rationale: re-entering would allow mutating keys or
+values after finalization, or re-staging would clear the staged tuples and
+lose data.

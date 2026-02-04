@@ -167,6 +167,8 @@ pub trait IHeap<S: IShape> {
     /// The caller must ensure both ranges are in-bounds for their allocations,
     /// that `src` is fully initialized, `dst` is fully uninitialized, and the
     /// ranges do not overlap.
+    #[cfg_attr(creusot, requires(self.range_init(src, len)))]
+    #[cfg_attr(creusot, ensures(self.range_init(dst, len)))]
     unsafe fn memcpy(&mut self, dst: Self::Ptr, src: Self::Ptr, len: usize);
 
     /// Drop the value at `ptr` and mark the range as uninitialized.

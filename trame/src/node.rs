@@ -135,7 +135,7 @@ impl<F> Copy for FieldSlot<F> {}
 #[derive(Debug)]
 pub(crate) struct FieldStates<F> {
     /// State of each field.
-    pub(crate) slots: Vec<FieldSlot<F>>,
+    pub slots: Vec<FieldSlot<F>>,
 }
 
 impl<F> Clone for FieldStates<F> {

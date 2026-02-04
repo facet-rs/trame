@@ -946,6 +946,14 @@ node implied by the final segment.
 `Root` behaves like repeated `End` as it climbs. If it climbs out of a deferred
 subtree, it triggers deferred validation.
 
+### Borrowed values (`'facet`)
+
+Trame can construct values that borrow from exactly one lifetime: `'facet`.
+This allows building values like `&'facet str` (or structs containing them)
+without allocating or copying. The `'facet` lifetime ties the constructed
+value to the input it borrows from, enabling zero-copy parsing while keeping
+construction sound.
+
 ### Sources and overwrite
 
 `Imm` copies bytes from an existing value. `Stage` pushes a node for
@@ -1068,10 +1076,3 @@ arena; verification uses a fixed-size arena with explicit occupancy checks.
 The `Trame` type is instantiated with either the real implementations or the
 verified ones. This makes verification a compile-time swap with zero runtime
 cost in production builds.
-
-## Notes
-
-TODO: Deferred mode + maps. Closed is one-way: a closed map cannot be
-re-entered or re-opened. Rationale: re-entering would allow mutating keys or
-values after finalization, or re-opening would clear the staged tuples and
-lose data.

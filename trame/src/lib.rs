@@ -24,7 +24,7 @@ mod trame;
 // Re-export trame-runtime
 pub use trame_runtime as runtime;
 
-pub use ops::{Op, Path, PathSegment, Source};
+pub use ops::{Op, OpBatch, Path, PathSegment, SetBuilder, Source};
 
 pub use runtime::live::LRuntime;
 pub use runtime::verified::{

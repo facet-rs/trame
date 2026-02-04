@@ -38,7 +38,7 @@ fn scalar_lifecycle_verified() {
     let root: [PathSegment; 0] = [];
     trame
         .apply(Op::Set {
-            dst: &root,
+            dst: Path::from_segments(&root),
             src: unsafe { Source::from_vptr(src, shape) },
         })
         .unwrap();
@@ -60,7 +60,7 @@ fn scalar_lifecycle_live() {
     let mut value: u32 = 0;
     trame
         .apply(Op::Set {
-            dst: &root,
+            dst: Path::from_segments(&root),
             src: Source::from_ref(&mut value),
         })
         .unwrap();
@@ -81,7 +81,7 @@ fn scalar_lifecycle_live_stack_src() {
     let root: [PathSegment; 0] = [];
     trame
         .apply(Op::Set {
-            dst: &root,
+            dst: Path::from_segments(&root),
             src: Source::from_ref(&mut value),
         })
         .unwrap();
@@ -97,7 +97,7 @@ fn scalar_lifecycle_live_alloc() {
     assert!(!trame.is_complete());
     trame
         .apply(Op::Set {
-            dst: &[],
+            dst: Path::empty(),
             src: Source::from_ref(&mut 123_u32),
         })
         .unwrap();
@@ -132,7 +132,7 @@ fn struct_lifecycle() {
     let f0 = [PathSegment::Field(0)];
     trame
         .apply(Op::Set {
-            dst: &f0,
+            dst: Path::from_segments(&f0),
             src: unsafe { Source::from_vptr(src0, u32_shape) },
         })
         .unwrap();
@@ -141,7 +141,7 @@ fn struct_lifecycle() {
     let f1 = [PathSegment::Field(1)];
     trame
         .apply(Op::Set {
-            dst: &f1,
+            dst: Path::from_segments(&f1),
             src: unsafe { Source::from_vptr(src1, u32_shape) },
         })
         .unwrap();
@@ -175,21 +175,21 @@ fn struct_any_order() {
     let f2 = [PathSegment::Field(2)];
     trame
         .apply(Op::Set {
-            dst: &f2,
+            dst: Path::from_segments(&f2),
             src: unsafe { Source::from_vptr(src2, u32_shape) },
         })
         .unwrap();
     let f0 = [PathSegment::Field(0)];
     trame
         .apply(Op::Set {
-            dst: &f0,
+            dst: Path::from_segments(&f0),
             src: unsafe { Source::from_vptr(src0, u32_shape) },
         })
         .unwrap();
     let f1 = [PathSegment::Field(1)];
     trame
         .apply(Op::Set {
-            dst: &f1,
+            dst: Path::from_segments(&f1),
             src: unsafe { Source::from_vptr(src1, u32_shape) },
         })
         .unwrap();
@@ -219,7 +219,7 @@ fn stage_field_twice_reenters() {
     let field0 = [PathSegment::Field(0)];
     trame
         .apply(Op::Set {
-            dst: &field0,
+            dst: Path::from_segments(&field0),
             src: Source::stage(None),
         })
         .unwrap();
@@ -227,7 +227,7 @@ fn stage_field_twice_reenters() {
     let inner_a = [PathSegment::Field(0)];
     trame
         .apply(Op::Set {
-            dst: &inner_a,
+            dst: Path::from_segments(&inner_a),
             src: unsafe { Source::from_vptr(src, u32_shape) },
         })
         .unwrap();
@@ -235,7 +235,7 @@ fn stage_field_twice_reenters() {
 
     let root_field0 = [PathSegment::Root, PathSegment::Field(0)];
     let result = trame.apply(Op::Set {
-        dst: &root_field0,
+        dst: Path::from_segments(&root_field0),
         src: Source::stage(None),
     });
     assert!(result.is_ok());
@@ -262,7 +262,7 @@ fn incomplete_build_fails() {
     let f0 = [PathSegment::Field(0)];
     trame
         .apply(Op::Set {
-            dst: &f0,
+            dst: Path::from_segments(&f0),
             src: unsafe { Source::from_vptr(src, u32_shape) },
         })
         .unwrap();
@@ -291,7 +291,7 @@ fn drop_cleans_up() {
     let f0 = [PathSegment::Field(0)];
     trame
         .apply(Op::Set {
-            dst: &f0,
+            dst: Path::from_segments(&f0),
             src: unsafe { Source::from_vptr(src, u32_shape) },
         })
         .unwrap();
@@ -335,7 +335,7 @@ fn nested_struct_begin_end() {
     let outer_x = [PathSegment::Field(0)];
     trame
         .apply(Op::Set {
-            dst: &outer_x,
+            dst: Path::from_segments(&outer_x),
             src: unsafe { Source::from_vptr(src_x, u32_shape) },
         })
         .unwrap();
@@ -344,7 +344,7 @@ fn nested_struct_begin_end() {
     let inner_field = [PathSegment::Field(1)];
     trame
         .apply(Op::Set {
-            dst: &inner_field,
+            dst: Path::from_segments(&inner_field),
             src: Source::stage(None),
         })
         .unwrap();
@@ -353,14 +353,14 @@ fn nested_struct_begin_end() {
     let inner_a = [PathSegment::Field(0)];
     trame
         .apply(Op::Set {
-            dst: &inner_a,
+            dst: Path::from_segments(&inner_a),
             src: unsafe { Source::from_vptr(src_a, u32_shape) },
         })
         .unwrap();
     let inner_b = [PathSegment::Field(1)];
     trame
         .apply(Op::Set {
-            dst: &inner_b,
+            dst: Path::from_segments(&inner_b),
             src: unsafe { Source::from_vptr(src_b, u32_shape) },
         })
         .unwrap();
@@ -397,14 +397,14 @@ fn nested_struct_drop_cleans_up() {
     let inner_field = [PathSegment::Field(0)];
     trame
         .apply(Op::Set {
-            dst: &inner_field,
+            dst: Path::from_segments(&inner_field),
             src: Source::stage(None),
         })
         .unwrap();
     let inner_a = [PathSegment::Field(0)];
     trame
         .apply(Op::Set {
-            dst: &inner_a,
+            dst: Path::from_segments(&inner_a),
             src: unsafe { Source::from_vptr(src, u32_shape) },
         })
         .unwrap();
@@ -439,14 +439,14 @@ fn nested_struct_trame_inner_cleanup() {
     let inner_field = [PathSegment::Field(0)];
     trame
         .apply(Op::Set {
-            dst: &inner_field,
+            dst: Path::from_segments(&inner_field),
             src: Source::stage(None),
         })
         .unwrap();
     let inner_a = [PathSegment::Field(0)];
     trame
         .apply(Op::Set {
-            dst: &inner_a,
+            dst: Path::from_segments(&inner_a),
             src: unsafe { Source::from_vptr(src, u32_shape) },
         })
         .unwrap();
@@ -481,14 +481,14 @@ fn end_op_incomplete_fails() {
     let inner_field = [PathSegment::Field(0)];
     trame
         .apply(Op::Set {
-            dst: &inner_field,
+            dst: Path::from_segments(&inner_field),
             src: Source::stage(None),
         })
         .unwrap();
     let inner_a = [PathSegment::Field(0)];
     trame
         .apply(Op::Set {
-            dst: &inner_a,
+            dst: Path::from_segments(&inner_a),
             src: unsafe { Source::from_vptr(src, u32_shape) },
         })
         .unwrap();
@@ -514,7 +514,7 @@ fn end_op_at_root_fails() {
     let f0 = [PathSegment::Field(0)];
     trame
         .apply(Op::Set {
-            dst: &f0,
+            dst: Path::from_segments(&f0),
             src: unsafe { Source::from_vptr(src, u32_shape) },
         })
         .unwrap();
@@ -540,7 +540,7 @@ fn apply_set_imm_field() {
     let path = [PathSegment::Field(0)];
     trame
         .apply(Op::Set {
-            dst: &path,
+            dst: Path::from_segments(&path),
             src: unsafe { Source::from_vptr(src, u32_shape) },
         })
         .unwrap();
@@ -578,7 +578,7 @@ fn apply_stage_and_end() {
     let outer_x = [PathSegment::Field(0)];
     trame
         .apply(Op::Set {
-            dst: &outer_x,
+            dst: Path::from_segments(&outer_x),
             src: unsafe { Source::from_vptr(src1, u32_shape) },
         })
         .unwrap();
@@ -586,7 +586,7 @@ fn apply_stage_and_end() {
     let inner_field = [PathSegment::Field(1)];
     trame
         .apply(Op::Set {
-            dst: &inner_field,
+            dst: Path::from_segments(&inner_field),
             src: Source::stage(None),
         })
         .unwrap();
@@ -594,7 +594,7 @@ fn apply_stage_and_end() {
     let inner_a = [PathSegment::Field(0)];
     trame
         .apply(Op::Set {
-            dst: &inner_a,
+            dst: Path::from_segments(&inner_a),
             src: unsafe { Source::from_vptr(src2, u32_shape) },
         })
         .unwrap();
@@ -602,7 +602,7 @@ fn apply_stage_and_end() {
     let inner_b = [PathSegment::Field(1)];
     trame
         .apply(Op::Set {
-            dst: &inner_b,
+            dst: Path::from_segments(&inner_b),
             src: unsafe { Source::from_vptr(src3, u32_shape) },
         })
         .unwrap();

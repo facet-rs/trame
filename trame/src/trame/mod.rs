@@ -9,7 +9,7 @@ pub use errors::TrameError;
 pub use heap_value::HeapValue;
 
 use crate::{
-    Op, Path, PathSegment, Source,
+    Op, PathSegment, Source,
     node::{FieldSlot, MAX_NODE_FIELDS, Node, NodeKind, NodeState},
     ops::SourceKind,
     runtime::{IArena, IField, IHeap, IPtr, IRuntime, IShape, IStructType, Idx, LiveRuntime},
@@ -133,7 +133,10 @@ where
         ))
     }
 
-    fn resolve_path(&mut self, path: Path<'_>) -> Result<(NodeIdx<R>, Option<usize>), TrameError> {
+    fn resolve_path(
+        &mut self,
+        path: &[PathSegment],
+    ) -> Result<(NodeIdx<R>, Option<usize>), TrameError> {
         if path.is_empty() {
             return Ok((self.current, None));
         }
@@ -199,10 +202,9 @@ where
                     }
 
                     match src.kind {
-                        SourceKind::Imm {
-                            ptr: src_ptr,
-                            shape: src_shape,
-                        } => {
+                        SourceKind::Imm(imm) => {
+                            let src_ptr = imm.ptr;
+                            let src_shape = imm.shape;
                             if src_shape != shape {
                                 return Err(TrameError::ShapeMismatch);
                             }
@@ -266,10 +268,9 @@ where
                 }
 
                 match src.kind {
-                    SourceKind::Imm {
-                        ptr: src_ptr,
-                        shape: src_shape,
-                    } => {
+                    SourceKind::Imm(imm) => {
+                        let src_ptr = imm.ptr;
+                        let src_shape = imm.shape;
                         if src_shape != field_shape {
                             return Err(TrameError::ShapeMismatch);
                         }
@@ -380,7 +381,7 @@ where
         match op {
             Op::End => self.end_current_node(),
             Op::Set { dst, src } => {
-                let (target, field_idx) = self.resolve_path(dst)?;
+                let (target, field_idx) = self.resolve_path(dst.segments())?;
                 self.apply_set(target, field_idx, src)
             }
         }

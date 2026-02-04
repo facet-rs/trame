@@ -698,7 +698,7 @@ pub struct AllocHistory {
 
 #[cfg(all(not(kani), not(creusot)))]
 impl AllocHistory {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self { ops: Vec::new() }
     }
 
@@ -847,7 +847,7 @@ impl<S: IShape> VHeap<S> {
             allocs: [const { None }; MAX_VHEAP_ALLOCS],
             next_id: 0,
             #[cfg(all(not(kani), not(creusot)))]
-            history: [const { AllocHistory { ops: Vec::new() } }; MAX_VHEAP_ALLOCS],
+            history: [const { AllocHistory::new() }; MAX_VHEAP_ALLOCS],
         }
     }
 
@@ -879,23 +879,6 @@ impl<S: IShape> VHeap<S> {
         if !cond {
             self.print_history(alloc_id);
             panic!("{}", msg);
-        }
-    }
-
-    /// Expect a Result, printing history and panicking with message if Err.
-    #[cfg(not(creusot))]
-    fn expect_with_history<T, E: std::fmt::Debug>(
-        &self,
-        res: Result<T, E>,
-        alloc_id: u8,
-        msg: &str,
-    ) -> T {
-        match res {
-            Ok(v) => v,
-            Err(e) => {
-                self.print_history(alloc_id);
-                panic!("{}: {:?}", msg, e);
-            }
         }
     }
 

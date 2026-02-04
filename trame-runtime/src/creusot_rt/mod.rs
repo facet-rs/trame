@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 use core::{marker::PhantomData, mem};
 
 use creusot_std::logic::FSet;

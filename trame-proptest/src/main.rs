@@ -219,7 +219,7 @@ fn run_test(shape_recipes: Vec<ShapeRecipe>, target_shape_idx: usize, op_recipes
 // ============================================================================
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(1000))]
+    #![proptest_config(ProptestConfig::with_cases(2_000))]
 
     #[test]
     fn arbitrary_shapes_and_ops(

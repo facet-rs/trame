@@ -70,7 +70,7 @@ pub trait IShapeStore: Clone {
 /// - `&'static facet_core::Shape` (real shapes)
 /// - store-specific shape views (synthetic shapes for verification)
 ///
-pub trait IShape: Copy {
+pub trait IShape: Copy + PartialEq {
     /// The struct type returned by `as_struct()`.
     type StructType: IStructType<Field = Self::Field>;
 

@@ -147,13 +147,14 @@ impl<F> Clone for FieldStates<F> {
 }
 
 impl<F> FieldStates<F> {
+    #[cfg_attr(creusot, ensures(result@ == self.len_logic()))]
     pub(crate) fn len(&self) -> usize {
         self.slots.len()
     }
 
     #[cfg(creusot)]
     #[logic(open, inline)]
-    pub(crate) fn len_logic(self) -> Int {
+    pub(crate) fn len_logic(&self) -> Int {
         pearlite! { self.slots@.len() }
     }
 

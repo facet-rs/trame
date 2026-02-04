@@ -19,12 +19,17 @@ use crate::{
 use core::marker::PhantomData;
 
 #[cfg(creusot)]
-use creusot_std::macros::{proof_assert, trusted};
+use creusot_std::macros::{ensures, proof_assert, requires, trusted};
 
 type Heap<R> = <R as IRuntime>::Heap;
 type Shape<R> = <R as IRuntime>::Shape;
 type NodeIdx<R> = Idx<Node<Heap<R>, Shape<R>>>;
 type Ptr<R> = <Heap<R> as IHeap<Shape<R>>>::Ptr;
+
+#[cfg(creusot)]
+#[requires(a < b)]
+#[ensures(a@ < b@)]
+fn usize_lt_to_int(a: usize, b: usize) {}
 
 // ============================================================================
 // Trame - the main builder
@@ -263,7 +268,9 @@ where
                         }
                         #[cfg(creusot)]
                         {
-                            proof_assert!(field_idx@ < field_count@);
+                            proof_assert!(field_count@ == fields.len_logic());
+                            proof_assert!(field_idx < field_count);
+                            usize_lt_to_int(field_idx, field_count);
                         }
                         (fields.get_child(field_idx), fields.is_init(field_idx))
                     }
@@ -282,10 +289,6 @@ where
                         if let NodeKind::Struct { fields } =
                             &mut self.arena.get_mut(target_idx).kind
                         {
-                            #[cfg(creusot)]
-                            {
-                                proof_assert!(field_idx@ < fields.len_logic());
-                            }
                             fields.mark_not_started(field_idx);
                         }
                         child_idx = None;
@@ -296,10 +299,6 @@ where
                 if already_init {
                     unsafe { self.heap.drop_in_place(dst, field_shape) };
                     if let NodeKind::Struct { fields } = &mut self.arena.get_mut(target_idx).kind {
-                        #[cfg(creusot)]
-                        {
-                            proof_assert!(field_idx@ < fields.len_logic());
-                        }
                         fields.mark_not_started(field_idx);
                     }
                 }
@@ -315,10 +314,6 @@ where
                         if let NodeKind::Struct { fields } =
                             &mut self.arena.get_mut(target_idx).kind
                         {
-                            #[cfg(creusot)]
-                            {
-                                proof_assert!(field_idx@ < fields.len_logic());
-                            }
                             fields.mark_complete(field_idx);
                         }
                         Ok(())
@@ -331,10 +326,6 @@ where
                         if let NodeKind::Struct { fields } =
                             &mut self.arena.get_mut(target_idx).kind
                         {
-                            #[cfg(creusot)]
-                            {
-                                proof_assert!(field_idx@ < fields.len_logic());
-                            }
                             fields.mark_complete(field_idx);
                         }
                         Ok(())
@@ -375,10 +366,6 @@ where
                         if let NodeKind::Struct { fields } =
                             &mut self.arena.get_mut(target_idx).kind
                         {
-                            #[cfg(creusot)]
-                            {
-                                proof_assert!(field_idx@ < fields.len_logic());
-                            }
                             fields.set_child(field_idx, child_idx);
                         }
                         // Move the cursor to the child Node.
@@ -407,10 +394,16 @@ where
         match &node.kind {
             NodeKind::Scalar { initialized } => *initialized,
             NodeKind::Struct { fields } => {
-                for i in 0..fields.len() {
+                let field_count = fields.len();
+                #[cfg(creusot)]
+                {
+                    proof_assert!(field_count@ == fields.len_logic());
+                }
+                for i in 0..field_count {
                     #[cfg(creusot)]
                     {
-                        proof_assert!(i@ < fields.len_logic());
+                        proof_assert!(i < field_count);
+                        usize_lt_to_int(i, field_count);
                     }
                     match fields.slot(i) {
                         FieldSlot::Untracked => return false,
@@ -559,10 +552,16 @@ where
             let mut children = Vec::new();
 
             if let NodeKind::Struct { fields } = &node_kind {
-                for i in 0..fields.len() {
+                let field_count = fields.len();
+                #[cfg(creusot)]
+                {
+                    proof_assert!(field_count@ == fields.len_logic());
+                }
+                for i in 0..field_count {
                     #[cfg(creusot)]
                     {
-                        proof_assert!(i@ < fields.len_logic());
+                        proof_assert!(i < field_count);
+                        usize_lt_to_int(i, field_count);
                     }
                     if let Some(child_idx) = fields.get_child(i) {
                         children.push(child_idx);
@@ -582,10 +581,16 @@ where
                 }
                 NodeKind::Struct { fields } => {
                     let node = self.arena.get(idx);
-                    for i in 0..fields.len() {
+                    let field_count = fields.len();
+                    #[cfg(creusot)]
+                    {
+                        proof_assert!(field_count@ == fields.len_logic());
+                    }
+                    for i in 0..field_count {
                         #[cfg(creusot)]
                         {
-                            proof_assert!(i@ < fields.len_logic());
+                            proof_assert!(i < field_count);
+                            usize_lt_to_int(i, field_count);
                         }
                         if matches!(fields.slot(i), FieldSlot::Complete) {
                             let (field_shape, ptr, _size) = Self::field_ptr(node, i)

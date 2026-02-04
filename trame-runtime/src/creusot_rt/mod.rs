@@ -195,6 +195,18 @@ impl<'a> IShapeEq for CShapeView<'a> {
     }
 }
 
+impl<'a> PartialEq for CShapeView<'a> {
+    #[cfg_attr(
+        creusot,
+        creusot_std::macros::ensures(result == (self.deep_model() == other.deep_model()))
+    )]
+    fn eq(&self, other: &Self) -> bool {
+        self.store.id == other.store.id && self.handle.0 == other.handle.0
+    }
+}
+
+impl<'a> Eq for CShapeView<'a> {}
+
 /// Field view.
 #[derive(Clone, Copy)]
 pub struct CFieldView<'a> {

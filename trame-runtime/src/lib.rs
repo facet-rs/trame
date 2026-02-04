@@ -18,6 +18,9 @@ mod creusot_stub;
 use std::{alloc::Layout, marker::PhantomData};
 
 #[cfg(creusot)]
+use creusot_std::model::DeepModel;
+
+#[cfg(creusot)]
 use creusot_std::prelude::trusted;
 
 /// A heap and a shape implementation, over which Trame can be parameterized
@@ -247,14 +250,16 @@ impl<T> Clone for Idx<T> {
 
 impl<T> Copy for Idx<T> {}
 
-#[cfg(not(creusot))]
 impl<T> PartialEq for Idx<T> {
+    #[cfg_attr(
+        creusot,
+        creusot_std::macros::ensures(result == (self.deep_model() == other.deep_model()))
+    )]
     fn eq(&self, other: &Self) -> bool {
         self.raw == other.raw
     }
 }
 
-#[cfg(not(creusot))]
 impl<T> Eq for Idx<T> {}
 
 impl<T> Idx<T> {

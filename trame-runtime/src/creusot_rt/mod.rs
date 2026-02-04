@@ -1,6 +1,7 @@
 use core::{marker::PhantomData, mem};
 
 use creusot_std::logic::FSet;
+use creusot_std::macros::pearlite;
 use creusot_std::model::DeepModel;
 use creusot_std::prelude::{View, logic, trusted};
 
@@ -446,16 +447,6 @@ impl IHeap<CShapeView<'_>> for CHeap {
     }
 
     #[trusted]
-    #[cfg_attr(
-        creusot,
-        creusot_std::macros::requires(
-            self@.init.contains(init_fact(
-                ptr.alloc_id,
-                ptr.offset as usize,
-                shape.handle
-            ))
-        )
-    )]
     unsafe fn drop_in_place(&mut self, ptr: CPtr, shape: CShapeView<'_>) {
         let _ = (ptr, shape);
     }
@@ -464,6 +455,17 @@ impl IHeap<CShapeView<'_>> for CHeap {
     unsafe fn default_in_place(&mut self, ptr: CPtr, shape: CShapeView<'_>) -> bool {
         let _ = (ptr, shape);
         true
+    }
+
+    #[logic(open, inline)]
+    fn can_drop(&self, ptr: CPtr, shape: CShapeView<'_>) -> bool {
+        pearlite! {
+            self@.init.contains(init_fact(
+                ptr.alloc_id,
+                ptr.offset as usize,
+                shape.handle
+            ))
+        }
     }
 }
 

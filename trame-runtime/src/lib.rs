@@ -153,7 +153,13 @@ pub trait IHeap<S: IShape> {
     /// # Safety
     /// The caller must ensure `ptr` points to a value of type `shape`, the
     /// value is fully initialized, and the allocation is still live.
+    #[cfg_attr(creusot, creusot_std::macros::requires(self.can_drop(ptr, shape)))]
     unsafe fn drop_in_place(&mut self, ptr: Self::Ptr, shape: S);
+
+    /// Creusot-only predicate describing when a drop is permitted.
+    #[cfg(creusot)]
+    #[creusot_std::macros::logic]
+    fn can_drop(&self, ptr: Self::Ptr, shape: S) -> bool;
 
     /// Default-initialize the value at `ptr` and mark the range as initialized.
     ///

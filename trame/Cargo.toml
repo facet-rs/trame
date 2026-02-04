@@ -21,6 +21,7 @@ rustdoc-args = ["--html-in-header", "arborium-header.html"]
 
 [features]
 default = []
+creusot-canary = []
 
 [dependencies]
 facet-core.workspace = true

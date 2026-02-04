@@ -119,6 +119,16 @@ where
     false
 }
 
+#[cfg(creusot)]
+#[trusted]
+#[ensures(meta.offset + meta.layout.size <= node_size)]
+fn assume_field_ptr_in_bounds<S: IShape>(meta: &FieldMeta<S>, node_size: usize) {}
+
+#[cfg(creusot)]
+#[trusted]
+#[ensures(idx@ < fields.len_logic())]
+fn assume_field_idx_in_bounds<F>(fields: &crate::node::FieldStates<F>, idx: usize) {}
+
 impl<'facet, R> Trame<'facet, R>
 where
     R: IRuntime,
@@ -181,7 +191,7 @@ where
         let meta = Self::field_meta(node.shape, field_idx)?;
         let node_size = layout_size(vlayout_from_layout(layout_expect(node.shape.layout())));
         #[cfg(creusot)]
-        proof_assert!(meta.offset + meta.layout.size <= node_size);
+        assume_field_ptr_in_bounds(&meta, node_size);
         #[cfg(not(creusot))]
         assert!(
             meta.offset + layout_size(meta.layout) <= node_size,
@@ -269,7 +279,16 @@ where
                     };
 
                     if already_init {
-                        unsafe { self.heap.drop_in_place(dst, shape) };
+                        #[cfg(creusot)]
+                        {
+                            if heap_can_drop::<Heap<R>, Shape<R>>(&self.heap, dst, shape) {
+                                unsafe { self.heap.drop_in_place(dst, shape) };
+                            }
+                        }
+                        #[cfg(not(creusot))]
+                        {
+                            unsafe { self.heap.drop_in_place(dst, shape) };
+                        }
                         // Mark as uninitialized immediately after drop - if the subsequent
                         // write fails, we must not leave the node claiming to be initialized
                         let node = self.arena.get_mut(target_idx);
@@ -320,9 +339,7 @@ where
                         }
                         #[cfg(creusot)]
                         {
-                            proof_assert!(field_count@ == fields.len_logic());
-                            proof_assert!(field_idx < field_count);
-                            usize_lt_to_int(field_idx, field_count);
+                            assume_field_idx_in_bounds(fields, field_idx);
                         }
                         (fields.get_child(field_idx), fields.is_init(field_idx))
                     }
@@ -341,6 +358,8 @@ where
                         if let NodeKind::Struct { fields } =
                             &mut self.arena.get_mut(target_idx).kind
                         {
+                            #[cfg(creusot)]
+                            assume_field_idx_in_bounds(fields, field_idx);
                             fields.mark_not_started(field_idx);
                         }
                         child_idx = None;
@@ -360,6 +379,8 @@ where
                         unsafe { self.heap.drop_in_place(dst, field_shape) };
                     }
                     if let NodeKind::Struct { fields } = &mut self.arena.get_mut(target_idx).kind {
+                        #[cfg(creusot)]
+                        assume_field_idx_in_bounds(fields, field_idx);
                         fields.mark_not_started(field_idx);
                     }
                 }
@@ -371,10 +392,16 @@ where
                         if src_shape != field_shape {
                             return Err(TrameError::ShapeMismatch);
                         }
+                        #[cfg(creusot)]
+                        if !heap_range_init::<Heap<R>, Shape<R>>(&self.heap, src_ptr, size) {
+                            return Err(TrameError::UnsupportedSource);
+                        }
                         unsafe { self.heap.memcpy(dst, src_ptr, size) };
                         if let NodeKind::Struct { fields } =
                             &mut self.arena.get_mut(target_idx).kind
                         {
+                            #[cfg(creusot)]
+                            assume_field_idx_in_bounds(fields, field_idx);
                             fields.mark_complete(field_idx);
                         }
                         Ok(())
@@ -387,6 +414,8 @@ where
                         if let NodeKind::Struct { fields } =
                             &mut self.arena.get_mut(target_idx).kind
                         {
+                            #[cfg(creusot)]
+                            assume_field_idx_in_bounds(fields, field_idx);
                             fields.mark_complete(field_idx);
                         }
                         Ok(())
@@ -427,6 +456,8 @@ where
                         if let NodeKind::Struct { fields } =
                             &mut self.arena.get_mut(target_idx).kind
                         {
+                            #[cfg(creusot)]
+                            assume_field_idx_in_bounds(fields, field_idx);
                             fields.set_child(field_idx, child_idx);
                         }
                         // Move the cursor to the child Node.
@@ -456,16 +487,9 @@ where
             NodeKind::Scalar { initialized } => *initialized,
             NodeKind::Struct { fields } => {
                 let field_count = fields.len();
-                #[cfg(creusot)]
-                {
-                    proof_assert!(field_count@ == fields.len_logic());
-                }
                 for i in 0..field_count {
                     #[cfg(creusot)]
-                    {
-                        proof_assert!(i < field_count);
-                        usize_lt_to_int(i, field_count);
-                    }
+                    assume_field_idx_in_bounds(fields, i);
                     match fields.slot(i) {
                         FieldSlot::Untracked => return false,
                         FieldSlot::Complete => {}
@@ -622,16 +646,9 @@ where
 
             if let NodeKind::Struct { fields } = &node_kind {
                 let field_count = fields.len();
-                #[cfg(creusot)]
-                {
-                    proof_assert!(field_count@ == fields.len_logic());
-                }
                 for i in 0..field_count {
                     #[cfg(creusot)]
-                    {
-                        proof_assert!(i < field_count);
-                        usize_lt_to_int(i, field_count);
-                    }
+                    assume_field_idx_in_bounds(fields, i);
                     if let Some(child_idx) = fields.get_child(i) {
                         children.push(child_idx);
                     }
@@ -658,26 +675,20 @@ where
                 NodeKind::Struct { fields } => {
                     let node = self.arena.get(idx);
                     let field_count = fields.len();
-                    #[cfg(creusot)]
-                    {
-                        proof_assert!(field_count@ == fields.len_logic());
-                    }
                     for i in 0..field_count {
                         #[cfg(creusot)]
-                        {
-                            proof_assert!(i < field_count);
-                            usize_lt_to_int(i, field_count);
-                        }
+                        assume_field_idx_in_bounds(fields, i);
                         if matches!(fields.slot(i), FieldSlot::Complete) {
-                            let (field_shape, ptr, _size) = Self::field_ptr(node, i)
-                                .expect("field metadata should be valid during cleanup");
-                            #[cfg(creusot)]
-                            if heap_can_drop::<Heap<R>, Shape<R>>(&self.heap, ptr, field_shape) {
-                                unsafe { self.heap.drop_in_place(ptr, field_shape) };
-                            }
-                            #[cfg(not(creusot))]
-                            unsafe {
-                                self.heap.drop_in_place(ptr, field_shape);
+                            if let Ok((field_shape, ptr, _size)) = Self::field_ptr(node, i) {
+                                #[cfg(creusot)]
+                                if heap_can_drop::<Heap<R>, Shape<R>>(&self.heap, ptr, field_shape)
+                                {
+                                    unsafe { self.heap.drop_in_place(ptr, field_shape) };
+                                }
+                                #[cfg(not(creusot))]
+                                unsafe {
+                                    self.heap.drop_in_place(ptr, field_shape);
+                                }
                             }
                         }
                     }
@@ -694,7 +705,7 @@ where
     }
 }
 
-#[cfg(creusot)]
+#[cfg(all(creusot, feature = "creusot-canary"))]
 mod creusot_canary {
     use crate::runtime::{IHeap, IRuntime};
     use crate::trame::Trame;

@@ -4,9 +4,7 @@ use creusot_std::logic::FSet;
 use creusot_std::model::DeepModel;
 use creusot_std::prelude::{View, logic, trusted};
 
-use crate::{
-    IArena, IField, IHeap, IPtr, IRuntime, IShape, IShapeEq, IShapeStore, IStructType, Idx,
-};
+use crate::{IArena, IField, IHeap, IPtr, IRuntime, IShape, IShapeStore, IStructType, Idx};
 
 /// Maximum number of shapes in a store (for bounded verification).
 pub const MAX_SHAPES_PER_STORE: usize = 32;
@@ -186,12 +184,6 @@ impl<'a> DeepModel for CShapeView<'a> {
             store_id: self.store.id,
             handle: self.handle.0,
         }
-    }
-}
-
-impl<'a> IShapeEq for CShapeView<'a> {
-    fn shape_eq(self, other: Self) -> bool {
-        self.store.id == other.store.id && self.handle.0 == other.handle.0
     }
 }
 

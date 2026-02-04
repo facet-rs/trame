@@ -14,7 +14,7 @@ use crate::{
     Op, PathSegment, Source,
     node::{FieldSlot, MAX_NODE_FIELDS, Node, NodeKind, NodeState},
     ops::SourceKind,
-    runtime::{IArena, IField, IHeap, IPtr, IRuntime, IShape, IShapeEq, IStructType, Idx},
+    runtime::{IArena, IField, IHeap, IPtr, IRuntime, IShape, IStructType, Idx},
 };
 use core::marker::PhantomData;
 
@@ -184,7 +184,7 @@ where
         src: Source<Ptr<R>, Shape<R>>,
     ) -> Result<(), TrameError>
     where
-        Shape<R>: IShapeEq,
+        Shape<R>: IShape + PartialEq,
     {
         let node = self.arena.get(target_idx);
 
@@ -210,7 +210,7 @@ where
                         SourceKind::Imm(imm) => {
                             let src_ptr = imm.ptr;
                             let src_shape = imm.shape;
-                            if !src_shape.shape_eq(shape) {
+                            if src_shape != shape {
                                 return Err(TrameError::ShapeMismatch);
                             }
                             unsafe { self.heap.memcpy(dst, src_ptr, size) };
@@ -276,7 +276,7 @@ where
                     SourceKind::Imm(imm) => {
                         let src_ptr = imm.ptr;
                         let src_shape = imm.shape;
-                        if !src_shape.shape_eq(field_shape) {
+                        if src_shape != field_shape {
                             return Err(TrameError::ShapeMismatch);
                         }
                         unsafe { self.heap.memcpy(dst, src_ptr, size) };
@@ -382,7 +382,7 @@ where
 
     pub fn apply(&mut self, op: Op<'_, Ptr<R>, Shape<R>>) -> Result<(), TrameError>
     where
-        Shape<R>: IShapeEq,
+        Shape<R>: IShape + PartialEq,
     {
         self.check_poisoned()?;
 
@@ -550,7 +550,7 @@ where
 impl<'facet, R> Trame<'facet, R>
 where
     R: LiveRuntime,
-    Shape<R>: IShapeEq,
+    Shape<R>: IShape + PartialEq,
 {
     /// Allocate a Trame using a concrete Facet type.
     pub fn alloc<T: facet_core::Facet<'facet>>() -> Result<Self, TrameError> {

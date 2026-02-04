@@ -92,18 +92,6 @@ pub trait IShape: Copy {
     fn as_struct(&self) -> Option<Self::StructType>;
 }
 
-/// Shape equality in terms of identity.
-pub trait IShapeEq: IShape {
-    fn shape_eq(self, other: Self) -> bool;
-}
-
-#[cfg(not(creusot))]
-impl IShapeEq for &'static facet_core::Shape {
-    fn shape_eq(self, other: Self) -> bool {
-        core::ptr::eq(self, other)
-    }
-}
-
 /// Interface for struct type information.
 pub trait IStructType: Copy {
     /// The field type.

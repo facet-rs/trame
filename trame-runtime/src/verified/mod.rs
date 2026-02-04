@@ -11,9 +11,7 @@ use creusot_std::model::DeepModel;
 mod byte_range;
 use byte_range::{ByteRangeError, ByteRangeTracker, Range};
 
-use crate::{
-    IArena, IField, IHeap, IPtr, IRuntime, IShape, IShapeEq, IShapeStore, IStructType, Idx,
-};
+use crate::{IArena, IField, IHeap, IPtr, IRuntime, IShape, IShapeStore, IStructType, Idx};
 
 /// A runtime that verifies all operations
 pub struct VRuntime;
@@ -279,12 +277,6 @@ impl<'a> PartialEq for VShapeView<'a, VShapeStore> {
 }
 
 impl<'a> Eq for VShapeView<'a, VShapeStore> {}
-
-impl<'a> IShapeEq for VShapeView<'a, VShapeStore> {
-    fn shape_eq(self, other: Self) -> bool {
-        core::ptr::eq(self.store, other.store) && self.handle == other.handle
-    }
-}
 
 impl<'a> IShape for VShapeView<'a, VShapeStore> {
     type StructType = VStructView<'a>;

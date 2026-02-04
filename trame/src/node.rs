@@ -62,8 +62,10 @@ impl PartialEq for NodeState {
 impl<H: IHeap<S>, S: IShape> Node<H, S> {
     pub(crate) fn kind_for_shape(shape: S) -> NodeKind<Self> {
         if let Some(st) = shape.as_struct() {
+            let count = st.field_count();
+            assert!(count <= MAX_NODE_FIELDS, "too many fields");
             NodeKind::Struct {
-                fields: FieldStates::new(st.field_count()),
+                fields: FieldStates::new(count),
             }
         } else {
             NodeKind::Scalar { initialized: false }

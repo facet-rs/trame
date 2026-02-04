@@ -140,6 +140,7 @@ impl Path {
     /// Returns the path as field indices.
     /// Panics if any segment is not a Field.
     /// (deprecated: use segments() instead)
+    #[cfg(not(creusot))]
     #[deprecated(note = "Use segments() instead")]
     pub fn as_slice(&self) -> Vec<u32> {
         self.0

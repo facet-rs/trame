@@ -257,6 +257,11 @@ where
                                 count: fields.count as usize,
                             });
                         }
+                        #[cfg(creusot)]
+                        {
+                            creusot_std::macros::proof_assert!(field_idx < fields.count as usize);
+                            creusot_std::macros::proof_assert!(field_idx < MAX_NODE_FIELDS);
+                        }
                         (fields.get_child(field_idx), fields.is_init(field_idx))
                     }
                     NodeKind::Scalar { .. } => return Err(TrameError::NotAStruct),
@@ -274,6 +279,13 @@ where
                         if let NodeKind::Struct { fields } =
                             &mut self.arena.get_mut(target_idx).kind
                         {
+                            #[cfg(creusot)]
+                            {
+                                creusot_std::macros::proof_assert!(
+                                    field_idx < fields.count as usize
+                                );
+                                creusot_std::macros::proof_assert!(field_idx < MAX_NODE_FIELDS);
+                            }
                             fields.mark_not_started(field_idx);
                         }
                         child_idx = None;
@@ -284,6 +296,11 @@ where
                 if already_init {
                     unsafe { self.heap.drop_in_place(dst, field_shape) };
                     if let NodeKind::Struct { fields } = &mut self.arena.get_mut(target_idx).kind {
+                        #[cfg(creusot)]
+                        {
+                            creusot_std::macros::proof_assert!(field_idx < fields.count as usize);
+                            creusot_std::macros::proof_assert!(field_idx < MAX_NODE_FIELDS);
+                        }
                         fields.mark_not_started(field_idx);
                     }
                 }
@@ -299,6 +316,13 @@ where
                         if let NodeKind::Struct { fields } =
                             &mut self.arena.get_mut(target_idx).kind
                         {
+                            #[cfg(creusot)]
+                            {
+                                creusot_std::macros::proof_assert!(
+                                    field_idx < fields.count as usize
+                                );
+                                creusot_std::macros::proof_assert!(field_idx < MAX_NODE_FIELDS);
+                            }
                             fields.mark_complete(field_idx);
                         }
                         Ok(())
@@ -311,6 +335,13 @@ where
                         if let NodeKind::Struct { fields } =
                             &mut self.arena.get_mut(target_idx).kind
                         {
+                            #[cfg(creusot)]
+                            {
+                                creusot_std::macros::proof_assert!(
+                                    field_idx < fields.count as usize
+                                );
+                                creusot_std::macros::proof_assert!(field_idx < MAX_NODE_FIELDS);
+                            }
                             fields.mark_complete(field_idx);
                         }
                         Ok(())
@@ -351,6 +382,13 @@ where
                         if let NodeKind::Struct { fields } =
                             &mut self.arena.get_mut(target_idx).kind
                         {
+                            #[cfg(creusot)]
+                            {
+                                creusot_std::macros::proof_assert!(
+                                    field_idx < fields.count as usize
+                                );
+                                creusot_std::macros::proof_assert!(field_idx < MAX_NODE_FIELDS);
+                            }
                             fields.set_child(field_idx, child_idx);
                         }
                         // Move the cursor to the child Node.
@@ -380,6 +418,11 @@ where
             NodeKind::Scalar { initialized } => *initialized,
             NodeKind::Struct { fields } => {
                 for i in 0..(fields.count as usize) {
+                    #[cfg(creusot)]
+                    {
+                        creusot_std::macros::proof_assert!(i < fields.count as usize);
+                        creusot_std::macros::proof_assert!(i < MAX_NODE_FIELDS);
+                    }
                     match fields.slot(i) {
                         FieldSlot::Untracked => return false,
                         FieldSlot::Complete => {}
@@ -523,6 +566,11 @@ where
 
             if let NodeKind::Struct { fields } = &node_kind {
                 for i in 0..(fields.count as usize) {
+                    #[cfg(creusot)]
+                    {
+                        creusot_std::macros::proof_assert!(i < fields.count as usize);
+                        creusot_std::macros::proof_assert!(i < MAX_NODE_FIELDS);
+                    }
                     if let Some(child_idx) = fields.get_child(i) {
                         children[child_count] = child_idx;
                         child_count += 1;
@@ -543,6 +591,11 @@ where
                 NodeKind::Struct { fields } => {
                     let node = self.arena.get(idx);
                     for i in 0..(fields.count as usize) {
+                        #[cfg(creusot)]
+                        {
+                            creusot_std::macros::proof_assert!(i < fields.count as usize);
+                            creusot_std::macros::proof_assert!(i < MAX_NODE_FIELDS);
+                        }
                         if matches!(fields.slot(i), FieldSlot::Complete) {
                             let (field_shape, ptr, _size) = Self::field_ptr(node, i)
                                 .expect("field metadata should be valid during cleanup");

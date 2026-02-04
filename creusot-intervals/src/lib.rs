@@ -44,6 +44,15 @@ pub fn in_any(ranges: &Vec<Range>, i: Int) -> bool {
     }
 }
 
+/// Helper: a direct witness implies `in_any`.
+#[cfg(creusot)]
+#[logic]
+pub fn witness_implies_in_any(ranges: &Vec<Range>, k: Int, i: Int) -> bool {
+    pearlite! {
+        (0 <= k && k < ranges@.len() && contains(ranges[k], i)) ==> in_any(ranges, i)
+    }
+}
+
 /// Find a covering range index for `i` in the prefix `[0..=j]`.
 #[cfg(creusot)]
 #[logic]
@@ -107,6 +116,11 @@ pub fn adjacent_seq_cover(ranges: &Vec<Range>) {
                     k == find_range(ranges, ranges@.len() - 1, i) &&
                     0 <= k && k < ranges@.len() &&
                     contains(ranges[k], i)
+    };
+    proof_assert! {
+        forall<i: Int>
+            ranges[0].start@ <= i && i < end(ranges[ranges@.len() - 1]) ==>
+                witness_implies_in_any(ranges, find_range(ranges, ranges@.len() - 1, i), i)
     };
 }
 

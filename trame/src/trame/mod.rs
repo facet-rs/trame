@@ -124,11 +124,6 @@ where
 #[ensures(meta.offset + meta.layout.size <= node_size)]
 fn assume_field_ptr_in_bounds<S: IShape>(meta: &FieldMeta<S>, node_size: usize) {}
 
-#[cfg(creusot)]
-#[trusted]
-#[ensures(idx@ < fields.len_logic())]
-fn assume_field_idx_in_bounds<F>(fields: &crate::node::FieldStates<F>, idx: usize) {}
-
 impl<'facet, R> Trame<'facet, R>
 where
     R: IRuntime,
@@ -339,7 +334,9 @@ where
                         }
                         #[cfg(creusot)]
                         {
-                            assume_field_idx_in_bounds(fields, field_idx);
+                            proof_assert!(field_count@ == fields.len_logic());
+                            proof_assert!(field_idx < field_count);
+                            usize_lt_to_int(field_idx, field_count);
                         }
                         (fields.get_child(field_idx), fields.is_init(field_idx))
                     }
@@ -359,7 +356,12 @@ where
                             &mut self.arena.get_mut(target_idx).kind
                         {
                             #[cfg(creusot)]
-                            assume_field_idx_in_bounds(fields, field_idx);
+                            {
+                                let field_count = fields.len();
+                                proof_assert!(field_count@ == fields.len_logic());
+                                proof_assert!(field_idx < field_count);
+                                usize_lt_to_int(field_idx, field_count);
+                            }
                             fields.mark_not_started(field_idx);
                         }
                         child_idx = None;
@@ -380,7 +382,12 @@ where
                     }
                     if let NodeKind::Struct { fields } = &mut self.arena.get_mut(target_idx).kind {
                         #[cfg(creusot)]
-                        assume_field_idx_in_bounds(fields, field_idx);
+                        {
+                            let field_count = fields.len();
+                            proof_assert!(field_count@ == fields.len_logic());
+                            proof_assert!(field_idx < field_count);
+                            usize_lt_to_int(field_idx, field_count);
+                        }
                         fields.mark_not_started(field_idx);
                     }
                 }
@@ -401,7 +408,12 @@ where
                             &mut self.arena.get_mut(target_idx).kind
                         {
                             #[cfg(creusot)]
-                            assume_field_idx_in_bounds(fields, field_idx);
+                            {
+                                let field_count = fields.len();
+                                proof_assert!(field_count@ == fields.len_logic());
+                                proof_assert!(field_idx < field_count);
+                                usize_lt_to_int(field_idx, field_count);
+                            }
                             fields.mark_complete(field_idx);
                         }
                         Ok(())
@@ -415,7 +427,12 @@ where
                             &mut self.arena.get_mut(target_idx).kind
                         {
                             #[cfg(creusot)]
-                            assume_field_idx_in_bounds(fields, field_idx);
+                            {
+                                let field_count = fields.len();
+                                proof_assert!(field_count@ == fields.len_logic());
+                                proof_assert!(field_idx < field_count);
+                                usize_lt_to_int(field_idx, field_count);
+                            }
                             fields.mark_complete(field_idx);
                         }
                         Ok(())
@@ -457,7 +474,12 @@ where
                             &mut self.arena.get_mut(target_idx).kind
                         {
                             #[cfg(creusot)]
-                            assume_field_idx_in_bounds(fields, field_idx);
+                            {
+                                let field_count = fields.len();
+                                proof_assert!(field_count@ == fields.len_logic());
+                                proof_assert!(field_idx < field_count);
+                                usize_lt_to_int(field_idx, field_count);
+                            }
                             fields.set_child(field_idx, child_idx);
                         }
                         // Move the cursor to the child Node.
@@ -489,7 +511,11 @@ where
                 let field_count = fields.len();
                 for i in 0..field_count {
                     #[cfg(creusot)]
-                    assume_field_idx_in_bounds(fields, i);
+                    {
+                        proof_assert!(field_count@ == fields.len_logic());
+                        proof_assert!(i < field_count);
+                        usize_lt_to_int(i, field_count);
+                    }
                     match fields.slot(i) {
                         FieldSlot::Untracked => return false,
                         FieldSlot::Complete => {}
@@ -648,7 +674,11 @@ where
                 let field_count = fields.len();
                 for i in 0..field_count {
                     #[cfg(creusot)]
-                    assume_field_idx_in_bounds(fields, i);
+                    {
+                        proof_assert!(field_count@ == fields.len_logic());
+                        proof_assert!(i < field_count);
+                        usize_lt_to_int(i, field_count);
+                    }
                     if let Some(child_idx) = fields.get_child(i) {
                         children.push(child_idx);
                     }
@@ -677,7 +707,11 @@ where
                     let field_count = fields.len();
                     for i in 0..field_count {
                         #[cfg(creusot)]
-                        assume_field_idx_in_bounds(fields, i);
+                        {
+                            proof_assert!(field_count@ == fields.len_logic());
+                            proof_assert!(i < field_count);
+                            usize_lt_to_int(i, field_count);
+                        }
                         if matches!(fields.slot(i), FieldSlot::Complete) {
                             if let Ok((field_shape, ptr, _size)) = Self::field_ptr(node, i) {
                                 #[cfg(creusot)]

@@ -6,8 +6,8 @@ all:
     # just kani
     just test
     just prove
-    just prop
 
+# Run all tests (including prop tests)
 test:
     cargo nextest run
 
@@ -24,10 +24,6 @@ kani-one crate *args:
 prove *args:
     cargo creusot clean --force
     cargo creusot prove {{ args }}
-
-# Run prop tests
-prop:
-    cd trame-proptest && cargo nextest run
 
 # Run fuzzing with afl
 fuzz:

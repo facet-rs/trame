@@ -97,6 +97,17 @@ fn layout_expect(layout: Option<std::alloc::Layout>) -> std::alloc::Layout {
     layout.expect("IShape requires sized types")
 }
 
+#[cfg(creusot)]
+#[trusted]
+#[ensures(result == heap.range_init(ptr, len))]
+fn heap_range_init<H, S>(heap: &H, ptr: <H as IHeap<S>>::Ptr, len: usize) -> bool
+where
+    H: IHeap<S>,
+    S: IShape,
+{
+    false
+}
+
 impl<'facet, R> Trame<'facet, R>
 where
     R: IRuntime,
@@ -235,7 +246,16 @@ where
                     let shape = node.shape;
                     let size = layout_size(vlayout_from_layout(layout_expect(shape.layout())));
                     let dst = node.data;
-                    let already_init = matches!(&node.kind, NodeKind::Scalar { initialized: true });
+                    let already_init = {
+                        #[cfg(creusot)]
+                        {
+                            heap_range_init::<Heap<R>, Shape<R>>(&self.heap, dst, size)
+                        }
+                        #[cfg(not(creusot))]
+                        {
+                            matches!(&node.kind, NodeKind::Scalar { initialized: true })
+                        }
+                    };
 
                     if already_init {
                         unsafe { self.heap.drop_in_place(dst, shape) };
@@ -484,6 +504,7 @@ where
     }
 
     /// Get the current nesting depth (0 = root).
+    #[cfg_attr(creusot, trusted)]
     pub fn depth(&self) -> usize {
         let mut depth = 0;
         let mut idx = self.current;

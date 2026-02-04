@@ -64,7 +64,7 @@ current node. The diagrams below show node state explicitly.
 
 Legend: `⟨...⟩` node, `○` uninitialized, `●` initialized, `🔒` sealed, `▶` cursor.
 
-### Scalar: `u32`
+### Simple Scalar
 
 A new `Trame<u32>` starts with a single root node that is not initialized yet
 (`○`).
@@ -93,7 +93,7 @@ set(&[], imm(42))
 is, because we just set it, so `build()` returns a `HeapValue` that can be
 materialized as a `u32`.
 
-### Structs (strict mode)
+### Simple Struct
 
 Rust allows grouping several values in a struct. For example:
 
@@ -117,7 +117,7 @@ Initial state (only the root node exists; fields are uninitialized slots `○`):
   └─ b ○
 ```
 
-Just like the scaler before, we can use set to initialize the entire struct in one go:
+Just like the scalar before, we can use set to initialize the entire struct in one go:
 
 ```rust
 set(&[], imm(some_struct))
@@ -141,13 +141,14 @@ set(&[Field(0)], imm(13))
   └─ b ○
 ```
 
-If we were to call build at this point in time, it would return an error, and
-make sure that anything that was initialized is cleanly de-initialized, and that
-anything that was allocated is cleanly deallocated, and that we never get our
-hands on the partially constructed value that was abandoned due to validation
-errors. 
+If we were to call `build()` at this point in time, it would return an error.
+`build()` takes ownership of the Trame, so there are only two outcomes:
+- A `HeapValue` that is fully valid and fully initialized.
+- An error, in which case the Trame drops and cleans up:
+  - anything that was initialized is cleanly de-initialized
+  - anything that was allocated is cleanly deallocated
 
-#### Smart pointers
+### Smart pointers
 
 Smart pointers follow the same mental model, but the node representing the
 pointer owns its own allocation, and sealing the pointer implies its inner

@@ -2,7 +2,7 @@ use proptest::prelude::*;
 use std::alloc::Layout;
 use std::panic::catch_unwind;
 use trame::{
-    IRuntime, Op, PathSegment, Source, Trame, VRuntime, VShapeDef, VShapeHandle,
+    IRuntime, Op, Path, Source, Trame, VRuntime, VShapeDef, VShapeHandle,
     runtime::{IHeap, IShape},
     vshape_register, vshape_store, vshape_store_reset, vshape_view,
 };
@@ -176,7 +176,7 @@ fn run_test(shape_recipes: Vec<ShapeRecipe>, target_shape_idx: usize, op_recipes
         for op in op_recipes {
             let result = match op {
                 OpRecipe::SetField { field, src_kind } => {
-                    let path = [PathSegment::Field(field as u32)];
+                    let path = Path::field(field as u32);
                     let src = match src_kind {
                         SrcKind::Imm { shape_idx } => {
                             let idx = shape_idx % handles.len();
@@ -186,7 +186,7 @@ fn run_test(shape_recipes: Vec<ShapeRecipe>, target_shape_idx: usize, op_recipes
                         SrcKind::Default => Source::default_value(),
                         SrcKind::Stage => Source::stage(None),
                     };
-                    trame.apply(Op::Set { dst: &path, src })
+                    trame.apply(Op::Set { dst: path, src })
                 }
                 OpRecipe::SetRoot { src_kind } => {
                     let src = match src_kind {
@@ -198,7 +198,10 @@ fn run_test(shape_recipes: Vec<ShapeRecipe>, target_shape_idx: usize, op_recipes
                         SrcKind::Default => Source::default_value(),
                         SrcKind::Stage => Source::stage(None),
                     };
-                    trame.apply(Op::Set { dst: &[], src })
+                    trame.apply(Op::Set {
+                        dst: Path::empty(),
+                        src,
+                    })
                 }
                 OpRecipe::End => trame.apply(Op::End),
             };

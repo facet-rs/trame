@@ -1,0 +1,13 @@
+[package]
+name = "creusot-intervals"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(creusot)'] }
+
+[dependencies]
+creusot-std = { git = "https://github.com/creusot-rs/creusot", package = "creusot-std" }

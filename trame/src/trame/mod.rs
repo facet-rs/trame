@@ -546,6 +546,26 @@ where
     }
 }
 
+#[cfg(creusot)]
+mod creusot_canary {
+    use creusot_std::prelude::*;
+
+    use crate::runtime::IRuntime;
+    use crate::trame::IHeap;
+    use crate::trame::Trame;
+
+    // Canary: should fail if cross-crate requires are enforced.
+    #[check(ghost)]
+    pub fn drop_requires_are_enforced<R: IRuntime>(
+        mut trame: Trame<'_, R>,
+        ptr: <R::Heap as IHeap<R::Shape>>::Ptr,
+        shape: R::Shape,
+    ) {
+        // Intentionally violate the precondition.
+        unsafe { trame.heap.drop_in_place(ptr, shape) };
+    }
+}
+
 #[cfg(not(creusot))]
 impl<'facet, R> Trame<'facet, R>
 where

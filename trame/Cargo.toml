@@ -29,3 +29,6 @@ smallvec.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(creusot)'.dependencies]
+creusot-std = { git = "https://github.com/creusot-rs/creusot", package = "creusot-std" }

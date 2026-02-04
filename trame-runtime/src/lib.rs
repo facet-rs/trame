@@ -18,6 +18,9 @@ use std::{alloc::Layout, marker::PhantomData};
 use creusot_std::model::DeepModel;
 
 #[cfg(creusot)]
+use creusot_std::macros::{ensures, logic, requires};
+
+#[cfg(creusot)]
 use creusot_std::prelude::trusted;
 
 /// A heap and a shape implementation, over which Trame can be parameterized
@@ -150,12 +153,13 @@ pub trait IHeap<S: IShape> {
     /// # Safety
     /// The caller must ensure `ptr` points to a value of type `shape`, the
     /// value is fully initialized, and the allocation is still live.
-    #[cfg_attr(creusot, creusot_std::macros::requires(self.can_drop(ptr, shape)))]
+    #[cfg_attr(creusot, requires(self.can_drop(ptr, shape)))]
+    #[cfg_attr(creusot, ensures(!self.can_drop(ptr, shape)))]
     unsafe fn drop_in_place(&mut self, ptr: Self::Ptr, shape: S);
 
     /// Creusot-only predicate describing when a drop is permitted.
     #[cfg(creusot)]
-    #[creusot_std::macros::logic]
+    #[logic]
     fn can_drop(&self, ptr: Self::Ptr, shape: S) -> bool;
 
     /// Default-initialize the value at `ptr` and mark the range as initialized.
@@ -165,6 +169,7 @@ pub trait IHeap<S: IShape> {
     /// # Safety
     /// The caller must ensure the destination range is uninitialized, in-bounds,
     /// and corresponds to `shape`.
+    #[cfg_attr(creusot, ensures(result ==> self.can_drop(ptr, shape)))]
     unsafe fn default_in_place(&mut self, ptr: Self::Ptr, shape: S) -> bool;
 }
 

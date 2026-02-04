@@ -31,6 +31,7 @@ pub struct WithOption {
 
 #[derive(Clone, Debug, Facet, Arbitrary)]
 pub struct WithVec {
+    #[allow(clippy::vec_box)]
     items: Vec<Box<u32>>,
     label: String,
 }

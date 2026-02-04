@@ -859,6 +859,126 @@ pointers remain stable.
 Finalization flattens the rope into the actual vector/set in one pass, with a
 preallocated target sized from the total element count.
 
+## Reference Semantics
+
+This section captures the reference API and the formal semantics that the
+examples above are illustrating.
+
+### API
+
+```rust
+enum PathSegment {
+    Field(u32),      // Struct field, tuple element, array index, enum variant
+    Append,          // New list element, set element, or map entry
+    Root,            // Jump to root node
+}
+
+type Path = &[PathSegment];
+
+enum Source {
+    Imm(Imm),               // Copy bytes from existing value
+    Stage(Option<usize>),   // Push a node (optional capacity hint)
+    Default,                // Call Default::default() in place
+}
+
+enum Op {
+    Set { dst: Path, src: Source },
+    End,
+}
+
+fn apply(op: Op) -> Result<(), Error>;
+```
+
+### Paths
+
+Paths are relative to the current node.
+
+`Field(n)` selects field/element `n` of the current node. `Append` creates a new
+list/set element or map entry. `Root` jumps to the root node and is only legal
+as the first segment.
+
+Multi-level paths are allowed. Intermediate segments implicitly create nodes
+as if `Stage` had been applied at each step. The cursor ends at the deepest
+node implied by the final segment.
+
+`Root` behaves like repeated `End` as it climbs. If it climbs out of a deferred
+subtree, it triggers deferred validation.
+
+### Sources and overwrite
+
+`Imm` copies bytes from an existing value. `Stage` pushes a node for
+incremental construction (with an optional capacity hint). `Default` writes a
+default value in place.
+
+Overwrite semantics: applying `Imm` or `Default` at a location that already
+has a partially initialized subtree drops that subtree and overwrites it. This
+applies in both strict and deferred modes.
+
+Closed containers: setting a whole list/set/map with `Imm` or `Default` closes
+it. Closed containers reject staging and `Append`, but still allow `Imm` or
+`Default` to overwrite the whole container.
+
+### Containers
+
+Lists and sets use staging buffers. `Append` creates a staged element node.
+Elements can be re-entered by index (`Field(n)`), and finalization materializes
+the collection (strict: on `End`, deferred: when exiting deferred mode).
+
+Maps use a direct-fill staging buffer. `Append` creates an entry node with
+`key` and `value` slots, which can be built in any order. Duplicate keys use
+“last wins” at finalization. `Set { dst: &[Append], src: Imm }` is invalid.
+
+### Enums
+
+`Field(n)` at an enum node selects variant `n` (declaration order). The tree is
+Enum → Variant → Payload. Payloads are staged (no `Imm` for the payload).
+Unit variants are initialized by default and have no payload.
+
+If a variant is selected again: re-entering the same variant resumes, while a
+different variant replaces the old one and resets its payload.
+
+### Node lifecycle
+
+Nodes are created by `Stage`, by `Append`, or by multi-level path segments that
+enter uninitialized children.
+
+In strict mode, a complete node may be folded into its parent and removed from
+the tree. In deferred mode, nodes are not eagerly folded if they might be
+re-entered.
+
+### Strict vs deferred
+
+Strict mode requires the current node to be fully initialized at `End`. It
+validates and then folds the node into its parent.
+
+Deferred mode allows `End` on incomplete nodes; the node remains in the tree
+for later re-entry, and validation is postponed until exiting the deferred
+subtree or at `build()`.
+
+### Validation and defaults
+
+Validation timing:
+- Strict mode validates at each `End`.
+- Deferred mode validates when exiting the deferred subtree or at `build()`.
+
+Defaults:
+- Fields annotated with `#[facet(default)]` are default-initialized when missing.
+- `Option` fields implicitly default to `None`.
+- Missing fields without defaults are errors.
+- A struct’s own `Default` is not used to fill missing fields in a partial.
+
+### Errors and poisoning
+
+Any error poisons the Trame. After poisoning, all subsequent operations return
+`Poisoned`.
+
+### Build
+
+`build()` climbs to the root, performing `End` semantics as it climbs. If it
+exits a deferred subtree, that subtree is validated in full. If any incomplete
+nodes remain, `build()` errors. On success, it returns the fully constructed
+value.
+
 ## Verification Abstractions
 
 Trame is parameterized over a small set of interfaces so the same construction

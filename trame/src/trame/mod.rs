@@ -8,11 +8,13 @@ mod heap_value;
 pub use errors::TrameError;
 pub use heap_value::HeapValue;
 
+#[cfg(not(creusot))]
+use crate::runtime::LiveRuntime;
 use crate::{
     Op, PathSegment, Source,
     node::{FieldSlot, MAX_NODE_FIELDS, Node, NodeKind, NodeState},
     ops::SourceKind,
-    runtime::{IArena, IField, IHeap, IPtr, IRuntime, IShape, IStructType, Idx, LiveRuntime},
+    runtime::{IArena, IField, IHeap, IPtr, IRuntime, IShape, IShapeEq, IStructType, Idx},
 };
 use core::marker::PhantomData;
 
@@ -169,7 +171,7 @@ where
     }
 
     fn ascend_to_root(&mut self) -> Result<NodeIdx<R>, TrameError> {
-        while self.current != self.root {
+        while !self.current.same(self.root) {
             self.end_current_node()?;
         }
         Ok(self.current)
@@ -180,7 +182,10 @@ where
         target_idx: NodeIdx<R>,
         field_idx: Option<usize>,
         src: Source<Ptr<R>, Shape<R>>,
-    ) -> Result<(), TrameError> {
+    ) -> Result<(), TrameError>
+    where
+        Shape<R>: IShapeEq,
+    {
         let node = self.arena.get(target_idx);
 
         match field_idx {
@@ -205,7 +210,7 @@ where
                         SourceKind::Imm(imm) => {
                             let src_ptr = imm.ptr;
                             let src_shape = imm.shape;
-                            if src_shape != shape {
+                            if !src_shape.shape_eq(shape) {
                                 return Err(TrameError::ShapeMismatch);
                             }
                             unsafe { self.heap.memcpy(dst, src_ptr, size) };
@@ -271,7 +276,7 @@ where
                     SourceKind::Imm(imm) => {
                         let src_ptr = imm.ptr;
                         let src_shape = imm.shape;
-                        if src_shape != field_shape {
+                        if !src_shape.shape_eq(field_shape) {
                             return Err(TrameError::ShapeMismatch);
                         }
                         unsafe { self.heap.memcpy(dst, src_ptr, size) };
@@ -344,7 +349,7 @@ where
     fn current_in_subtree(&self, ancestor: NodeIdx<R>) -> bool {
         let mut idx = self.current;
         while idx.is_valid() {
-            if idx == ancestor {
+            if idx.same(ancestor) {
                 return true;
             }
             let node = self.arena.get(idx);
@@ -375,7 +380,10 @@ where
         }
     }
 
-    pub fn apply(&mut self, op: Op<'_, Ptr<R>, Shape<R>>) -> Result<(), TrameError> {
+    pub fn apply(&mut self, op: Op<'_, Ptr<R>, Shape<R>>) -> Result<(), TrameError>
+    where
+        Shape<R>: IShapeEq,
+    {
         self.check_poisoned()?;
 
         match op {
@@ -462,7 +470,12 @@ where
 
         Ok(HeapValue::new(heap, data, shape))
     }
+}
 
+impl<'facet, R> Trame<'facet, R>
+where
+    R: IRuntime,
+{
     /// Poison the Trame, cleaning up all initialized fields.
     fn poison(&mut self) {
         if self.poisoned {
@@ -533,9 +546,11 @@ where
     }
 }
 
+#[cfg(not(creusot))]
 impl<'facet, R> Trame<'facet, R>
 where
     R: LiveRuntime,
+    Shape<R>: IShapeEq,
 {
     /// Allocate a Trame using a concrete Facet type.
     pub fn alloc<T: facet_core::Facet<'facet>>() -> Result<Self, TrameError> {

@@ -1,4 +1,8 @@
-use crate::runtime::{IHeap, IRuntime, LiveRuntime};
+#[cfg(not(creusot))]
+use crate::runtime::IShapeEq;
+#[cfg(not(creusot))]
+use crate::runtime::LiveRuntime;
+use crate::runtime::{IHeap, IRuntime};
 use core::marker::PhantomData;
 
 type Heap<R> = <R as IRuntime>::Heap;
@@ -38,13 +42,15 @@ where
     }
 }
 
+#[cfg(not(creusot))]
 impl<'facet, R> HeapValue<'facet, R>
 where
     R: LiveRuntime,
+    Shape<R>: IShapeEq,
 {
     /// Materialize a concrete value from this heap allocation.
     pub fn materialize<T: facet_core::Facet<'facet>>(self) -> Result<T, crate::trame::TrameError> {
-        if self.shape != T::SHAPE {
+        if !self.shape.shape_eq(T::SHAPE) {
             return Err(crate::trame::TrameError::ShapeMismatch);
         }
         let mut this = core::mem::ManuallyDrop::new(self);

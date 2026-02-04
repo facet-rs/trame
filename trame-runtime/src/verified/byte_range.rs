@@ -6,9 +6,26 @@
 //! - No use-after-free (reading uninitialized bytes)
 //! - No leaks (deallocating while bytes are still initialized)
 
+#[cfg(creusot)]
+use creusot_std::model::DeepModel;
+
 /// Maximum number of disjoint ranges we can track.
 /// Chosen to be small for Kani verification but large enough for realistic structs.
 pub const MAX_RANGES: usize = 16;
+
+#[cfg_attr(creusot, derive(DeepModel))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Range {
+    pub start: u32,
+    pub end: u32,
+}
+
+impl Range {
+    #[inline]
+    pub const fn new(start: u32, end: u32) -> Self {
+        Self { start, end }
+    }
+}
 
 /// Tracks initialized byte ranges within an allocation.
 ///
@@ -20,12 +37,13 @@ pub const MAX_RANGES: usize = 16;
 pub struct ByteRangeTracker {
     /// Initialized ranges as (start, end) pairs, where end is exclusive.
     /// Only the first `count` entries are valid.
-    ranges: [(u32, u32); MAX_RANGES],
+    ranges: [Range; MAX_RANGES],
     /// Number of valid ranges.
     count: u8,
 }
 
 /// Error from byte range operations.
+#[cfg_attr(creusot, derive(DeepModel))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ByteRangeError {
     /// Tried to initialize bytes that are already initialized.
@@ -42,7 +60,7 @@ impl ByteRangeTracker {
     /// Create a new tracker with no initialized ranges.
     pub const fn new() -> Self {
         Self {
-            ranges: [(0, 0); MAX_RANGES],
+            ranges: [Range { start: 0, end: 0 }; MAX_RANGES],
             count: 0,
         }
     }
@@ -65,7 +83,10 @@ impl ByteRangeTracker {
         }
 
         for i in 0..self.count as usize {
-            let (r_start, r_end) = self.ranges[i];
+            let Range {
+                start: r_start,
+                end: r_end,
+            } = self.ranges[i];
             // Check for overlap
             if start < r_end && end > r_start {
                 return false;
@@ -81,7 +102,10 @@ impl ByteRangeTracker {
         }
 
         for i in 0..self.count as usize {
-            let (r_start, r_end) = self.ranges[i];
+            let Range {
+                start: r_start,
+                end: r_end,
+            } = self.ranges[i];
             // Check if this range fully contains [start, end)
             if r_start <= start && end <= r_end {
                 return true;
@@ -109,7 +133,10 @@ impl ByteRangeTracker {
         let mut remove_mask = 0u16; // Bitmap of ranges to remove (merged)
 
         for i in 0..self.count as usize {
-            let (r_start, r_end) = self.ranges[i];
+            let Range {
+                start: r_start,
+                end: r_end,
+            } = self.ranges[i];
 
             // Check if adjacent (can merge)
             if r_end == start {
@@ -143,7 +170,7 @@ impl ByteRangeTracker {
 
         // Insert the new/merged range in sorted order
         let mut insert_idx = 0;
-        while insert_idx < self.count as usize && self.ranges[insert_idx].0 < merge_start {
+        while insert_idx < self.count as usize && self.ranges[insert_idx].start < merge_start {
             insert_idx += 1;
         }
 
@@ -151,7 +178,7 @@ impl ByteRangeTracker {
         for i in (insert_idx..self.count as usize).rev() {
             self.ranges[i + 1] = self.ranges[i];
         }
-        self.ranges[insert_idx] = (merge_start, merge_end);
+        self.ranges[insert_idx] = Range::new(merge_start, merge_end);
         self.count += 1;
 
         Ok(())
@@ -168,7 +195,10 @@ impl ByteRangeTracker {
         // Find the range that contains [start, end)
         let mut containing_idx = None;
         for i in 0..self.count as usize {
-            let (r_start, r_end) = self.ranges[i];
+            let Range {
+                start: r_start,
+                end: r_end,
+            } = self.ranges[i];
             if r_start <= start && end <= r_end {
                 containing_idx = Some(i);
                 break;
@@ -176,7 +206,10 @@ impl ByteRangeTracker {
         }
 
         let idx = containing_idx.ok_or(ByteRangeError::NotInitialized { start, end })?;
-        let (r_start, r_end) = self.ranges[idx];
+        let Range {
+            start: r_start,
+            end: r_end,
+        } = self.ranges[idx];
 
         // Four cases:
         // 1. Exact match: remove the range
@@ -192,10 +225,10 @@ impl ByteRangeTracker {
             self.count -= 1;
         } else if r_start == start {
             // Case 2: remove from start
-            self.ranges[idx] = (end, r_end);
+            self.ranges[idx] = Range::new(end, r_end);
         } else if r_end == end {
             // Case 3: remove from end
-            self.ranges[idx] = (r_start, start);
+            self.ranges[idx] = Range::new(r_start, start);
         } else {
             // Case 4: split - need to add a new range
             if self.count as usize >= MAX_RANGES {
@@ -203,13 +236,13 @@ impl ByteRangeTracker {
             }
 
             // Shrink existing range to [r_start, start)
-            self.ranges[idx] = (r_start, start);
+            self.ranges[idx] = Range::new(r_start, start);
 
             // Insert new range [end, r_end) after idx
             for i in (idx + 1..self.count as usize).rev() {
                 self.ranges[i + 1] = self.ranges[i];
             }
-            self.ranges[idx + 1] = (end, r_end);
+            self.ranges[idx + 1] = Range::new(end, r_end);
             self.count += 1;
         }
 
@@ -225,24 +258,27 @@ impl ByteRangeTracker {
             return Err(ByteRangeError::InvalidRange { start, end });
         }
 
-        let mut new_ranges = [(0, 0); MAX_RANGES];
+        let mut new_ranges = [Range::new(0, 0); MAX_RANGES];
         let mut new_count = 0usize;
 
         for i in 0..self.count as usize {
-            let (r_start, r_end) = self.ranges[i];
+            let Range {
+                start: r_start,
+                end: r_end,
+            } = self.ranges[i];
             if end <= r_start || start >= r_end {
-                new_ranges[new_count] = (r_start, r_end);
+                new_ranges[new_count] = Range::new(r_start, r_end);
                 new_count += 1;
                 continue;
             }
 
             if r_start < start {
-                new_ranges[new_count] = (r_start, start);
+                new_ranges[new_count] = Range::new(r_start, start);
                 new_count += 1;
             }
 
             if r_end > end {
-                new_ranges[new_count] = (end, r_end);
+                new_ranges[new_count] = Range::new(end, r_end);
                 new_count += 1;
             }
         }
@@ -253,7 +289,7 @@ impl ByteRangeTracker {
     }
 
     /// Get the initialized ranges as a slice.
-    pub fn ranges(&self) -> &[(u32, u32)] {
+    pub fn ranges(&self) -> &[Range] {
         &self.ranges[..self.count as usize]
     }
 }
@@ -465,9 +501,9 @@ mod tests {
 
         let ranges = tracker.ranges();
         assert_eq!(ranges.len(), 3);
-        assert_eq!(ranges[0], (0, 4));
-        assert_eq!(ranges[1], (10, 14));
-        assert_eq!(ranges[2], (20, 24));
+        assert_eq!(ranges[0], Range::new(0, 4));
+        assert_eq!(ranges[1], Range::new(10, 14));
+        assert_eq!(ranges[2], Range::new(20, 24));
     }
 
     #[test]

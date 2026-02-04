@@ -80,7 +80,8 @@ impl<F> Copy for NodeKind<F> {}
 // ============================================================================
 
 /// Tracks per-field state within a struct frame.
-#[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(not(creusot), derive(PartialEq, Eq))]
+#[derive(Debug)]
 pub(crate) enum FieldSlot<F> {
     /// Field not touched.
     Untracked,

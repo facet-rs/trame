@@ -26,11 +26,20 @@ pub use trame_runtime as runtime;
 
 pub use ops::{Op, OpBatch, Path, PathSegment, SetBuilder, Source};
 
+#[cfg(not(creusot))]
 pub use runtime::live::LRuntime;
+
+#[cfg(not(creusot))]
 pub use runtime::verified::{
     VRuntime, VShapeDef, VShapeHandle, VShapeStore, vshape_register, vshape_store,
     vshape_store_reset, vshape_view,
 };
-pub use runtime::{IRuntime, LiveRuntime};
+
+pub use runtime::IRuntime;
+#[cfg(creusot)]
+pub use runtime::creusot_rt::{CLayout, CRuntime, CShapeDef, CShapeHandle, CShapeStore};
+
+#[cfg(not(creusot))]
+pub use runtime::LiveRuntime;
 
 pub use trame::{HeapValue, Trame, TrameError};

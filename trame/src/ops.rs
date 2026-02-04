@@ -233,6 +233,7 @@ impl<'facet> Source<'facet, *mut u8, &'static facet_core::Shape> {
 // Verified runtime constructors (VShapeView, VPtr)
 // ============================================================================
 
+#[cfg(not(creusot))]
 impl<'facet, S: Copy> Source<'facet, trame_runtime::verified::VPtr, S> {
     /// Build an immediate source from a VPtr and its shape.
     ///

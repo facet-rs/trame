@@ -9,7 +9,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/facet-rs/trame"
 
 [workspace.lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(creusot)'] }
 
 [workspace.dependencies]
 facet-core = { git = "https://github.com/facet-rs/facet", branch = "main" }

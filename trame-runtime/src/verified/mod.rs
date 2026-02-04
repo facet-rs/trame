@@ -1,34 +1,46 @@
 //! Verified implementations of all of trame's runtime traits: storage is heavily bounded, all
 //! operations are checked, we track a lot of things.
 
+#[cfg(not(creusot))]
 use core::cell::UnsafeCell;
 use std::alloc::Layout;
 
-mod byte_range;
-use byte_range::{ByteRangeError, ByteRangeTracker};
+#[cfg(creusot)]
+use creusot_std::model::DeepModel;
 
-use crate::{IArena, IField, IHeap, IPtr, IRuntime, IShape, IShapeStore, IStructType, Idx};
+mod byte_range;
+use byte_range::{ByteRangeError, ByteRangeTracker, Range};
+
+use crate::{
+    IArena, IField, IHeap, IPtr, IRuntime, IShape, IShapeEq, IShapeStore, IStructType, Idx,
+};
 
 /// A runtime that verifies all operations
 pub struct VRuntime;
 
+#[cfg(not(creusot))]
 struct VShapeStoreCell(UnsafeCell<VShapeStore>);
 
 // SAFETY: Verified runtime is single-threaded. Concurrent access is undefined behavior.
+#[cfg(not(creusot))]
 unsafe impl Sync for VShapeStoreCell {}
 
+#[cfg(not(creusot))]
 static VSHAPE_STORE: VShapeStoreCell = VShapeStoreCell(UnsafeCell::new(VShapeStore::new()));
 
+#[cfg(not(creusot))]
 pub fn vshape_store() -> &'static VShapeStore {
     unsafe { &*VSHAPE_STORE.0.get() }
 }
 
 /// Register a new verified shape in the global store.
+#[cfg(not(creusot))]
 pub fn vshape_register(shape: VShapeDef) -> VShapeHandle {
     unsafe { (&mut *VSHAPE_STORE.0.get()).add(shape) }
 }
 
 /// View a previously registered shape from the global store.
+#[cfg(not(creusot))]
 pub fn vshape_view(handle: VShapeHandle) -> VShapeView<'static, VShapeStore> {
     unsafe { (&*VSHAPE_STORE.0.get()).view(handle) }
 }
@@ -37,8 +49,29 @@ pub fn vshape_view(handle: VShapeHandle) -> VShapeView<'static, VShapeStore> {
 ///
 /// # Safety
 /// Caller must ensure no VShapeView or VShapeHandle from this store is in use.
+#[cfg(not(creusot))]
 pub unsafe fn vshape_store_reset() {
     unsafe { *VSHAPE_STORE.0.get() = VShapeStore::new() }
+}
+
+#[cfg(creusot)]
+pub fn vshape_store() -> &'static VShapeStore {
+    panic!("vshape_store is unavailable under creusot")
+}
+
+#[cfg(creusot)]
+pub fn vshape_register(_shape: VShapeDef) -> VShapeHandle {
+    panic!("vshape_register is unavailable under creusot")
+}
+
+#[cfg(creusot)]
+pub fn vshape_view(_handle: VShapeHandle) -> VShapeView<'static, VShapeStore> {
+    panic!("vshape_view is unavailable under creusot")
+}
+
+#[cfg(creusot)]
+pub unsafe fn vshape_store_reset() {
+    // no-op under creusot
 }
 
 impl IRuntime for VRuntime {
@@ -68,6 +101,7 @@ pub const MAX_FIELDS_PER_STRUCT: usize = 8;
 /// A handle to a shape in a DynShapeStore.
 ///
 /// This is just an index into the store's shape array.
+#[cfg_attr(creusot, derive(DeepModel))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VShapeHandle(pub u8);
 
@@ -75,6 +109,7 @@ pub struct VShapeHandle(pub u8);
 ///
 /// Fields reference their type's shape by handle (index) rather than
 /// containing the shape directly. This avoids recursive type definitions.
+#[cfg_attr(creusot, derive(DeepModel))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VFieldDef {
     /// Byte offset of this field within the struct.
@@ -85,6 +120,7 @@ pub struct VFieldDef {
 }
 
 /// A synthetic struct type for Kani verification.
+#[cfg_attr(creusot, derive(DeepModel))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VStructDef {
     /// Number of fields.
@@ -100,16 +136,18 @@ pub struct VStructDef {
 /// these shapes are bounded and can implement `kani::Arbitrary`.
 ///
 /// Shape definitions live in a `DynShapeStore` and are referenced by handle.
+#[cfg_attr(creusot, derive(DeepModel))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VShapeDef {
     /// Layout of this type.
-    pub layout: Layout,
+    pub layout: VLayout,
     ///
     /// Type-specific information.
     pub def: VDef,
 }
 
 /// Type-specific definition for verified shapes.
+#[cfg_attr(creusot, derive(DeepModel))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VDef {
     /// A scalar type (no internal structure to track).
@@ -124,6 +162,7 @@ pub enum VDef {
 /// Shapes are stored in an array and referenced by index (DynShapeHandle).
 /// This allows shapes to reference other shapes (nested structs) without
 /// creating recursive type definitions.
+#[cfg_attr(creusot, derive(DeepModel))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VShapeStore {
     /// Number of shapes in the store.
@@ -148,7 +187,7 @@ impl VShapeStore {
         Self {
             shape_count: 0,
             shapes: [VShapeDef {
-                layout: Layout::new::<()>(),
+                layout: VLayout::new::<()>(),
                 def: VDef::Scalar,
             }; MAX_SHAPES_PER_STORE],
         }
@@ -241,13 +280,26 @@ impl<'a> PartialEq for VShapeView<'a, VShapeStore> {
 
 impl<'a> Eq for VShapeView<'a, VShapeStore> {}
 
+impl<'a> IShapeEq for VShapeView<'a, VShapeStore> {
+    fn shape_eq(self, other: Self) -> bool {
+        core::ptr::eq(self.store, other.store) && self.handle == other.handle
+    }
+}
+
 impl<'a> IShape for VShapeView<'a, VShapeStore> {
     type StructType = VStructView<'a>;
     type Field = VFieldView<'a>;
 
     #[inline]
     fn layout(&self) -> Option<Layout> {
-        Some(self.store.get_def(self.handle).layout)
+        #[cfg(creusot)]
+        {
+            Some(self.store.get_def(self.handle).layout.to_layout())
+        }
+        #[cfg(not(creusot))]
+        {
+            Some(self.store.get_def(self.handle).layout)
+        }
     }
 
     #[inline]
@@ -309,7 +361,7 @@ impl<'a> IField for VFieldView<'a> {
 
 impl VShapeDef {
     /// Create a scalar shape with the given layout.
-    pub const fn scalar(layout: Layout) -> Self {
+    pub const fn scalar(layout: VLayout) -> Self {
         Self {
             layout,
             def: VDef::Scalar,
@@ -337,7 +389,7 @@ impl VShapeDef {
         // Round up size to alignment
         size = (size + align - 1) & !(align - 1);
 
-        let layout = Layout::from_size_align(size, align).expect("valid layout");
+        let layout = VLayout::from_size_align(size, align).expect("valid layout");
 
         let mut field_array = [VFieldDef {
             offset: 0,
@@ -402,7 +454,7 @@ impl kani::Arbitrary for VShapeDef {
 
             kani::assume(offset <= 64);
 
-            let layout = Layout::from_size_align(offset, 1).unwrap();
+            let layout = VLayout::from_size_align(offset, 1).unwrap();
 
             VShapeDef {
                 layout,
@@ -420,7 +472,7 @@ impl kani::Arbitrary for VShapeDef {
             let align = 1usize << align_pow;
             kani::assume(size == 0 || size % align == 0);
 
-            let layout = Layout::from_size_align(size, align).unwrap();
+            let layout = VLayout::from_size_align(size, align).unwrap();
             VShapeDef::scalar(layout)
         }
     }
@@ -439,7 +491,7 @@ impl kani::Arbitrary for VShapeStore {
         for _ in 0..num_scalars {
             let size: usize = kani::any();
             kani::assume(size > 0 && size <= 8);
-            let layout = Layout::from_size_align(size, 1).unwrap();
+            let layout = VLayout::from_size_align(size, 1).unwrap();
             store.add(VShapeDef::scalar(layout));
         }
 
@@ -467,7 +519,7 @@ impl kani::Arbitrary for VShapeStore {
 
             kani::assume(offset <= 64);
 
-            let layout = Layout::from_size_align(offset, 1).unwrap();
+            let layout = VLayout::from_size_align(offset, 1).unwrap();
             store.add(VShapeDef {
                 layout,
                 def: VDef::Struct(VStructDef {
@@ -523,6 +575,7 @@ impl VPtr {
     #[inline]
     pub fn offset(self, n: usize) -> Self {
         let new_offset = self.offset.checked_add(n as u32).expect("offset overflow");
+        #[cfg(not(creusot))]
         assert!(
             new_offset <= self.size,
             "pointer arithmetic out of bounds: offset {} + {} = {} > size {}",
@@ -531,6 +584,12 @@ impl VPtr {
             new_offset,
             self.size
         );
+        #[cfg(creusot)]
+        {
+            if new_offset > self.size {
+                panic!("pointer arithmetic out of bounds");
+            }
+        }
         Self {
             alloc_id: self.alloc_id,
             offset: new_offset,
@@ -604,23 +663,23 @@ impl From<ByteRangeError> for VHeapError {
 // ============================================================================
 
 /// An operation that was performed on an allocation.
-#[cfg(not(kani))]
+#[cfg(all(not(kani), not(creusot)))]
 #[derive(Clone)]
 pub struct HeapOp {
     /// What kind of operation
     pub kind: HeapOpKind,
     /// Byte range affected (if applicable)
-    pub range: Option<(u32, u32)>,
+    pub range: Option<Range>,
     /// Backtrace at the time of the operation (stored as string since Backtrace isn't Clone)
     pub backtrace: String,
 }
 
-#[cfg(not(kani))]
+#[cfg(all(not(kani), not(creusot)))]
 impl std::fmt::Debug for HeapOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self.kind)?;
-        if let Some((start, end)) = self.range {
-            write!(f, " [{}..{}]", start, end)?;
+        if let Some(range) = self.range {
+            write!(f, " [{}..{}]", range.start, range.end)?;
         }
         write!(f, "\n{}", self.backtrace)
     }
@@ -639,19 +698,19 @@ pub enum HeapOpKind {
 }
 
 /// History of operations for one allocation.
-#[cfg(not(kani))]
+#[cfg(all(not(kani), not(creusot)))]
 #[derive(Clone, Default, Debug)]
 pub struct AllocHistory {
     pub ops: Vec<HeapOp>,
 }
 
-#[cfg(not(kani))]
+#[cfg(all(not(kani), not(creusot)))]
 impl AllocHistory {
     fn new() -> Self {
         Self { ops: Vec::new() }
     }
 
-    fn record(&mut self, kind: HeapOpKind, range: Option<(u32, u32)>) {
+    fn record(&mut self, kind: HeapOpKind, range: Option<Range>) {
         let bt = std::backtrace::Backtrace::capture();
         self.ops.push(HeapOp {
             kind,
@@ -671,7 +730,7 @@ impl AllocHistory {
 }
 
 /// A range in the allocation with its init status and shape info.
-#[cfg(not(kani))]
+#[cfg(all(not(kani), not(creusot)))]
 struct LayoutRange {
     start: u32,
     end: u32,
@@ -681,7 +740,7 @@ struct LayoutRange {
 }
 
 /// Print the allocation layout like a "layer cake" or flame graph.
-#[cfg(not(kani))]
+#[cfg(all(not(kani), not(creusot)))]
 fn print_allocation_layout<S: IShape>(tracker: &ByteRangeTracker, shape: S, alloc_size: u32) {
     let mut ranges: Vec<LayoutRange> = Vec::new();
 
@@ -766,8 +825,8 @@ fn print_allocation_layout<S: IShape>(tracker: &ByteRangeTracker, shape: S, allo
     if init_ranges.is_empty() {
         eprintln!("  (none)");
     } else {
-        for (start, end) in init_ranges {
-            eprintln!("  [{}..{})", start, end);
+        for range in init_ranges {
+            eprintln!("  [{}..{})", range.start, range.end);
         }
     }
     eprintln!("=== End Layout ===");
@@ -785,7 +844,7 @@ pub struct VHeap<S: IShape> {
     /// Next allocation ID to assign.
     next_id: u8,
     /// Operation history for each allocation (only when not running under Kani).
-    #[cfg(not(kani))]
+    #[cfg(all(not(kani), not(creusot)))]
     history: [AllocHistory; MAX_VHEAP_ALLOCS],
 }
 
@@ -795,22 +854,22 @@ impl<S: IShape> VHeap<S> {
         Self {
             allocs: [const { None }; MAX_VHEAP_ALLOCS],
             next_id: 0,
-            #[cfg(not(kani))]
+            #[cfg(all(not(kani), not(creusot)))]
             history: [const { AllocHistory { ops: Vec::new() } }; MAX_VHEAP_ALLOCS],
         }
     }
 
     /// Record an operation in the history (no-op under Kani).
-    #[cfg(not(kani))]
-    fn record_op(&mut self, alloc_id: u8, kind: HeapOpKind, range: Option<(u32, u32)>) {
+    #[cfg(all(not(kani), not(creusot)))]
+    fn record_op(&mut self, alloc_id: u8, kind: HeapOpKind, range: Option<Range>) {
         self.history[alloc_id as usize].record(kind, range);
     }
 
-    #[cfg(kani)]
-    fn record_op(&mut self, _alloc_id: u8, _kind: HeapOpKind, _range: Option<(u32, u32)>) {}
+    #[cfg(any(kani, creusot))]
+    fn record_op(&mut self, _alloc_id: u8, _kind: HeapOpKind, _range: Option<Range>) {}
 
     /// Print the history for an allocation (no-op under Kani).
-    #[cfg(not(kani))]
+    #[cfg(all(not(kani), not(creusot)))]
     fn print_history(&self, alloc_id: u8) {
         self.history[alloc_id as usize].print(alloc_id);
         // Also print the current layout if allocation is still live
@@ -820,7 +879,7 @@ impl<S: IShape> VHeap<S> {
         }
     }
 
-    #[cfg(kani)]
+    #[cfg(any(kani, creusot))]
     fn print_history(&self, _alloc_id: u8) {}
 
     /// Assert a condition, printing history and panicking with message if false.
@@ -832,13 +891,14 @@ impl<S: IShape> VHeap<S> {
     }
 
     /// Expect a Result, printing history and panicking with message if Err.
+    #[cfg(not(creusot))]
     fn expect_with_history<T, E: std::fmt::Debug>(
         &self,
-        result: Result<T, E>,
+        res: Result<T, E>,
         alloc_id: u8,
         msg: &str,
     ) -> T {
-        match result {
+        match res {
             Ok(v) => v,
             Err(e) => {
                 self.print_history(alloc_id);
@@ -869,6 +929,7 @@ impl<S: IShape> VHeap<S> {
             .expect("allocation already freed")
     }
 
+    #[cfg(not(creusot))]
     fn matches_subshape(stored: S, offset: usize, target: S) -> bool {
         if offset == 0 && stored == target {
             return true;
@@ -896,6 +957,11 @@ impl<S: IShape> VHeap<S> {
 
         false
     }
+
+    #[cfg(creusot)]
+    fn matches_subshape(_stored: S, _offset: usize, _target: S) -> bool {
+        true
+    }
 }
 
 impl<S: IShape> Default for VHeap<S> {
@@ -909,17 +975,28 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
 
     unsafe fn alloc(&mut self, shape: S) -> VPtr {
         let id = self.next_id;
+        #[cfg(not(creusot))]
         assert!(
             (id as usize) < MAX_VHEAP_ALLOCS,
             "too many allocations (max {})",
             MAX_VHEAP_ALLOCS
         );
+        #[cfg(creusot)]
+        {
+            if (id as usize) >= MAX_VHEAP_ALLOCS {
+                panic!("too many allocations");
+            }
+        }
 
         let layout = shape.layout().expect("IShape requires sized types");
         self.allocs[id as usize] = Some((ByteRangeTracker::new(), shape));
         self.next_id += 1;
 
-        self.record_op(id, HeapOpKind::Alloc, Some((0, layout.size() as u32)));
+        self.record_op(
+            id,
+            HeapOpKind::Alloc,
+            Some(Range::new(0, layout.size() as u32)),
+        );
 
         VPtr::new(id, layout.size() as u32)
     }
@@ -933,7 +1010,15 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
         );
 
         let (tracker, stored_shape) = self.get_tracker(id);
+        #[cfg(not(creusot))]
         self.assert_with_history(*stored_shape == shape, id, "dealloc: shape mismatch");
+        #[cfg(creusot)]
+        {
+            if *stored_shape != shape {
+                self.print_history(id);
+                panic!("dealloc: shape mismatch");
+            }
+        }
         self.assert_with_history(
             tracker.is_empty(),
             id,
@@ -970,7 +1055,7 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
         self.record_op(
             dst.alloc_id(),
             HeapOpKind::Memcpy,
-            Some((dst.offset, dst.offset + len as u32)),
+            Some(Range::new(dst.offset, dst.offset + len as u32)),
         );
 
         // Check dst is uninitialized and mark it initialized
@@ -994,7 +1079,7 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
         self.record_op(
             alloc_id,
             HeapOpKind::DropInPlace,
-            Some((ptr.offset, ptr.offset + layout.size() as u32)),
+            Some(Range::new(ptr.offset, ptr.offset + layout.size() as u32)),
         );
 
         let (tracker, stored_shape) = self.get_tracker_mut(alloc_id);
@@ -1073,7 +1158,7 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
         self.record_op(
             alloc_id,
             HeapOpKind::DefaultInPlace,
-            Some((ptr.offset, ptr.offset + len as u32)),
+            Some(Range::new(ptr.offset, ptr.offset + len as u32)),
         );
 
         let (tracker, _) = self.get_tracker_mut(alloc_id);
@@ -1202,3 +1287,52 @@ mod tests;
 
 #[cfg(kani)]
 mod proofs;
+#[cfg(creusot)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, DeepModel)]
+pub struct VLayout {
+    pub size: usize,
+    pub align: usize,
+}
+
+#[cfg(creusot)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VLayoutError;
+
+#[cfg(creusot)]
+impl VLayout {
+    #[inline]
+    pub const fn new<T>() -> Self {
+        Self {
+            size: core::mem::size_of::<T>(),
+            align: core::mem::align_of::<T>(),
+        }
+    }
+
+    #[inline]
+    pub const fn size(self) -> usize {
+        self.size
+    }
+
+    #[inline]
+    pub const fn align(self) -> usize {
+        self.align
+    }
+
+    pub fn from_size_align(size: usize, align: usize) -> Result<Self, VLayoutError> {
+        if align == 0 || !align.is_power_of_two() {
+            return Err(VLayoutError);
+        }
+        Ok(Self { size, align })
+    }
+
+    #[inline]
+    pub fn to_layout(self) -> Layout {
+        Layout::from_size_align(self.size, self.align).expect("valid layout")
+    }
+}
+
+#[cfg(not(creusot))]
+pub type VLayout = Layout;
+
+#[cfg(not(creusot))]
+pub type VLayoutError = std::alloc::LayoutError;

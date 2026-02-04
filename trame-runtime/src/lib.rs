@@ -3,10 +3,22 @@
 #![cfg_attr(kani, feature(stmt_expr_attributes))]
 #![cfg_attr(kani, feature(proc_macro_hygiene))]
 
+#[cfg(not(creusot))]
 pub mod live;
+
+#[cfg(not(creusot))]
 pub mod verified;
 
+#[cfg(creusot)]
+pub mod creusot_rt;
+
+#[cfg(creusot)]
+mod creusot_stub;
+
 use std::{alloc::Layout, marker::PhantomData};
+
+#[cfg(creusot)]
+use creusot_std::prelude::trusted;
 
 /// A heap and a shape implementation, over which Trame can be parameterized
 pub trait IRuntime {
@@ -19,11 +31,13 @@ pub trait IRuntime {
 }
 
 /// Marker trait for runtimes that use real facet shapes and raw pointers.
+#[cfg(not(creusot))]
 pub trait LiveRuntime:
     IRuntime<Shape = &'static facet_core::Shape, Heap: IHeap<&'static facet_core::Shape, Ptr = *mut u8>>
 {
 }
 
+#[cfg(not(creusot))]
 impl<T> LiveRuntime for T where
     T: IRuntime<
             Shape = &'static facet_core::Shape,
@@ -56,8 +70,7 @@ pub trait IShapeStore: Clone {
 /// - `&'static facet_core::Shape` (real shapes)
 /// - store-specific shape views (synthetic shapes for verification)
 ///
-/// The `PartialEq` bound allows the Heap to verify shapes match on dealloc/drop.
-pub trait IShape: Copy + PartialEq {
+pub trait IShape: Copy {
     /// The struct type returned by `as_struct()`.
     type StructType: IStructType<Field = Self::Field>;
 
@@ -74,6 +87,18 @@ pub trait IShape: Copy + PartialEq {
 
     /// Get struct-specific information, if this is a struct.
     fn as_struct(&self) -> Option<Self::StructType>;
+}
+
+/// Shape equality in terms of identity.
+pub trait IShapeEq: IShape {
+    fn shape_eq(self, other: Self) -> bool;
+}
+
+#[cfg(not(creusot))]
+impl IShapeEq for &'static facet_core::Shape {
+    fn shape_eq(self, other: Self) -> bool {
+        core::ptr::eq(self, other)
+    }
 }
 
 /// Interface for struct type information.
@@ -158,6 +183,7 @@ pub trait IPtr: Copy {
     unsafe fn byte_add(self, n: usize) -> Self;
 }
 
+#[cfg(not(creusot))]
 impl IPtr for *mut u8 {
     #[inline]
     unsafe fn byte_add(self, n: usize) -> Self {
@@ -203,6 +229,16 @@ pub struct Idx<T> {
     _ty: PhantomData<fn() -> T>,
 }
 
+#[cfg(creusot)]
+impl<T> creusot_std::model::DeepModel for Idx<T> {
+    type DeepModelTy = u32;
+
+    #[creusot_std::macros::logic(open, inline)]
+    fn deep_model(self) -> Self::DeepModelTy {
+        self.raw
+    }
+}
+
 impl<T> Clone for Idx<T> {
     fn clone(&self) -> Self {
         *self
@@ -211,12 +247,14 @@ impl<T> Clone for Idx<T> {
 
 impl<T> Copy for Idx<T> {}
 
+#[cfg(not(creusot))]
 impl<T> PartialEq for Idx<T> {
     fn eq(&self, other: &Self) -> bool {
         self.raw == other.raw
     }
 }
 
+#[cfg(not(creusot))]
 impl<T> Eq for Idx<T> {}
 
 impl<T> Idx<T> {
@@ -248,6 +286,12 @@ impl<T> Idx<T> {
     }
 
     #[inline]
+    pub fn same(self, other: Self) -> bool {
+        self.raw == other.raw
+    }
+
+    #[inline]
+    #[cfg_attr(creusot, trusted)]
     fn index(self) -> usize {
         debug_assert!(self.is_valid(), "cannot get index of sentinel");
         self.raw as usize

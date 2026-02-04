@@ -196,7 +196,35 @@ set(&[Field(0)], imm(1))
   └─ c ○
 ```
 
-When we're done with `inner`, we exit it and return the cursor to the root.
+We now call `end()`. What happens next depends on the mode.
+
+In strict mode, `end()` validates the child node before folding its state into
+the parent. With only `a` initialized, validation fails, so `end()` errors.
+That error poisons the Trame: everything is de-initialized and de-allocated,
+and the tree is gone.
+
+```rust
+end() // error
+```
+
+```
+∅  (Trame poisoned; no tree remains)
+```
+
+If we finish `inner` first, strict mode can fold the child into the parent and
+remove it from the tree.
+
+```rust
+set(&[Field(1)], imm(2))
+```
+
+```
+  ⟨Root: Outer⟩
+▶ ├─ inner → ⟨Child: Pair⟩
+  │         ├─ a ●
+  │         └─ b ● ✨
+  └─ c ○
+```
 
 ```rust
 end()
@@ -205,6 +233,22 @@ end()
 ```
 ▶ ⟨Root: Outer⟩
   ├─ inner ● ✨
+  └─ c ○
+```
+
+In deferred mode, `end()` returns the cursor to the parent without folding the
+child. The child remains in the tree, and validation is postponed until we
+exit deferred mode.
+
+```rust
+end()
+```
+
+```
+▶ ⟨Root: Outer⟩ ✨
+  ├─ inner → ⟨Child: Pair⟩
+  │         ├─ a ●
+  │         └─ b ○
   └─ c ○
 ```
 

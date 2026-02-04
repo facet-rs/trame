@@ -4,3 +4,6 @@ Cargo.lock
 .soteria
 .tracey/
 .claude
+verif/
+.why3find/
+rustc-ice-*.txt

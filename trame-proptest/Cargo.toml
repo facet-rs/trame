@@ -2,12 +2,14 @@
 name = "trame-proptest"
 version = "0.0.0"
 publish = false
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
-proptest = "1"
+proptest.workspace = true
 trame = { path = "../trame" }
 
-# Prevent this from interfering with workspaces
-[workspace]
-members = ["."]
+[lints]
+workspace = true

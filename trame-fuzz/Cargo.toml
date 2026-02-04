@@ -2,7 +2,15 @@
 name = "trame-fuzz"
 version = "0.0.0"
 publish = false
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[package.metadata]
+
+[package.metadata."docs.rs"]
+rustdoc-args = ["--html-in-header", "arborium-header.html"]
 
 [features]
 # Standalone mode: builds without AFL integration for reproducing crashes,
@@ -10,20 +18,11 @@ edition = "2024"
 standalone = []
 
 [dependencies]
-afl = "0.17"
-arbitrary = { version = "1", features = ["derive"] }
+afl.workspace = true
+arbitrary.workspace = true
+facet.workspace = true
+facet-core.workspace = true
+trame = { path = "../trame" }
 
-[dependencies.facet]
-git = "https://github.com/facet-rs/facet"
-branch = "main"
-
-[dependencies.facet-core]
-git = "https://github.com/facet-rs/facet"
-branch = "main"
-
-[dependencies.trame]
-path = "../trame"
-
-# Prevent this from interfering with workspaces
-[workspace]
-members = ["."]
+[lints]
+workspace = true

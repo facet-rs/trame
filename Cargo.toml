@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["trame", "trame-runtime"]
+members = ["trame", "trame-runtime", "trame-fuzz", "trame-proptest"]
 
 [workspace.package]
 edition = "2024"
@@ -16,3 +16,6 @@ facet-core = { git = "https://github.com/facet-rs/facet", branch = "main" }
 facet = { git = "https://github.com/facet-rs/facet", branch = "main" }
 bitflags = "2.10.0"
 smallvec = "2.0.0-alpha.12"
+afl = "0.17"
+arbitrary = { version = "1", features = ["derive"] }
+proptest = "1"

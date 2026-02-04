@@ -1,5 +1,3 @@
-# trame
-
 A formally verified partial value constructor for [facet](https://github.com/facet-rs/facet).
 
 Trame manages incremental construction of values, tracking which fields have
@@ -52,12 +50,3 @@ The predicates formalize invariants already encoded in VRuntime's design:
 
 Trame has a work-in-progress spec you can visualize via the `tracey web` subcommand,
 see [tracey](https://github.com/bearcove/tracey)
-
-## License
-
-Licensed under either of:
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
-
-at your option.

@@ -1,0 +1,7 @@
+Property-based tests for [trame](https://github.com/facet-rs/trame).
+
+Generates random shape stores (DAGs of scalar and struct types) and random operation
+sequences, then runs them against `VRuntime` to catch logic bugs and invariant violations
+that only surface with specific shape/operation combinations.
+
+Run with `just prop` from the workspace root.

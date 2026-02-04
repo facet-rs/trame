@@ -61,11 +61,99 @@ pub fn witness_implies_in_any(ranges: &Vec<Range>, k: Int, i: Int) -> bool {
     }
 }
 
+/// Helper: an existential witness implies `in_any`.
+#[cfg(creusot)]
+#[logic(open, inline)]
+pub fn exists_implies_in_any(ranges: &Vec<Range>, i: Int) -> bool {
+    pearlite! {
+        (exists<k: Int>
+            0 <= k && k < ranges@.len() && contains(ranges[k], i))
+        ==> in_any(ranges, i)
+    }
+}
+
 /// True if `i` is covered by any discriminant or payload range.
 #[cfg(creusot)]
 #[logic(open, inline)]
 pub fn in_any_or_disc(disc_ranges: &Vec<Range>, payload_ranges: &Vec<Range>, i: Int) -> bool {
     pearlite! { in_any(disc_ranges, i) || in_any(payload_ranges, i) }
+}
+
+/// Helper: if you can witness coverage in either discriminant or payload,
+/// then `in_any_or_disc` holds.
+#[cfg(creusot)]
+#[logic(open, inline)]
+pub fn witness_implies_in_any_or_disc(
+    disc_ranges: &Vec<Range>,
+    payload_ranges: &Vec<Range>,
+    i: Int,
+) -> bool {
+    pearlite! {
+        (exists<k: Int>
+            0 <= k && k < disc_ranges@.len() && contains(disc_ranges[k], i)) ||
+        (exists<k: Int>
+            0 <= k && k < payload_ranges@.len() && contains(payload_ranges[k], i))
+        ==> in_any_or_disc(disc_ranges, payload_ranges, i)
+    }
+}
+
+/// Helper: existential witnesses in either side imply `in_any_or_disc`.
+#[cfg(creusot)]
+#[logic(open, inline)]
+pub fn exists_or_implies_in_any_or_disc(
+    disc_ranges: &Vec<Range>,
+    payload_ranges: &Vec<Range>,
+    i: Int,
+) -> bool {
+    pearlite! {
+        (exists<k: Int>
+            0 <= k && k < disc_ranges@.len() && contains(disc_ranges[k], i))
+        ||
+        (exists<k: Int>
+            0 <= k && k < payload_ranges@.len() && contains(payload_ranges[k], i))
+        ==> in_any_or_disc(disc_ranges, payload_ranges, i)
+    }
+}
+
+/// Helper: if the discriminant ranges cover `i`, then `in_any_or_disc` holds.
+#[cfg(creusot)]
+#[logic(open, inline)]
+pub fn disc_in_any_implies_in_any_or_disc(
+    disc_ranges: &Vec<Range>,
+    payload_ranges: &Vec<Range>,
+    i: Int,
+) -> bool {
+    pearlite! { in_any(disc_ranges, i) ==> in_any_or_disc(disc_ranges, payload_ranges, i) }
+}
+
+/// Helper: if the payload ranges cover `i`, then `in_any_or_disc` holds.
+#[cfg(creusot)]
+#[logic(open, inline)]
+pub fn payload_in_any_implies_in_any_or_disc(
+    disc_ranges: &Vec<Range>,
+    payload_ranges: &Vec<Range>,
+    i: Int,
+) -> bool {
+    pearlite! { in_any(payload_ranges, i) ==> in_any_or_disc(disc_ranges, payload_ranges, i) }
+}
+
+/// Helper: a conditional witness (disc vs payload) implies `in_any_or_disc`.
+#[cfg(creusot)]
+#[logic(open, inline)]
+pub fn conditional_witness_implies_in_any_or_disc(
+    disc_ranges: &Vec<Range>,
+    payload_ranges: &Vec<Range>,
+    i: Int,
+) -> bool {
+    pearlite! {
+        (if i < disc_end(disc_ranges, payload_ranges) {
+            exists<k: Int>
+                0 <= k && k < disc_ranges@.len() && contains(disc_ranges[k], i)
+        } else {
+            exists<k: Int>
+                0 <= k && k < payload_ranges@.len() && contains(payload_ranges[k], i)
+        }) ==> in_any_or_disc(disc_ranges, payload_ranges, i)
+    }
 }
 
 /// Find a covering range index for `i` in the prefix `[0..=j]`.
@@ -213,30 +301,44 @@ pub fn disc_end(disc_ranges: &Vec<Range>, payload_ranges: &Vec<Range>) -> Int {
             end(payload_ranges[i]) == payload_ranges[i + 1].start@
 )]
 #[requires(
-    disc_ranges@.len() == 0 ||
+    disc_ranges@.len() > 0 ==>
         forall<i: Int>
             0 <= i && i + 1 < disc_ranges@.len() ==>
                 end(disc_ranges[i]) == disc_ranges[i + 1].start@
 )]
 #[requires(
-    disc_ranges@.len() == 0 ||
+    disc_ranges@.len() > 0 ==>
         end(disc_ranges[disc_ranges@.len() - 1]) == payload_ranges[0].start@
 )]
 #[ensures(
     forall<i: Int>
-        span_start(disc_ranges, payload_ranges) <= i &&
-        i < end(payload_ranges[payload_ranges@.len() - 1]) ==>
-            if i < disc_end(disc_ranges, payload_ranges) {
-                exists<k: Int>
-                    k == find_range(disc_ranges, disc_ranges@.len() - 1, i) &&
-                    0 <= k && k < disc_ranges@.len() &&
-                    contains(disc_ranges[k], i)
-            } else {
+        disc_ranges@.len() == 0 ==>
+            payload_ranges[0].start@ <= i &&
+            i < end(payload_ranges[payload_ranges@.len() - 1]) ==>
                 exists<k: Int>
                     k == find_range(payload_ranges, payload_ranges@.len() - 1, i) &&
                     0 <= k && k < payload_ranges@.len() &&
                     contains(payload_ranges[k], i)
-            }
+)]
+#[ensures(
+    forall<i: Int>
+        disc_ranges@.len() > 0 ==>
+            disc_ranges[0].start@ <= i &&
+            i < end(disc_ranges[disc_ranges@.len() - 1]) ==>
+                exists<k: Int>
+                    k == find_range(disc_ranges, disc_ranges@.len() - 1, i) &&
+                    0 <= k && k < disc_ranges@.len() &&
+                    contains(disc_ranges[k], i)
+)]
+#[ensures(
+    forall<i: Int>
+        disc_ranges@.len() > 0 ==>
+            end(disc_ranges[disc_ranges@.len() - 1]) <= i &&
+            i < end(payload_ranges[payload_ranges@.len() - 1]) ==>
+                exists<k: Int>
+                    k == find_range(payload_ranges, payload_ranges@.len() - 1, i) &&
+                    0 <= k && k < payload_ranges@.len() &&
+                    contains(payload_ranges[k], i)
 )]
 pub fn disc_and_adjacent_payload_cover(disc_ranges: &Vec<Range>, payload_ranges: &Vec<Range>) {
     // This lemma assumes a *specific* layout shape:
@@ -247,44 +349,37 @@ pub fn disc_and_adjacent_payload_cover(disc_ranges: &Vec<Range>, payload_ranges:
     // It does NOT model padding; padding is handled by
     // covers_except_padding_with_discriminant.
     adjacent_seq_cover(payload_ranges);
-    if disc_ranges.len() > 0 {
-        adjacent_seq_cover(disc_ranges);
-    }
-    proof_assert! {
-        forall<i: Int>
-            disc_ranges@.len() > 0 &&
-            span_start(disc_ranges, payload_ranges) <= i &&
-            i < disc_end(disc_ranges, payload_ranges) ==>
-                exists<k: Int>
-                    k == find_range(disc_ranges, disc_ranges@.len() - 1, i) &&
-                    0 <= k && k < disc_ranges@.len() &&
-                    contains(disc_ranges[k], i)
-    };
-    proof_assert! {
-        forall<i: Int>
-            disc_end(disc_ranges, payload_ranges) <= i &&
-            i < end(payload_ranges[payload_ranges@.len() - 1]) ==>
-                exists<k: Int>
-                    k == find_range(payload_ranges, payload_ranges@.len() - 1, i) &&
-                    0 <= k && k < payload_ranges@.len() &&
-                    contains(payload_ranges[k], i)
-    };
-    proof_assert! {
-        forall<i: Int>
-            span_start(disc_ranges, payload_ranges) <= i &&
-            i < end(payload_ranges[payload_ranges@.len() - 1]) ==>
-                if i < disc_end(disc_ranges, payload_ranges) {
-                    exists<k: Int>
-                        k == find_range(disc_ranges, disc_ranges@.len() - 1, i) &&
-                        0 <= k && k < disc_ranges@.len() &&
-                        contains(disc_ranges[k], i)
-                } else {
+    if disc_ranges.len() == 0 {
+        proof_assert! {
+            forall<i: Int>
+                payload_ranges[0].start@ <= i &&
+                i < end(payload_ranges[payload_ranges@.len() - 1]) ==>
                     exists<k: Int>
                         k == find_range(payload_ranges, payload_ranges@.len() - 1, i) &&
                         0 <= k && k < payload_ranges@.len() &&
                         contains(payload_ranges[k], i)
-                }
-    };
+        };
+    } else {
+        adjacent_seq_cover(disc_ranges);
+        proof_assert! {
+            forall<i: Int>
+                disc_ranges[0].start@ <= i &&
+                i < end(disc_ranges[disc_ranges@.len() - 1]) ==>
+                    exists<k: Int>
+                        k == find_range(disc_ranges, disc_ranges@.len() - 1, i) &&
+                        0 <= k && k < disc_ranges@.len() &&
+                        contains(disc_ranges[k], i)
+        };
+        proof_assert! {
+            forall<i: Int>
+                end(disc_ranges[disc_ranges@.len() - 1]) <= i &&
+                i < end(payload_ranges[payload_ranges@.len() - 1]) ==>
+                    exists<k: Int>
+                        k == find_range(payload_ranges, payload_ranges@.len() - 1, i) &&
+                        0 <= k && k < payload_ranges@.len() &&
+                        contains(payload_ranges[k], i)
+        };
+    }
 }
 
 /// Simple enum layout model: discriminant + per-variant payload ranges + padding ranges.

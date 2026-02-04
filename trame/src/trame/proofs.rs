@@ -1,4 +1,5 @@
 use super::*;
+use crate::Path;
 use crate::runtime::verified::{
     MAX_FIELDS_PER_STRUCT, VDef, VFieldDef, VRuntime, VShapeDef, VShapeHandle, VStructDef,
     vshape_register, vshape_store, vshape_view,

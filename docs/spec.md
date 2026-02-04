@@ -53,16 +53,16 @@ Allocate means reserving memory in the uninitialized state. Initialize means
 transitioning a byte range to initialized. Drop means transitioning a byte
 range back to uninitialized for the given shape.
 
-Nodes are **Staged** or **Sealed**. Staged nodes can be mutated; sealed nodes
-are finalized. A node is **fully initialized** when all of its fields are
-initialized directly or via sealed child nodes.
+Nodes are **Open** or **Closed**. Open nodes can be mutated; closed nodes are
+finalized. A node is **fully initialized** when all of its fields are
+initialized directly or via closed child nodes.
 
 ### Example constructions
 
 Trame models construction as a tree of nodes with a cursor pointing at the
 current node. The diagrams below show node state explicitly.
 
-Legend: `⟨...⟩` node, `○` uninitialized, `●` initialized, `🔒` sealed, `▶` cursor.
+Legend: `⟨...⟩` node, `○` uninitialized, `●` initialized, `🔒︎` closed, `▶` cursor, `✨` newly changed.
 
 ### Simple Scalar
 
@@ -70,7 +70,7 @@ A new `Trame<u32>` starts with a single root node that is not initialized yet
 (`○`).
 
 ```
-▶ ⟨Root: u32⟩ ○
+▶ ⟨Root: u32⟩ ○ ✨
 ```
 
 Once you have a Trame, you apply operations. Each node has a data pointer, and
@@ -86,7 +86,7 @@ For a `u32`, the two useful `Set` modes are:
 set(&[], imm(42))
 ```
 ```
-▶ ⟨Root: u32⟩ ●
+▶ ⟨Root: u32⟩ ● ✨
 ```
 
 `build()` requires the root node to be fully initialized. In this example it
@@ -107,12 +107,12 @@ struct Pair {
 This struct is a single allocation, but Trame models it as three possible
 nodes: the root node for the struct itself and one node for each field. We
 start with a single node that represents the struct, and that root node starts
-staged.
+open.
 
 Initial state (only the root node exists; fields are uninitialized slots `○`):
 
 ```
-▶ ⟨Root: Pair⟩
+▶ ⟨Root: Pair⟩ ✨
   ├─ a ○
   └─ b ○
 ```
@@ -125,8 +125,8 @@ set(&[], imm(some_struct))
 
 ```
 ▶ ⟨Root: Pair⟩
-  ├─ a ●
-  └─ b ●
+  ├─ a ● ✨
+  └─ b ● ✨
 ```
 
 But starting back from the initial state, we can also initialize the struct one field at a time:
@@ -137,16 +137,76 @@ set(&[Field(0)], imm(13))
 
 ```
 ▶ ⟨Root: Pair⟩
-  ├─ a ●
+  ├─ a ● ✨
   └─ b ○
 ```
 
 If we were to call `build()` at this point in time, it would return an error.
 `build()` takes ownership of the Trame, so there are only two outcomes:
 - A `HeapValue` that is fully valid and fully initialized.
-- An error, in which case the Trame drops and cleans up:
-  - anything that was initialized is cleanly de-initialized
-  - anything that was allocated is cleanly deallocated
+- An error.
+
+If there is an error, the Trame drops and cleans up:
+- anything that was initialized is cleanly de-initialized
+- anything that was allocated is cleanly deallocated
+
+### Nested Struct
+
+Now consider a struct that contains another struct:
+
+```rust
+struct Outer {
+    inner: Pair,
+    c: u32,
+}
+```
+
+The root node starts open. To build `inner` incrementally, we stage that field,
+which creates a child node and moves the cursor to it.
+
+```
+▶ ⟨Root: Outer⟩ ✨
+  ├─ inner ○
+  └─ c ○
+```
+
+```rust
+set(&[Field(0)], stage())
+```
+
+```
+  ⟨Root: Outer⟩
+▶ ├─ inner → ⟨Child: Pair⟩ ✨
+  │         ├─ a ○
+  │         └─ b ○
+  └─ c ○
+```
+
+With the cursor on the child, paths are relative to the child node.
+
+```rust
+set(&[Field(0)], imm(1))
+```
+
+```
+  ⟨Root: Outer⟩
+▶ ├─ inner → ⟨Child: Pair⟩
+  │         ├─ a ● ✨
+  │         └─ b ○
+  └─ c ○
+```
+
+When we're done with `inner`, we exit it and return the cursor to the root.
+
+```rust
+end()
+```
+
+```
+▶ ⟨Root: Outer⟩
+  ├─ inner ● ✨
+  └─ c ○
+```
 
 ### Smart pointers
 
@@ -204,7 +264,7 @@ cost in production builds.
 
 ## Notes
 
-TODO: Deferred mode + maps. Sealed is one-way: a sealed map cannot be
-re-entered or re-staged. Rationale: re-entering would allow mutating keys or
-values after finalization, or re-staging would clear the staged tuples and
+TODO: Deferred mode + maps. Closed is one-way: a closed map cannot be
+re-entered or re-opened. Rationale: re-entering would allow mutating keys or
+values after finalization, or re-opening would clear the staged tuples and
 lose data.

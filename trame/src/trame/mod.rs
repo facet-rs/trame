@@ -108,6 +108,17 @@ where
     false
 }
 
+#[cfg(creusot)]
+#[trusted]
+#[ensures(result == heap.can_drop(ptr, shape))]
+fn heap_can_drop<H, S>(heap: &H, ptr: <H as IHeap<S>>::Ptr, shape: S) -> bool
+where
+    H: IHeap<S>,
+    S: IShape,
+{
+    false
+}
+
 impl<'facet, R> Trame<'facet, R>
 where
     R: IRuntime,
@@ -274,6 +285,10 @@ where
                             if src_shape != shape {
                                 return Err(TrameError::ShapeMismatch);
                             }
+                            #[cfg(creusot)]
+                            if !heap_range_init::<Heap<R>, Shape<R>>(&self.heap, src_ptr, size) {
+                                return Err(TrameError::UnsupportedSource);
+                            }
                             unsafe { self.heap.memcpy(dst, src_ptr, size) };
                         }
                         SourceKind::Default => {
@@ -334,7 +349,16 @@ where
                 }
 
                 if already_init {
-                    unsafe { self.heap.drop_in_place(dst, field_shape) };
+                    #[cfg(creusot)]
+                    {
+                        if heap_can_drop::<Heap<R>, Shape<R>>(&self.heap, dst, field_shape) {
+                            unsafe { self.heap.drop_in_place(dst, field_shape) };
+                        }
+                    }
+                    #[cfg(not(creusot))]
+                    {
+                        unsafe { self.heap.drop_in_place(dst, field_shape) };
+                    }
                     if let NodeKind::Struct { fields } = &mut self.arena.get_mut(target_idx).kind {
                         fields.mark_not_started(field_idx);
                     }
@@ -584,7 +608,14 @@ where
         };
 
         if node_state == NodeState::Sealed {
-            unsafe { self.heap.drop_in_place(node_data, node_shape) };
+            #[cfg(creusot)]
+            if heap_can_drop::<Heap<R>, Shape<R>>(&self.heap, node_data, node_shape) {
+                unsafe { self.heap.drop_in_place(node_data, node_shape) };
+            }
+            #[cfg(not(creusot))]
+            unsafe {
+                self.heap.drop_in_place(node_data, node_shape);
+            }
         } else {
             // Collect children first to avoid borrow issues
             let mut children = Vec::new();
@@ -615,7 +646,14 @@ where
             // Now clean up this Node's initialized slots
             match &node_kind {
                 NodeKind::Scalar { initialized: true } => {
-                    unsafe { self.heap.drop_in_place(node_data, node_shape) };
+                    #[cfg(creusot)]
+                    if heap_can_drop::<Heap<R>, Shape<R>>(&self.heap, node_data, node_shape) {
+                        unsafe { self.heap.drop_in_place(node_data, node_shape) };
+                    }
+                    #[cfg(not(creusot))]
+                    unsafe {
+                        self.heap.drop_in_place(node_data, node_shape);
+                    }
                 }
                 NodeKind::Struct { fields } => {
                     let node = self.arena.get(idx);
@@ -633,7 +671,14 @@ where
                         if matches!(fields.slot(i), FieldSlot::Complete) {
                             let (field_shape, ptr, _size) = Self::field_ptr(node, i)
                                 .expect("field metadata should be valid during cleanup");
-                            unsafe { self.heap.drop_in_place(ptr, field_shape) };
+                            #[cfg(creusot)]
+                            if heap_can_drop::<Heap<R>, Shape<R>>(&self.heap, ptr, field_shape) {
+                                unsafe { self.heap.drop_in_place(ptr, field_shape) };
+                            }
+                            #[cfg(not(creusot))]
+                            unsafe {
+                                self.heap.drop_in_place(ptr, field_shape);
+                            }
                         }
                     }
                 }

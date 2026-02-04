@@ -4,10 +4,25 @@ use crate::runtime::IShape;
 use crate::runtime::LiveRuntime;
 use crate::runtime::{IHeap, IRuntime};
 use core::marker::PhantomData;
+#[cfg(creusot)]
+use creusot_std::macros::ensures;
+#[cfg(creusot)]
+use creusot_std::prelude::trusted;
 
 type Heap<R> = <R as IRuntime>::Heap;
 type Shape<R> = <R as IRuntime>::Shape;
 type Ptr<R> = <Heap<R> as IHeap<Shape<R>>>::Ptr;
+
+#[cfg(creusot)]
+#[trusted]
+#[ensures(result == heap.can_drop(ptr, shape))]
+fn heap_can_drop<H, S>(heap: &H, ptr: <H as IHeap<S>>::Ptr, shape: S) -> bool
+where
+    H: IHeap<S>,
+    S: crate::runtime::IShape,
+{
+    false
+}
 
 /// Owned heap value produced by Trame::build.
 pub struct HeapValue<'facet, R>
@@ -67,6 +82,11 @@ where
 {
     fn drop(&mut self) {
         unsafe {
+            #[cfg(creusot)]
+            if heap_can_drop::<Heap<R>, Shape<R>>(&self.heap, self.ptr, self.shape) {
+                self.heap.drop_in_place(self.ptr, self.shape);
+            }
+            #[cfg(not(creusot))]
             self.heap.drop_in_place(self.ptr, self.shape);
             self.heap.dealloc(self.ptr, self.shape);
         }

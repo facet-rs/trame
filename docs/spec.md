@@ -62,7 +62,7 @@ initialized directly or via closed child nodes.
 Trame models construction as a tree of nodes with a cursor pointing at the
 current node. The diagrams below show node state explicitly.
 
-Legend: `⟨...⟩` node, `○` uninitialized, `●` initialized, `🔒︎` closed, `▶` cursor, `✨` newly changed.
+Legend: `⟨...⟩` node, `○` uninitialized, `●` initialized, `🔒︎` closed, `▶` cursor, `✨` newly changed, `📦` owns allocation.
 
 ### Simple Scalar
 
@@ -380,11 +380,169 @@ end()
   └─ c ○
 ```
 
-### Smart pointers
+### Box
 
-Smart pointers follow the same mental model, but the node representing the
-pointer owns its own allocation, and sealing the pointer implies its inner
-value has been fully constructed.
+A `Box<T>` is modeled as two nodes: one for the box itself, and one for the
+inner `T`. The box node owns a separate allocation (`📦`) and has a single
+child slot (`Field(0)`).
+
+Initial state:
+
+```
+▶ ⟨Root: Box<Pair>⟩ ○
+```
+
+To build incrementally, stage the box's only field. This allocates heap
+storage for `T` (uninitialized) and creates the child node.
+
+```rust
+set(&[Field(0)], stage())
+```
+
+```
+▶ ⟨Root: Box<Pair>⟩ 📦 ✨
+  └─ 0 → ⟨Child: Pair⟩ ✨
+      ├─ a ○
+      └─ b ○
+```
+
+With the cursor on the child, paths are relative to the inner `Pair`.
+
+```rust
+set(&[Field(0)], imm(1))
+```
+
+```
+▶ ⟨Root: Box<Pair>⟩ 📦
+  └─ 0 → ⟨Child: Pair⟩
+      ├─ a ● ✨
+      └─ b ○
+```
+
+```rust
+set(&[Field(1)], imm(2))
+```
+
+```
+▶ ⟨Root: Box<Pair>⟩ 📦
+  └─ 0 → ⟨Child: Pair⟩
+      ├─ a ●
+      └─ b ● ✨
+```
+
+In strict mode, `end()` on the inner `Pair` folds it into the box and removes
+the child node from the tree.
+
+```rust
+end()
+```
+
+```
+▶ ⟨Root: Box<Pair>⟩ 📦
+  └─ 0 ● ✨
+```
+
+If you already have a complete box, you can set it directly and skip staging:
+
+```rust
+set(&[], imm(some_box))
+```
+
+```
+▶ ⟨Root: Box<Pair>⟩ 📦 ● ✨
+```
+
+### Lists and Sets
+
+Lists and sets use the same staging model. The list/set node owns a staging
+allocation (`📦`). `Append` creates a new element frame at the end of the
+staging buffer and moves the cursor into it. The caller tracks the element
+index (track synthesis) for later re-entry.
+
+Example: `Vec<Pair>` (the same model applies to sets).
+
+Initial state:
+
+```
+▶ ⟨Root: Vec<Pair>⟩ ○
+```
+
+Append element 0:
+
+```rust
+set(&[Append], stage())
+```
+
+```
+▶ ⟨Root: Vec<Pair>⟩ 📦 ● ✨
+  └─ 0 → ⟨Child: Pair⟩ ✨
+      ├─ a ○
+      └─ b ○
+```
+
+```rust
+set(&[Field(0)], imm(1))
+```
+
+```
+▶ ⟨Root: Vec<Pair>⟩ 📦 ●
+  └─ 0 → ⟨Child: Pair⟩
+      ├─ a ● ✨
+      └─ b ○
+```
+
+In deferred mode, `end()` returns to the list without folding the element, so
+it can be re-entered later by index:
+
+```rust
+end()
+```
+
+```
+▶ ⟨Root: Vec<Pair>⟩ 📦 ✨
+  └─ 0 → ⟨Child: Pair⟩
+      ├─ a ●
+      └─ b ○
+```
+
+Re-enter element 0:
+
+```rust
+set(&[Field(0)], stage())
+```
+
+```
+  ⟨Root: Vec<Pair>⟩ 📦
+▶ └─ 0 → ⟨Child: Pair⟩
+      ├─ a ●
+      └─ b ○
+```
+
+```rust
+set(&[Field(1)], imm(2))
+```
+
+```
+  ⟨Root: Vec<Pair>⟩ 📦
+▶ └─ 0 → ⟨Child: Pair⟩
+      ├─ a ●
+      └─ b ● ✨
+```
+
+In strict mode, once the element is fully initialized, `end()` folds it into
+the list and removes the child node from the tree:
+
+```rust
+end()
+```
+
+```
+▶ ⟨Root: Vec<Pair>⟩ 📦
+  └─ 0 ● ✨
+```
+
+Finalization turns the staged elements into the actual list or set (strict:
+on list/set `end()`, deferred: when exiting deferred mode).
 
 ## Verification Abstractions
 

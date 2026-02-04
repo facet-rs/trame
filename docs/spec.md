@@ -64,90 +64,22 @@ Nodes are **Staged** or **Sealed**. Staged nodes can be mutated; sealed nodes
 are finalized. A node is **structurally complete** when all of its fields are
 initialized directly or via sealed child nodes.
 
-### Heap Semantics
+### Tree model
 
-> r[t.heap.alloc]
->
-> `alloc(shape)` MUST return a pointer to a contiguous allocation for `shape`,
-> and all bytes in that allocation MUST start uninitialized.
+Trame models construction as a tree of nodes with a cursor pointing at the
+current node. Building a `u32` is the simplest case: the tree has a single
+root node, and a single `Set` initializes that node. Once the root node is
+initialized, it is complete and the build can finish; there are no child nodes
+or cursor moves involved.
 
-> r[t.heap.memcpy]
->
-> `memcpy(dst, src, len)` MUST require the source range to be initialized and
-> the destination range to be uninitialized. After the copy, the destination
-> range MUST be initialized and the source range MUST remain initialized.
-
-> r[t.heap.mark_init]
->
-> `mark_init(ptr, len)` MUST require the range to be uninitialized and MUST
-> mark the range initialized.
-
-> r[t.heap.drop]
->
-> `drop_in_place(ptr, shape)` MUST require the shape-matching subrange to be
-> initialized and MUST mark exactly that subrange uninitialized.
-
-> r[t.heap.dealloc]
->
-> `dealloc(ptr, shape)` MUST require `ptr` to point to the allocation start,
-> the shape to match the allocation, and the full allocation to be uninitialized.
-
-### Node Semantics
-
-> r[t.node.structural_complete]
->
-> A node MUST be considered structurally complete iff all of its fields are
-> initialized directly or via sealed child nodes.
-
-> r[t.node.sealed_requires_complete]
->
-> A node MUST be structurally complete before it can be sealed.
-
-### Data Model
-
-Construction state is represented as nodes stored in an arena. Each node has a
-shape, a pointer, and a kind: **Scalar** or **Struct**. Scalar nodes track a
-single initialization bit. Struct nodes track per-field slots: Untracked,
-Initialized, or Child (staged or sealed).
-
-A `Trame` maintains a cursor to the current node. Operations are relative to
-this cursor unless the path begins with `Root`.
-
-### Operations and Paths
-
-> r[t.ops.set]
->
-> `Op::Set` MUST write a value into the current node (or a field within it):
-> - `Source::Imm` copies bytes from a pointer and marks the destination initialized
-> - `Source::Default` constructs a default value in place and marks it initialized
-> - `Source::Stage` enters a nested struct node for incremental construction
->   and is valid only when the target node is staged
-
-> r[t.ops.end]
->
-> `Op::End` MUST seal the current node and move the cursor to its parent.
-> It MUST fail if the current node is not structurally complete or if it is the root.
-
-> r[t.paths]
->
-> Paths MUST be resolved relative to the current node. If the first segment is
-> `Root`, the cursor MUST be reset to the root before resolving the remainder.
-> Only a single `Field(n)` segment is supported; other path segments MUST be rejected.
-
-### Safety Requirements
-
-> r[t.safety]
->
-> The following are prohibited and MUST be prevented:
-> - Reading or copying from uninitialized memory
-> - Dropping uninitialized memory
-> - Dropping the same bytes twice (double-drop)
-> - Deallocating memory while any bytes are still initialized
-> - Using pointers after deallocation (use-after-free)
-> - Performing out-of-bounds pointer arithmetic
-> - Using a mismatched shape when dropping (drop wrong type/size)
-> - Calling `copy_nonoverlapping` on overlapping ranges
-> - Forgetting to drop initialized subranges (memory leaks)
+For structs, construction is still a tree but now includes child nodes per
+field. You can initialize fields directly or step into a field to build it
+incrementally, then use `End` to seal that node and move the cursor back to the
+parent. In strict mode, `End` acts as early validation: it requires that the
+current node is structurally complete before sealing. Smart pointers follow
+the same mental model, but the node representing the pointer owns its own
+allocation, and sealing the pointer implies its inner value has been fully
+constructed.
 
 ## Verification Abstractions
 
@@ -185,39 +117,6 @@ shape graphs.
 The verified heap tracks, per allocation:
 - which shape was allocated
 - which byte ranges are initialized
-
-These checks are enforced:
-
-> r[t.verify.heap.alloc]
->
-> `alloc` MUST create a new allocation with all bytes uninitialized and record
-> the allocation's shape for later verification.
-
-> r[t.verify.heap.dealloc]
->
-> `dealloc` MUST reject pointers that are not at allocation start, MUST reject
-> mismatched shapes, and MUST reject deallocation if any bytes remain initialized.
-
-> r[t.verify.heap.memcpy]
->
-> `memcpy` MUST bounds-check both source and destination ranges, MUST require
-> the source range to be initialized, and MUST require the destination range to
-> be uninitialized before marking it initialized.
-
-> r[t.verify.heap.drop]
->
-> `drop_in_place` MUST bounds-check the target range, MUST verify the shape
-> matches the allocation (or subshape), and MUST mark exactly the target range
-> uninitialized.
-
-> r[t.verify.heap.mark_init]
->
-> `mark_init` MUST bounds-check the target range and MUST reject double-init.
-
-> r[t.verify.heap.leaks]
->
-> The verified heap MUST be able to assert that all allocations are freed
-> (no leaks) when requested by tests.
 
 ### Arena
 

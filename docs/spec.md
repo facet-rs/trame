@@ -61,25 +61,79 @@ transitioning a byte range to initialized. Drop means transitioning a byte
 range back to uninitialized for the given shape.
 
 Nodes are **Staged** or **Sealed**. Staged nodes can be mutated; sealed nodes
-are finalized. A node is **structurally complete** when all of its fields are
+are finalized. A node is **fully initialized** when all of its fields are
 initialized directly or via sealed child nodes.
 
 ### Tree model
 
 Trame models construction as a tree of nodes with a cursor pointing at the
-current node. Building a `u32` is the simplest case: the tree has a single
-root node, and a single `Set` initializes that node. Once the root node is
-initialized, it is complete and the build can finish; there are no child nodes
-or cursor moves involved.
+current node. The diagrams below show node state explicitly.
+
+#### Scalar: `u32`
+
+A new `Trame<u32>` starts with a single root node that is not initialized yet.
+
+```
+Cursor
+  |
+[Root: u32] (uninitialized)
+```
+
+Once you have a Trame, you apply operations. Each node has a data pointer, and
+`Set` writes through that pointer.
+
+For a `u32`, the two useful `Set` modes are:
+- Immediate source: writes the provided `u32` bytes (for example, `42`) into
+  the node's data and records that the node is now initialized.
+- Default source: writes the type's default value into the node's data and
+  records the same initialized state.
+
+```
+Cursor
+  |
+[Root: u32] (initialized)
+```
+
+`build()` requires the root node to be fully initialized. In this example it
+is, because we just set it, so `build()` returns a `HeapValue` that can be
+materialized as a `u32`.
+
+#### Structs (strict mode)
 
 For structs, construction is still a tree but now includes child nodes per
 field. You can initialize fields directly or step into a field to build it
 incrementally, then use `End` to seal that node and move the cursor back to the
 parent. In strict mode, `End` acts as early validation: it requires that the
-current node is structurally complete before sealing. Smart pointers follow
-the same mental model, but the node representing the pointer owns its own
-allocation, and sealing the pointer implies its inner value has been fully
-constructed.
+current node is fully initialized before sealing.
+
+```
+Before:
+Cursor
+  |
+[Root: Struct]
+  |- field 0 (uninitialized)
+  |- field 1 (uninitialized)
+
+After staging field 0:
+        Cursor
+          |
+[Root: Struct]
+  |- field 0 -> [Child Node]
+  |- field 1 (uninitialized)
+
+After End on field 0:
+Cursor
+  |
+[Root: Struct]
+  |- field 0 (initialized)
+  |- field 1 (uninitialized)
+```
+
+#### Smart pointers
+
+Smart pointers follow the same mental model, but the node representing the
+pointer owns its own allocation, and sealing the pointer implies its inner
+value has been fully constructed.
 
 ## Verification Abstractions
 

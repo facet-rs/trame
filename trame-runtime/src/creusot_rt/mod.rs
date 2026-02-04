@@ -178,7 +178,10 @@ impl<'a> Eq for CShapeView<'a> {}
 #[logic(open, inline)]
 pub fn shape_is_scalar(shape: CShapeView<'_>) -> bool {
     pearlite! {
-        matches!(shape.store.shapes[shape.handle.0 as usize].def, CDef::Scalar)
+        match shape.store.shapes[shape.handle.0 as usize].def {
+            CDef::Scalar => true,
+            CDef::Struct(_) => false,
+        }
     }
 }
 
@@ -439,6 +442,8 @@ impl IHeap<CShapeView<'_>> for CHeap {
     }
 
     #[trusted]
+    #[cfg_attr(creusot, requires(self.range_init(src, _len)))]
+    #[cfg_attr(creusot, ensures(self.range_init(dst, _len)))]
     unsafe fn memcpy(&mut self, dst: CPtr, src: CPtr, _len: usize) {
         let _ = (dst, src);
     }
@@ -458,14 +463,10 @@ impl IHeap<CShapeView<'_>> for CHeap {
     }
 
     #[trusted]
-    #[cfg_attr(
-        creusot,
-        requires(shape_is_scalar(shape) ==> !self.range_init(ptr, shape_size(shape)))
-    )]
     #[cfg_attr(creusot, ensures(result ==> self.can_drop(ptr, shape)))]
     #[cfg_attr(
         creusot,
-        ensures(shape_is_scalar(shape) ==> (result ==> self.range_init(ptr, shape_size(shape))))
+        ensures(shape_is_scalar(shape) ==> result ==> self.range_init(ptr, shape_size(shape)))
     )]
     unsafe fn default_in_place(&mut self, ptr: CPtr, shape: CShapeView<'_>) -> bool {
         let _ = (ptr, shape);

@@ -75,6 +75,28 @@ fn layout_size(layout: trame_runtime::VLayout) -> usize {
     layout.size()
 }
 
+#[cfg(creusot)]
+#[trusted]
+fn vlayout_from_layout(layout: std::alloc::Layout) -> trame_runtime::VLayout {
+    trame_runtime::VLayout::from_size_align(layout.size(), layout.align()).expect("valid layout")
+}
+
+#[cfg(not(creusot))]
+fn vlayout_from_layout(layout: std::alloc::Layout) -> trame_runtime::VLayout {
+    trame_runtime::VLayout::from_size_align(layout.size(), layout.align()).expect("valid layout")
+}
+
+#[cfg(creusot)]
+#[trusted]
+fn layout_expect(layout: Option<std::alloc::Layout>) -> std::alloc::Layout {
+    layout.expect("IShape requires sized types")
+}
+
+#[cfg(not(creusot))]
+fn layout_expect(layout: Option<std::alloc::Layout>) -> std::alloc::Layout {
+    layout.expect("IShape requires sized types")
+}
+
 impl<'facet, R> Trame<'facet, R>
 where
     R: IRuntime,
@@ -121,9 +143,8 @@ where
         })?;
         let field_shape = field.shape();
         let offset = field.offset();
-        let layout = field_shape.layout().expect("IShape requires sized types");
-        let layout = trame_runtime::VLayout::from_size_align(layout.size(), layout.align())
-            .expect("valid layout");
+        let layout = layout_expect(field_shape.layout());
+        let layout = vlayout_from_layout(layout);
         Ok(FieldMeta {
             shape: field_shape,
             offset,
@@ -136,11 +157,7 @@ where
         field_idx: usize,
     ) -> Result<(Shape<R>, Ptr<R>, usize), TrameError> {
         let meta = Self::field_meta(node.shape, field_idx)?;
-        let node_size = node
-            .shape
-            .layout()
-            .expect("IShape requires sized types")
-            .size();
+        let node_size = layout_size(vlayout_from_layout(layout_expect(node.shape.layout())));
         #[cfg(creusot)]
         proof_assert!(meta.offset + meta.layout.size <= node_size);
         #[cfg(not(creusot))]
@@ -216,7 +233,7 @@ where
             None => match &node.kind {
                 NodeKind::Scalar { .. } => {
                     let shape = node.shape;
-                    let size = shape.layout().expect("IShape requires sized types").size();
+                    let size = layout_size(vlayout_from_layout(layout_expect(shape.layout())));
                     let dst = node.data;
                     let already_init = matches!(&node.kind, NodeKind::Scalar { initialized: true });
 

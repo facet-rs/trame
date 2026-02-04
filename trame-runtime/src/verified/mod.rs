@@ -627,7 +627,6 @@ impl std::fmt::Debug for HeapOp {
 }
 
 /// The kind of heap operation.
-#[cfg(not(kani))]
 #[derive(Debug, Clone, Copy)]
 pub enum HeapOpKind {
     Alloc,

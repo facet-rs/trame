@@ -4,7 +4,7 @@ use arbitrary::Arbitrary;
 use facet::Facet;
 use facet_core::Shape;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use trame::{IRuntime, LRuntime, Op, PathSegment, Source, Trame};
+use trame::{IRuntime, LRuntime, Op, Path, PathSegment, Source, Trame};
 
 // ============================================================================
 // Compound types for fuzzing
@@ -449,21 +449,22 @@ fn run_fuzz(input: FuzzInput) {
         match op {
             FuzzOp::Set { path, mut source } => {
                 let path_buf: Vec<PathSegment> = path.into_iter().map(Into::into).collect();
+                let path = Path::from_segments(&path_buf);
                 let result = match &mut source {
                     FuzzSource::Imm(value) => {
                         // Get the shape from the FuzzValue
                         let (ptr, shape) = value.as_ptr_and_shape();
                         trame.apply(Op::Set {
-                            dst: &path_buf,
+                            dst: path.clone(),
                             src: unsafe { Source::from_ptr_shape(ptr, shape) },
                         })
                     }
                     FuzzSource::Default => trame.apply(Op::Set {
-                        dst: &path_buf,
+                        dst: path.clone(),
                         src: Source::default_value(),
                     }),
                     FuzzSource::Stage { len_hint } => trame.apply(Op::Set {
-                        dst: &path_buf,
+                        dst: path,
                         src: Source::stage(len_hint.map(|n| n as usize)),
                     }),
                 };

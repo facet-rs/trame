@@ -5,6 +5,8 @@ use creusot_std::logic::{Int, Mapping};
 #[cfg(creusot)]
 use creusot_std::macros::{ensures, logic, pearlite, proof_assert, requires};
 #[cfg(creusot)]
+use creusot_std::prelude::variant;
+#[cfg(creusot)]
 use creusot_std::snapshot::Snapshot;
 
 /// A half-open byte range `[start, start + len)`.
@@ -34,11 +36,37 @@ pub fn contains(r: Range, i: Int) -> bool {
 
 /// True if `i` is covered by any range in `ranges`.
 #[cfg(creusot)]
-#[logic]
+#[logic(open, inline)]
 pub fn in_any(ranges: &Vec<Range>, i: Int) -> bool {
     pearlite! {
         exists<j: Int>
             0 <= j && j < ranges@.len() && contains(ranges[j], i)
+    }
+}
+
+/// Find a covering range index for `i` in the prefix `[0..=j]`.
+#[cfg(creusot)]
+#[logic]
+#[variant(j)]
+#[requires(0 <= j)]
+#[requires(j < ranges@.len())]
+#[requires(
+    forall<i: Int>
+        0 <= i && i + 1 < ranges@.len() ==> end(ranges[i]) == ranges[i + 1].start@
+)]
+#[requires(ranges[0].start@ <= i && i < end(ranges[j]))]
+#[ensures(0 <= result && result <= j)]
+#[ensures(contains(ranges[result], i))]
+pub fn find_range(ranges: &Vec<Range>, j: Int, i: Int) -> Int {
+    pearlite! {
+        if j == 0 {
+            0
+        } else if i < end(ranges[j - 1]) {
+            find_range(ranges, j - 1, i)
+        } else {
+            // i >= end(ranges[j - 1]) == ranges[j].start, and i < end(ranges[j])
+            j
+        }
     }
 }
 
@@ -65,13 +93,21 @@ pub fn adjacent_two_cover(r1: Range, r2: Range) {
 )]
 #[ensures(
     forall<i: Int>
-        ranges[0].start@ <= i && i < end(ranges[(ranges@.len() - 1)]) ==> in_any(ranges, i)
+        ranges[0].start@ <= i && i < end(ranges[ranges@.len() - 1]) ==>
+            exists<k: Int>
+                k == find_range(ranges, ranges@.len() - 1, i) &&
+                0 <= k && k < ranges@.len() &&
+                contains(ranges[k], i)
 )]
 pub fn adjacent_seq_cover(ranges: &Vec<Range>) {
     proof_assert! {
         forall<i: Int>
-            ranges[0].start@ <= i && i < end(ranges[(ranges@.len() - 1)]) ==> in_any(ranges, i)
-    }
+            ranges[0].start@ <= i && i < end(ranges[ranges@.len() - 1]) ==>
+                exists<k: Int>
+                    k == find_range(ranges, ranges@.len() - 1, i) &&
+                    0 <= k && k < ranges@.len() &&
+                    contains(ranges[k], i)
+    };
 }
 
 /// Example: express "ignore padding" by allowing holes.

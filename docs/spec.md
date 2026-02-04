@@ -461,6 +461,10 @@ index (track synthesis) for later re-entry.
 
 Example: `Vec<Pair>` (the same model applies to sets).
 
+If you already have a complete list or set, you can set it directly. This
+closes the list/set (`🔒︎`): staging and `Append` are no longer allowed, but
+`Set` with `Imm` or `Default` remains valid and overwrites the whole list/set.
+
 Initial state:
 
 ```
@@ -543,6 +547,105 @@ end()
 
 Finalization turns the staged elements into the actual list or set (strict:
 on list/set `end()`, deferred: when exiting deferred mode).
+
+### Maps
+
+Maps use a direct-fill staging buffer. The map node owns a staging allocation
+(`📦`). `Append` creates a new entry frame containing `key` and `value` slots.
+The caller tracks the entry index (track synthesis) for later re-entry. At
+finalization, **last wins** for duplicate keys.
+
+Initial state:
+
+```
+▶ ⟨Root: Map<String, Pair>⟩ ○
+```
+
+If you already have a complete map, you can set it directly. This closes the
+map (`🔒︎`): staging and `Append` are no longer allowed, but `Set` with `Imm`
+or `Default` remains valid and overwrites the whole map.
+
+```rust
+set(&[], imm(some_map))
+```
+
+```
+▶ ⟨Root: Map<String, Pair>⟩ ● 🔒︎ ✨
+```
+
+To build incrementally, append an entry:
+
+```rust
+set(&[Append], stage())
+```
+
+```
+▶ ⟨Root: Map<String, Pair>⟩ 📦 ● ✨
+  └─ 0 → ⟨Entry: (Key, Value)⟩ ✨
+      ├─ key ○
+      └─ value ○
+```
+
+```rust
+set(&[Field(0)], imm("a"))
+```
+
+```
+▶ ⟨Root: Map<String, Pair>⟩ 📦 ●
+  └─ 0 → ⟨Entry: (Key, Value)⟩
+      ├─ key ● ✨
+      └─ value ○
+```
+
+In deferred mode, `end()` returns to the map without folding the entry, so it
+can be re-entered later by index:
+
+```rust
+end()
+```
+
+```
+▶ ⟨Root: Map<String, Pair>⟩ 📦 ✨
+  └─ 0 → ⟨Entry: (Key, Value)⟩
+      ├─ key ●
+      └─ value ○
+```
+
+Re-enter entry 0:
+
+```rust
+set(&[Field(0)], stage())
+```
+
+```
+  ⟨Root: Map<String, Pair>⟩ 📦
+▶ └─ 0 → ⟨Entry: (Key, Value)⟩
+      ├─ key ●
+      └─ value ○
+```
+
+```rust
+set(&[Field(1)], imm(some_pair))
+```
+
+```
+  ⟨Root: Map<String, Pair>⟩ 📦
+▶ └─ 0 → ⟨Entry: (Key, Value)⟩
+      ├─ key ●
+      └─ value ● ✨
+```
+
+In strict mode, once the entry is fully initialized, `end()` folds it into the
+map and removes the entry node from the tree:
+
+```rust
+end()
+```
+
+```
+▶ ⟨Root: Map<String, Pair>⟩ 📦
+  └─ 0 ● ✨
+```
 
 ### Stable addresses
 

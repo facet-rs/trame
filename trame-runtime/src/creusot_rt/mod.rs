@@ -13,15 +13,13 @@ pub const MAX_SHAPES_PER_STORE: usize = 32;
 pub const MAX_FIELDS_PER_STRUCT: usize = 32;
 
 /// Logical layout for creusot builds.
-#[cfg_attr(creusot, derive(DeepModel))]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, DeepModel)]
 pub struct CLayout {
     pub size: usize,
     pub align: usize,
 }
 
-#[cfg_attr(creusot, derive(DeepModel))]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, DeepModel)]
 pub struct CLayoutError;
 
 impl CLayout {
@@ -51,52 +49,46 @@ impl CLayout {
     }
 
     #[inline]
-    #[cfg_attr(creusot, trusted)]
+    #[trusted]
     pub fn to_layout(self) -> std::alloc::Layout {
         std::alloc::Layout::from_size_align(self.size, self.align).expect("valid layout")
     }
 }
 
 /// A handle to a shape in a store.
-#[cfg_attr(creusot, derive(DeepModel))]
-#[derive(Clone, Copy)]
+#[derive(DeepModel, Clone, Copy)]
 pub struct CShapeHandle(pub u32);
 
 /// A field definition (offset + shape handle).
-#[cfg_attr(creusot, derive(DeepModel))]
-#[derive(Clone, Copy)]
+#[derive(DeepModel, Clone, Copy)]
 pub struct CFieldDef {
     pub offset: usize,
     pub shape_handle: CShapeHandle,
 }
 
 /// A struct definition (bounded array of fields).
-#[cfg_attr(creusot, derive(DeepModel))]
-#[derive(Clone, Copy)]
+#[derive(DeepModel, Clone, Copy)]
 pub struct CStructDef {
     pub field_count: u8,
     pub fields: [CFieldDef; MAX_FIELDS_PER_STRUCT],
 }
 
 /// Shape definition.
-#[cfg_attr(creusot, derive(DeepModel))]
-#[derive(Clone, Copy)]
+#[derive(DeepModel, Clone, Copy)]
 pub struct CShapeDef {
     pub layout: CLayout,
     pub def: CDef,
 }
 
 /// Shape kind.
-#[cfg_attr(creusot, derive(DeepModel))]
-#[derive(Clone, Copy)]
+#[derive(DeepModel, Clone, Copy)]
 pub enum CDef {
     Scalar,
     Struct(CStructDef),
 }
 
 /// Shape store (bounded).
-#[cfg_attr(creusot, derive(DeepModel))]
-#[derive(Clone, Copy)]
+#[derive(DeepModel, Clone, Copy)]
 pub struct CShapeStore {
     pub id: u32,
     pub shape_count: u32,
@@ -115,7 +107,7 @@ impl CShapeStore {
         }
     }
 
-    #[cfg_attr(creusot, trusted)]
+    #[trusted]
     pub fn add(&mut self, shape: CShapeDef) -> CShapeHandle {
         if (self.shape_count as usize) >= MAX_SHAPES_PER_STORE {
             panic!("shape store full");
@@ -126,7 +118,7 @@ impl CShapeStore {
         handle
     }
 
-    #[cfg_attr(creusot, trusted)]
+    #[trusted]
     pub fn get_def(&self, handle: CShapeHandle) -> &CShapeDef {
         if (handle.0 as usize) >= (self.shape_count as usize) {
             panic!("invalid handle");
@@ -167,8 +159,7 @@ pub struct CShapeView<'a> {
     pub handle: CShapeHandle,
 }
 
-#[cfg_attr(creusot, derive(DeepModel))]
-#[derive(Clone, Copy)]
+#[derive(DeepModel, Clone, Copy)]
 pub struct CShapeKey {
     pub store_id: u32,
     pub handle: u32,
@@ -243,7 +234,7 @@ impl<'a> IStructType for CStructView<'a> {
         self.def.field_count as usize
     }
 
-    #[cfg_attr(creusot, trusted)]
+    #[trusted]
     fn field(&self, idx: usize) -> Option<Self::Field> {
         if idx < self.def.field_count as usize {
             Some(CFieldView {
@@ -276,7 +267,7 @@ impl CShapeDef {
         }
     }
 
-    #[cfg_attr(creusot, trusted)]
+    #[trusted]
     pub fn struct_with_fields(store: &CShapeStore, fields: &[(usize, CShapeHandle)]) -> Self {
         if fields.len() > MAX_FIELDS_PER_STRUCT {
             panic!("too many fields");
@@ -363,7 +354,7 @@ impl CPtr {
     }
 
     #[inline]
-    #[cfg_attr(creusot, trusted)]
+    #[trusted]
     pub fn offset(self, n: usize) -> Self {
         let new_offset = self.offset.checked_add(n as u32).expect("offset overflow");
         if new_offset > self.size {
@@ -391,8 +382,7 @@ impl CPtr {
 // Heap (Creusot)
 // ==================================================================
 
-#[cfg_attr(creusot, derive(DeepModel))]
-#[derive(Clone, Copy)]
+#[derive(DeepModel, Clone, Copy)]
 pub struct InitFact {
     pub alloc: u32,
     pub offset: usize,
@@ -456,6 +446,16 @@ impl IHeap<CShapeView<'_>> for CHeap {
     }
 
     #[trusted]
+    #[cfg_attr(
+        creusot,
+        creusot_std::macros::requires(
+            self@.init.contains(init_fact(
+                ptr.alloc_id,
+                ptr.offset as usize,
+                shape.handle
+            ))
+        )
+    )]
     unsafe fn drop_in_place(&mut self, ptr: CPtr, shape: CShapeView<'_>) {
         let _ = (ptr, shape);
     }
@@ -473,8 +473,7 @@ impl IHeap<CShapeView<'_>> for CHeap {
 
 pub const MAX_CARENA_SLOTS: usize = 32;
 
-#[cfg_attr(creusot, derive(DeepModel))]
-#[derive(Clone, Copy)]
+#[derive(DeepModel, Clone, Copy)]
 enum CSlotState {
     Empty,
     Occupied,
@@ -487,7 +486,7 @@ pub struct CArena<T, const N: usize = MAX_CARENA_SLOTS> {
 }
 
 impl<T, const N: usize> CArena<T, N> {
-    #[cfg_attr(creusot, trusted)]
+    #[trusted]
     pub fn new() -> Self {
         Self {
             slots: core::array::from_fn(|_| None),
@@ -504,7 +503,7 @@ impl<T, const N: usize> Default for CArena<T, N> {
 }
 
 impl<T, const N: usize> IArena<T> for CArena<T, N> {
-    #[cfg_attr(creusot, trusted)]
+    #[trusted]
     fn alloc(&mut self, value: T) -> Idx<T> {
         for i in self.next..N {
             if matches!(self.states[i], CSlotState::Empty) {
@@ -525,7 +524,7 @@ impl<T, const N: usize> IArena<T> for CArena<T, N> {
         panic!("arena full");
     }
 
-    #[cfg_attr(creusot, trusted)]
+    #[trusted]
     fn free(&mut self, id: Idx<T>) -> T {
         assert!(id.is_valid(), "cannot free sentinel index");
         let idx = id.index();
@@ -539,7 +538,7 @@ impl<T, const N: usize> IArena<T> for CArena<T, N> {
         self.slots[idx].take().expect("slot was occupied but empty")
     }
 
-    #[cfg_attr(creusot, trusted)]
+    #[trusted]
     fn get(&self, id: Idx<T>) -> &T {
         assert!(id.is_valid(), "cannot get sentinel index");
         let idx = id.index();
@@ -554,7 +553,7 @@ impl<T, const N: usize> IArena<T> for CArena<T, N> {
             .expect("slot was occupied but empty")
     }
 
-    #[cfg_attr(creusot, trusted)]
+    #[trusted]
     fn get_mut(&mut self, id: Idx<T>) -> &mut T {
         assert!(id.is_valid(), "cannot get sentinel index");
         let idx = id.index();

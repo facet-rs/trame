@@ -23,7 +23,7 @@ kani-one crate *args:
 # Prove with creusot
 prove *args:
     cargo creusot clean --force
-    cargo creusot prove {{ args }}
+    cargo creusot prove {{ args }} -- -p trame-runtime -p trame
 
 # Run fuzzing with afl
 fuzz:

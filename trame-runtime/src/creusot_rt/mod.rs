@@ -359,9 +359,17 @@ pub struct InitFact {
     pub shape: CShapeHandle,
 }
 
+#[derive(DeepModel, Clone, Copy)]
+pub struct InitRange {
+    pub alloc: u32,
+    pub start: usize,
+    pub len: usize,
+}
+
 pub struct HeapModel {
     pub live: FSet<u32>,
     pub init: FSet<InitFact>,
+    pub init_ranges: FSet<InitRange>,
 }
 
 pub struct CHeap {
@@ -392,6 +400,12 @@ pub fn init_fact(alloc: u32, offset: usize, shape: CShapeHandle) -> InitFact {
         offset,
         shape,
     }
+}
+
+#[cfg(creusot)]
+#[logic]
+pub fn init_range(alloc: u32, start: usize, len: usize) -> InitRange {
+    InitRange { alloc, start, len }
 }
 
 impl IHeap<CShapeView<'_>> for CHeap {
@@ -435,6 +449,17 @@ impl IHeap<CShapeView<'_>> for CHeap {
                 ptr.alloc_id,
                 ptr.offset as usize,
                 shape.handle
+            ))
+        }
+    }
+
+    #[logic(open, inline)]
+    fn range_init(&self, ptr: CPtr, len: usize) -> bool {
+        pearlite! {
+            self@.init_ranges.contains(init_range(
+                ptr.alloc_id,
+                ptr.offset as usize,
+                len
             ))
         }
     }

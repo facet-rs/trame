@@ -183,6 +183,13 @@ pub trait IHeap<S: IShape> {
     #[logic]
     fn can_drop(&self, ptr: Self::Ptr, shape: S) -> bool;
 
+    /// Creusot-only predicate describing when a byte range is initialized.
+    ///
+    /// The range is interpreted as the `len` bytes starting at `ptr`.
+    #[cfg(creusot)]
+    #[logic]
+    fn range_init(&self, ptr: Self::Ptr, len: usize) -> bool;
+
     /// Default-initialize the value at `ptr` and mark the range as initialized.
     ///
     /// Returns `false` if the shape has no default.

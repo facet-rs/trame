@@ -174,6 +174,20 @@ impl<'a> PartialEq for CShapeView<'a> {
 
 impl<'a> Eq for CShapeView<'a> {}
 
+#[cfg(creusot)]
+#[logic(open, inline)]
+pub fn shape_is_scalar(shape: CShapeView<'_>) -> bool {
+    pearlite! {
+        matches!(shape.store.shapes[shape.handle.0 as usize].def, CDef::Scalar)
+    }
+}
+
+#[cfg(creusot)]
+#[logic(open, inline)]
+pub fn shape_size(shape: CShapeView<'_>) -> usize {
+    pearlite! { shape.store.shapes[shape.handle.0 as usize].layout.size }
+}
+
 /// Field view.
 #[derive(Clone, Copy)]
 pub struct CFieldView<'a> {
@@ -445,11 +459,15 @@ impl IHeap<CShapeView<'_>> for CHeap {
     #[logic(open, inline)]
     fn can_drop(&self, ptr: CPtr, shape: CShapeView<'_>) -> bool {
         pearlite! {
-            self@.init.contains(init_fact(
-                ptr.alloc_id,
-                ptr.offset as usize,
-                shape.handle
-            ))
+            if shape_is_scalar(shape) {
+                self.range_init(ptr, shape_size(shape))
+            } else {
+                self@.init.contains(init_fact(
+                    ptr.alloc_id,
+                    ptr.offset as usize,
+                    shape.handle
+                ))
+            }
         }
     }
 

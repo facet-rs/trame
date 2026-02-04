@@ -198,10 +198,22 @@ set(&[Field(0)], imm(1))
 
 We now call `end()`. What happens next depends on the mode.
 
-In strict mode, `end()` validates the child node before folding its state into
-the parent. With only `a` initialized, validation fails, so `end()` errors.
-That error poisons the Trame: everything is de-initialized and de-allocated,
-and the tree is gone.
+**Strict mode (default)** prioritizes correctness, then performance. It fails
+early and noisily, which is great for diagnostics.
+
+**Folding is an optimization.** It replaces the child with a single
+initialized field in the parent and removes the child from the tree. This
+keeps memory usage low and the tree small.
+
+**Safety requirement.** To safely fold, the child must be fully initialized.
+Otherwise we could lose track of uninitialized bytes and return a partially
+initialized value to safe Rust.
+
+With only `a` initialized, validation fails, so `end()` errors. That error
+poisons the Trame:
+- everything is de-initialized
+- everything is de-allocated
+- the tree is gone
 
 ```rust
 end() // error
@@ -211,8 +223,8 @@ end() // error
 ∅  (Trame poisoned; no tree remains)
 ```
 
-If we finish `inner` first, strict mode can fold the child into the parent and
-remove it from the tree.
+If we finish `inner` first, the child can be folded into the parent and
+removed from the tree.
 
 ```rust
 set(&[Field(1)], imm(2))
@@ -236,14 +248,130 @@ end()
   └─ c ○
 ```
 
-In deferred mode, `end()` returns the cursor to the parent without folding the
-child. The child remains in the tree, and validation is postponed until we
-exit deferred mode.
+**Deferred mode** is a secondary mode of operation. It exists to handle
+`#[facet(flatten)]`, where fields from an inner struct are lifted to the same
+level as the outer struct. In that world, valid inputs can arrive out of order.
+
+For example, with:
+
+```rust
+struct Outer {
+    #[facet(flatten)]
+    inner: Pair,
+    c: u32,
+}
+```
+
+The flattened JSON can interleave fields like this:
+
+```json
+{ "a": 1, "c": 9, "b": 2 }
+```
+
+That order forces us to enter `inner` for `a`, exit to set `c`, then re-enter
+`inner` for `b`. Deferred mode makes that possible by keeping child nodes
+alive after `end()`.
+
+Deferred mode starts from the same initial tree:
+
+```
+▶ ⟨Root: Outer⟩
+  ├─ inner ○
+  └─ c ○
+```
+
+```rust
+set(&[Field(0)], stage())
+```
+
+```
+  ⟨Root: Outer⟩
+▶ ├─ inner → ⟨Child: Pair⟩ ✨
+  │         ├─ a ○
+  │         └─ b ○
+  └─ c ○
+```
+
+```rust
+set(&[Field(0)], imm(1))
+```
+
+```
+  ⟨Root: Outer⟩
+▶ ├─ inner → ⟨Child: Pair⟩
+  │         ├─ a ● ✨
+  │         └─ b ○
+  └─ c ○
+```
 
 ```rust
 end()
 ```
 
+```
+▶ ⟨Root: Outer⟩ ✨
+  ├─ inner → ⟨Child: Pair⟩
+  │         ├─ a ●
+  │         └─ b ○
+  └─ c ○
+```
+
+```rust
+set(&[Field(1)], imm(9))
+```
+
+```
+▶ ⟨Root: Outer⟩
+  ├─ inner → ⟨Child: Pair⟩
+  │         ├─ a ●
+  │         └─ b ○
+  └─ c ● ✨
+```
+
+Re-enter `inner` by staging the same field again:
+
+```rust
+set(&[Field(0)], stage())
+```
+
+```
+  ⟨Root: Outer⟩
+▶ ├─ inner → ⟨Child: Pair⟩
+  │         ├─ a ●
+  │         └─ b ○
+  └─ c ●
+```
+
+```rust
+set(&[Field(1)], imm(2))
+```
+
+```
+  ⟨Root: Outer⟩
+▶ ├─ inner → ⟨Child: Pair⟩
+  │         ├─ a ●
+  │         └─ b ● ✨
+  └─ c ●
+```
+
+```rust
+end()
+```
+
+```
+▶ ⟨Root: Outer⟩ ✨
+  ├─ inner → ⟨Child: Pair⟩
+  │         ├─ a ●
+  │         └─ b ●
+  └─ c ●
+```
+
+Validation is postponed until we exit deferred mode. A later section explains
+how to enter deferred mode, how to exit it, and how final validation works.
+
+```rust
+end()
+```
 ```
 ▶ ⟨Root: Outer⟩ ✨
   ├─ inner → ⟨Child: Pair⟩

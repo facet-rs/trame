@@ -45,14 +45,7 @@ make incremental construction of arbitrary Rust values possible without causing
 UB or otherwise unsoundness. The API surface is intentionally small and
 verified.
 
-### Mental Model: A Tree of Nodes
-
-A partially built value is modeled as a tree of nodes. Each node represents a
-subshape at a specific pointer (often an offset into the same allocation).
-Nested nodes are not separately allocated; they are offsets into the parent
-allocation. The root node is the entry point for construction.
-
-## Normative Specification
+## Mental Model: A Tree of Nodes
 
 ### Terminology
 
@@ -64,14 +57,14 @@ Nodes are **Staged** or **Sealed**. Staged nodes can be mutated; sealed nodes
 are finalized. A node is **fully initialized** when all of its fields are
 initialized directly or via sealed child nodes.
 
-### Tree model
+### Example constructions
 
 Trame models construction as a tree of nodes with a cursor pointing at the
 current node. The diagrams below show node state explicitly.
 
 Legend: `⟨...⟩` node, `○` uninitialized, `●` initialized, `🔒` sealed, `▶` cursor.
 
-#### Scalar: `u32`
+### Scalar: `u32`
 
 A new `Trame<u32>` starts with a single root node that is not initialized yet
 (`○`).
@@ -89,6 +82,9 @@ For a `u32`, the two useful `Set` modes are:
 - Default source: writes the type's default value into the node's data and
   records the same initialized state (`●`).
 
+```rust
+set(&[], imm(42))
+```
 ```
 ▶ ⟨Root: u32⟩ ●
 ```
@@ -97,7 +93,7 @@ For a `u32`, the two useful `Set` modes are:
 is, because we just set it, so `build()` returns a `HeapValue` that can be
 materialized as a `u32`.
 
-#### Structs (strict mode)
+### Structs (strict mode)
 
 Rust allows grouping several values in a struct. For example:
 
@@ -121,7 +117,7 @@ Initial state (only the root node exists; fields are uninitialized slots `○`):
   └─ b ○
 ```
 
-Set the entire struct directly (immediate or default source):
+Just like the scaler before, we can use set to initialize the entire struct in one go:
 
 ```rust
 set(&[], imm(some_struct))
@@ -133,7 +129,7 @@ set(&[], imm(some_struct))
   └─ b ●
 ```
 
-Set a single field directly with a path of size one:
+But starting back from the initial state, we can also initialize the struct one field at a time:
 
 ```rust
 set(&[Field(0)], imm(13))
@@ -145,8 +141,11 @@ set(&[Field(0)], imm(13))
   └─ b ○
 ```
 
-After setting the entire struct, the node is fully initialized but still
-staged, so a later field `Set` overwrites just that field.
+If we were to call build at this point in time, it would return an error, and
+make sure that anything that was initialized is cleanly de-initialized, and that
+anything that was allocated is cleanly deallocated, and that we never get our
+hands on the partially constructed value that was abandoned due to validation
+errors. 
 
 #### Smart pointers
 

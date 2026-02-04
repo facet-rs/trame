@@ -647,6 +647,173 @@ end()
   └─ 0 ● ✨
 ```
 
+### Tuples
+
+A tuple is like a struct with numbered fields. Each element is addressed with
+`Field(n)` in order.
+
+Initial state for `(u32, u32)`:
+
+```
+▶ ⟨Root: (u32, u32)⟩ ○
+  ├─ 0 ○
+  └─ 1 ○
+```
+
+```rust
+set(&[Field(0)], imm(10))
+```
+
+```
+▶ ⟨Root: (u32, u32)⟩
+  ├─ 0 ● ✨
+  └─ 1 ○
+```
+
+### Enums
+
+We model enums as a three-level tree: **Enum → Variant → Payload**. Variant
+selection uses `Field(n)`, and variant payloads are staged (no `Imm` for the
+payload itself).
+
+Example:
+
+```rust
+enum E {
+    Unit,
+    Pair(u32, u32),
+    Named { x: u32, y: u32 },
+}
+```
+
+Variant indices follow declaration order (`Unit` = `Field(0)`, `Pair` =
+`Field(1)`, `Named` = `Field(2)`).
+
+Initial state:
+
+```
+▶ ⟨Root: E⟩ ○
+```
+
+You may set the entire enum directly:
+
+```rust
+set(&[], imm(some_enum))
+```
+
+```
+▶ ⟨Root: E⟩ ● ✨
+```
+
+If you later stage the enum, re-entering the **same** variant resumes; staging
+a **different** variant replaces the old one and resets its payload.
+
+Unit variants are initialized by default and have no payload.
+
+Select the `Pair` variant and stage its payload:
+
+```rust
+set(&[Field(1)], stage())
+```
+
+```
+  ⟨Root: E⟩
+▶ └─ variant 1 → ⟨Variant: Pair⟩ ✨
+      └─ payload ○
+```
+
+```rust
+set(&[Field(0)], stage())
+```
+
+```
+  ⟨Root: E⟩
+  └─ variant 1 → ⟨Variant: Pair⟩
+▶     └─ payload → ⟨Child: (u32, u32)⟩ ✨
+        ├─ 0 ○
+        └─ 1 ○
+```
+
+```rust
+set(&[Field(0)], imm(1))
+```
+
+```
+  ⟨Root: E⟩
+  └─ variant 1 → ⟨Variant: Pair⟩
+▶     └─ payload → ⟨Child: (u32, u32)⟩
+        ├─ 0 ● ✨
+        └─ 1 ○
+```
+
+In deferred mode, `end()` returns to the parent without folding. From the
+payload, the first `end()` returns to the variant:
+
+```rust
+end()
+```
+
+```
+  ⟨Root: E⟩
+▶ └─ variant 1 → ⟨Variant: Pair⟩
+      └─ payload → ⟨Child: (u32, u32)⟩
+        ├─ 0 ●
+        └─ 1 ○
+```
+
+Another `end()` returns to the enum, keeping the variant and payload in the
+tree:
+
+```rust
+end()
+```
+
+```
+▶ ⟨Root: E⟩
+  └─ variant 1 → ⟨Variant: Pair⟩
+      └─ payload → ⟨Child: (u32, u32)⟩
+        ├─ 0 ●
+        └─ 1 ○
+```
+
+Re-enter the same variant and payload, then set the second field:
+
+```rust
+set(&[Field(1)], stage())
+```
+
+```
+  ⟨Root: E⟩
+▶ └─ variant 1 → ⟨Variant: Pair⟩
+      └─ payload → ⟨Child: (u32, u32)⟩
+        ├─ 0 ●
+        └─ 1 ○
+```
+
+```rust
+set(&[Field(0)], stage())
+```
+
+```
+  ⟨Root: E⟩
+  └─ variant 1 → ⟨Variant: Pair⟩
+▶     └─ payload → ⟨Child: (u32, u32)⟩
+        ├─ 0 ●
+        └─ 1 ○
+```
+
+```rust
+set(&[Field(1)], imm(2))
+```
+
+```
+  ⟨Root: E⟩
+  └─ variant 1 → ⟨Variant: Pair⟩
+▶     └─ payload → ⟨Child: (u32, u32)⟩
+        ├─ 0 ●
+        └─ 1 ● ✨
+```
+
 ### Stable addresses
 
 Each element frame points into the list's staging allocation. If we used a

@@ -3,7 +3,7 @@
 use core::{marker::PhantomData, mem};
 
 use creusot_std::logic::FSet;
-use creusot_std::macros::{ensures, pearlite};
+use creusot_std::macros::{ensures, pearlite, requires};
 use creusot_std::model::DeepModel;
 use creusot_std::prelude::{View, logic, trusted};
 
@@ -444,13 +444,29 @@ impl IHeap<CShapeView<'_>> for CHeap {
     }
 
     #[trusted]
+    #[cfg_attr(
+        creusot,
+        requires(shape_is_scalar(shape) ==> self.range_init(ptr, shape_size(shape)))
+    )]
     #[cfg_attr(creusot, ensures(!self.can_drop(ptr, shape)))]
+    #[cfg_attr(
+        creusot,
+        ensures(shape_is_scalar(shape) ==> !self.range_init(ptr, shape_size(shape)))
+    )]
     unsafe fn drop_in_place(&mut self, ptr: CPtr, shape: CShapeView<'_>) {
         let _ = (ptr, shape);
     }
 
     #[trusted]
+    #[cfg_attr(
+        creusot,
+        requires(shape_is_scalar(shape) ==> !self.range_init(ptr, shape_size(shape)))
+    )]
     #[cfg_attr(creusot, ensures(result ==> self.can_drop(ptr, shape)))]
+    #[cfg_attr(
+        creusot,
+        ensures(shape_is_scalar(shape) ==> (result ==> self.range_init(ptr, shape_size(shape))))
+    )]
     unsafe fn default_in_place(&mut self, ptr: CPtr, shape: CShapeView<'_>) -> bool {
         let _ = (ptr, shape);
         true

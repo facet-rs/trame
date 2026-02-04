@@ -27,8 +27,5 @@ facet-core.workspace = true
 trame-runtime = { path = "../trame-runtime" }
 smallvec.workspace = true
 
-[dev-dependencies]
-facet.workspace = true
-
 [lints]
 workspace = true

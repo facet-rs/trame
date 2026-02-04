@@ -1,6 +1,8 @@
 use crate::runtime::{IHeap, IShape, IStructType, Idx};
 
 #[cfg(creusot)]
+use creusot_std::macros::{ensures, logic, requires};
+#[cfg(creusot)]
 use creusot_std::model::DeepModel;
 
 // ============================================================================
@@ -37,7 +39,7 @@ pub(crate) enum NodeState {
 impl DeepModel for NodeState {
     type DeepModelTy = NodeState;
 
-    #[creusot_std::macros::logic(open, inline)]
+    #[logic(open, inline)]
     fn deep_model(self) -> Self::DeepModelTy {
         self
     }
@@ -46,7 +48,7 @@ impl DeepModel for NodeState {
 impl PartialEq for NodeState {
     #[cfg_attr(
         creusot,
-        creusot_std::macros::ensures(result == (self.deep_model() == other.deep_model()))
+        ensures(result == (self.deep_model() == other.deep_model()))
     )]
     fn eq(&self, other: &Self) -> bool {
         matches!(
@@ -82,12 +84,25 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
 // ============================================================================
 
 /// What kind of value a frame is building.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) enum NodeKind<F> {
     /// Scalar value (no internal structure).
     Scalar { initialized: bool },
     /// Struct with tracked fields.
     Struct { fields: FieldStates<F> },
+}
+
+impl<F> Clone for NodeKind<F> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Scalar { initialized } => Self::Scalar {
+                initialized: *initialized,
+            },
+            Self::Struct { fields } => Self::Struct {
+                fields: fields.clone(),
+            },
+        }
+    }
 }
 
 // ============================================================================
@@ -115,13 +130,22 @@ impl<F> Clone for FieldSlot<F> {
 impl<F> Copy for FieldSlot<F> {}
 
 /// Tracks initialization state of struct fields.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct FieldStates<F> {
     /// State of each field.
     slots: Vec<FieldSlot<F>>,
 
     /// Number of fields in the struct.
     pub(crate) count: usize,
+}
+
+impl<F> Clone for FieldStates<F> {
+    fn clone(&self) -> Self {
+        Self {
+            slots: self.slots.clone(),
+            count: self.count,
+        }
+    }
 }
 
 impl<F> FieldStates<F> {
@@ -136,28 +160,28 @@ impl<F> FieldStates<F> {
     }
 
     /// Mark a field as complete (initialized).
-    #[cfg_attr(creusot, creusot_std::macros::requires(idx < self.count))]
+    #[cfg_attr(creusot, requires(idx < self.count))]
     pub(crate) fn mark_complete(&mut self, idx: usize) {
         debug_assert!(idx < self.count);
         self.slots[idx] = FieldSlot::Complete;
     }
 
     /// Mark a field as not started.
-    #[cfg_attr(creusot, creusot_std::macros::requires(idx < self.count))]
+    #[cfg_attr(creusot, requires(idx < self.count))]
     pub(crate) fn mark_not_started(&mut self, idx: usize) {
         debug_assert!(idx < self.count);
         self.slots[idx] = FieldSlot::Untracked;
     }
 
     /// Set a field's child frame index.
-    #[cfg_attr(creusot, creusot_std::macros::requires(idx < self.count))]
+    #[cfg_attr(creusot, requires(idx < self.count))]
     pub(crate) fn set_child(&mut self, idx: usize, child: Idx<F>) {
         debug_assert!(idx < self.count);
         self.slots[idx] = FieldSlot::Child(child);
     }
 
     /// Get a field's child frame index, if it has one.
-    #[cfg_attr(creusot, creusot_std::macros::requires(idx < self.count))]
+    #[cfg_attr(creusot, requires(idx < self.count))]
     pub(crate) fn get_child(&self, idx: usize) -> Option<Idx<F>> {
         debug_assert!(idx < self.count);
         match self.slots[idx] {
@@ -167,14 +191,14 @@ impl<F> FieldStates<F> {
     }
 
     /// Check if a field is complete (initialized).
-    #[cfg_attr(creusot, creusot_std::macros::requires(idx < self.count))]
+    #[cfg_attr(creusot, requires(idx < self.count))]
     pub(crate) fn is_init(&self, idx: usize) -> bool {
         debug_assert!(idx < self.count);
         matches!(self.slots[idx], FieldSlot::Complete)
     }
 
     /// Get the raw slot for a field.
-    #[cfg_attr(creusot, creusot_std::macros::requires(idx < self.count))]
+    #[cfg_attr(creusot, requires(idx < self.count))]
     pub(crate) fn slot(&self, idx: usize) -> FieldSlot<F> {
         debug_assert!(idx < self.count);
         self.slots[idx]

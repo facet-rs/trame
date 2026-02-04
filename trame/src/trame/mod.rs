@@ -18,6 +18,9 @@ use crate::{
 };
 use core::marker::PhantomData;
 
+#[cfg(creusot)]
+use creusot_std::macros::{proof_assert, trusted};
+
 type Heap<R> = <R as IRuntime>::Heap;
 type Shape<R> = <R as IRuntime>::Shape;
 type NodeIdx<R> = Idx<Node<Heap<R>, Shape<R>>>;
@@ -134,7 +137,7 @@ where
             .expect("IShape requires sized types")
             .size();
         #[cfg(creusot)]
-        creusot_std::macros::proof_assert!(meta.offset + meta.layout.size <= node_size);
+        proof_assert!(meta.offset + meta.layout.size <= node_size);
         #[cfg(not(creusot))]
         assert!(
             meta.offset + layout_size(meta.layout) <= node_size,
@@ -150,7 +153,7 @@ where
         ))
     }
 
-    #[cfg_attr(creusot, creusot_std::macros::trusted)]
+    #[cfg_attr(creusot, trusted)]
     fn resolve_path(
         &mut self,
         path: &[PathSegment],
@@ -259,7 +262,7 @@ where
                         }
                         #[cfg(creusot)]
                         {
-                            creusot_std::macros::proof_assert!(field_idx < fields.count);
+                            proof_assert!(field_idx < fields.count);
                         }
                         (fields.get_child(field_idx), fields.is_init(field_idx))
                     }
@@ -280,7 +283,7 @@ where
                         {
                             #[cfg(creusot)]
                             {
-                                creusot_std::macros::proof_assert!(field_idx < fields.count);
+                                proof_assert!(field_idx < fields.count);
                             }
                             fields.mark_not_started(field_idx);
                         }
@@ -294,7 +297,7 @@ where
                     if let NodeKind::Struct { fields } = &mut self.arena.get_mut(target_idx).kind {
                         #[cfg(creusot)]
                         {
-                            creusot_std::macros::proof_assert!(field_idx < fields.count);
+                            proof_assert!(field_idx < fields.count);
                         }
                         fields.mark_not_started(field_idx);
                     }
@@ -313,7 +316,7 @@ where
                         {
                             #[cfg(creusot)]
                             {
-                                creusot_std::macros::proof_assert!(field_idx < fields.count);
+                                proof_assert!(field_idx < fields.count);
                             }
                             fields.mark_complete(field_idx);
                         }
@@ -329,7 +332,7 @@ where
                         {
                             #[cfg(creusot)]
                             {
-                                creusot_std::macros::proof_assert!(field_idx < fields.count);
+                                proof_assert!(field_idx < fields.count);
                             }
                             fields.mark_complete(field_idx);
                         }
@@ -373,7 +376,7 @@ where
                         {
                             #[cfg(creusot)]
                             {
-                                creusot_std::macros::proof_assert!(field_idx < fields.count);
+                                proof_assert!(field_idx < fields.count);
                             }
                             fields.set_child(field_idx, child_idx);
                         }
@@ -406,7 +409,7 @@ where
                 for i in 0..fields.count {
                     #[cfg(creusot)]
                     {
-                        creusot_std::macros::proof_assert!(i < fields.count);
+                        proof_assert!(i < fields.count);
                     }
                     match fields.slot(i) {
                         FieldSlot::Untracked => return false,
@@ -558,7 +561,7 @@ where
                 for i in 0..fields.count {
                     #[cfg(creusot)]
                     {
-                        creusot_std::macros::proof_assert!(i < fields.count);
+                        proof_assert!(i < fields.count);
                     }
                     if let Some(child_idx) = fields.get_child(i) {
                         children.push(child_idx);
@@ -581,7 +584,7 @@ where
                     for i in 0..fields.count {
                         #[cfg(creusot)]
                         {
-                            creusot_std::macros::proof_assert!(i < fields.count);
+                            proof_assert!(i < fields.count);
                         }
                         if matches!(fields.slot(i), FieldSlot::Complete) {
                             let (field_shape, ptr, _size) = Self::field_ptr(node, i)

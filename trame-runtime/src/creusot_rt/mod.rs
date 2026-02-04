@@ -463,9 +463,14 @@ impl<T> CArena<T> {
     #[trusted]
     pub fn new() -> Self {
         // Slot 0 is reserved for NOT_STARTED.
+        let mut slots = Vec::new();
+        slots.push(None);
+        let mut states = Vec::new();
+        states.push(CSlotState::Empty);
+
         Self {
-            slots: vec![None],
-            states: vec![CSlotState::Empty],
+            slots,
+            states,
             next: 1,
         }
     }

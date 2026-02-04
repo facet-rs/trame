@@ -1,6 +1,8 @@
 use crate::PathSegment;
 
 #[cfg(creusot)]
+use creusot_std::macros::ensures;
+#[cfg(creusot)]
 use creusot_std::model::DeepModel;
 
 /// Error during trame construction.
@@ -34,7 +36,7 @@ pub enum TrameError {
 impl PartialEq for TrameError {
     #[cfg_attr(
         creusot,
-        creusot_std::macros::ensures(result == (self.deep_model() == other.deep_model()))
+        ensures(result == (self.deep_model() == other.deep_model()))
     )]
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {

@@ -10,6 +10,9 @@ use std::collections::VecDeque;
 use creusot_std::prelude::DeepModel;
 
 #[cfg(creusot)]
+use creusot_std::macros::{ensures, trusted};
+
+#[cfg(creusot)]
 use creusot_std::std::vec::vec as creusot_vec;
 
 #[cfg(all(not(kani), not(creusot)))]
@@ -48,7 +51,7 @@ pub enum PathSegment {
 impl PartialEq for PathSegment {
     #[cfg_attr(
         creusot,
-        creusot_std::macros::ensures(result == (self.deep_model() == other.deep_model()))
+        ensures(result == (self.deep_model() == other.deep_model()))
     )]
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
@@ -113,7 +116,7 @@ impl Path {
 
     /// Returns true if the path is empty.
     #[cfg(creusot)]
-    #[cfg_attr(creusot, creusot_std::macros::trusted)]
+    #[cfg_attr(creusot, trusted)]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }

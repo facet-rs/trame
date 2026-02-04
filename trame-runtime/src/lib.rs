@@ -12,9 +12,6 @@ pub mod verified;
 #[cfg(creusot)]
 pub mod creusot_rt;
 
-#[cfg(creusot)]
-mod creusot_stub;
-
 use std::{alloc::Layout, marker::PhantomData};
 
 #[cfg(creusot)]

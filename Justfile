@@ -9,8 +9,9 @@ kani:
     just kani-one trame-runtime
     just kani-one trame
 
-prove:
-    cargo creusot prove
+prove *args:
+    cargo creusot clean --force
+    cargo creusot prove {{ args }}
 
 prop:
     cd trame-proptest && cargo nextest run

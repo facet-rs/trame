@@ -9,12 +9,6 @@ use creusot_std::prelude::{View, logic, trusted};
 
 use crate::{IArena, IField, IHeap, IPtr, IRuntime, IShape, IShapeStore, IStructType, Idx};
 
-/// Maximum number of shapes in a store (for bounded verification).
-pub const MAX_SHAPES_PER_STORE: usize = 32;
-
-/// Maximum number of fields in a struct (for bounded verification).
-pub const MAX_FIELDS_PER_STRUCT: usize = 32;
-
 /// Logical layout for creusot builds.
 #[derive(Clone, Copy, Debug, DeepModel)]
 pub struct CLayout {
@@ -69,64 +63,51 @@ pub struct CFieldDef {
     pub shape_handle: CShapeHandle,
 }
 
-/// A struct definition (bounded array of fields).
-#[derive(DeepModel, Clone, Copy)]
+/// A struct definition (unbounded fields).
+#[derive(DeepModel, Clone)]
 pub struct CStructDef {
-    pub field_count: u8,
-    pub fields: [CFieldDef; MAX_FIELDS_PER_STRUCT],
+    pub fields: Vec<CFieldDef>,
 }
 
 /// Shape definition.
-#[derive(DeepModel, Clone, Copy)]
+#[derive(DeepModel, Clone)]
 pub struct CShapeDef {
     pub layout: CLayout,
     pub def: CDef,
 }
 
 /// Shape kind.
-#[derive(DeepModel, Clone, Copy)]
+#[derive(DeepModel, Clone)]
 pub enum CDef {
     Scalar,
     Struct(CStructDef),
 }
 
 /// Shape store (bounded).
-#[derive(DeepModel, Clone, Copy)]
+#[derive(DeepModel, Clone)]
 pub struct CShapeStore {
     pub id: u32,
-    pub shape_count: u32,
-    pub shapes: [CShapeDef; MAX_SHAPES_PER_STORE],
+    pub shapes: Vec<CShapeDef>,
 }
 
 impl CShapeStore {
-    pub const fn new(id: u32) -> Self {
+    pub fn new(id: u32) -> Self {
         Self {
             id,
-            shape_count: 0,
-            shapes: [CShapeDef {
-                layout: CLayout { size: 0, align: 1 },
-                def: CDef::Scalar,
-            }; MAX_SHAPES_PER_STORE],
+            shapes: Vec::new(),
         }
     }
 
     #[trusted]
     pub fn add(&mut self, shape: CShapeDef) -> CShapeHandle {
-        if (self.shape_count as usize) >= MAX_SHAPES_PER_STORE {
-            panic!("shape store full");
-        }
-        let handle = CShapeHandle(self.shape_count);
-        self.shapes[self.shape_count as usize] = shape;
-        self.shape_count += 1;
+        let handle = CShapeHandle(self.shapes.len() as u32);
+        self.shapes.push(shape);
         handle
     }
 
     #[trusted]
     pub fn get_def(&self, handle: CShapeHandle) -> &CShapeDef {
-        if (handle.0 as usize) >= (self.shape_count as usize) {
-            panic!("invalid handle");
-        }
-        &self.shapes[handle.0 as usize]
+        self.shapes.get(handle.0 as usize).expect("invalid handle")
     }
 
     pub fn view(&self, handle: CShapeHandle) -> CShapeView<'_> {
@@ -234,19 +215,15 @@ impl<'a> IStructType for CStructView<'a> {
     type Field = CFieldView<'a>;
 
     fn field_count(&self) -> usize {
-        self.def.field_count as usize
+        self.def.fields.len()
     }
 
     #[trusted]
     fn field(&self, idx: usize) -> Option<Self::Field> {
-        if idx < self.def.field_count as usize {
-            Some(CFieldView {
-                store: self.store,
-                def: &self.def.fields[idx],
-            })
-        } else {
-            None
-        }
+        self.def.fields.get(idx).map(|def| CFieldView {
+            store: self.store,
+            def,
+        })
     }
 }
 
@@ -272,10 +249,6 @@ impl CShapeDef {
 
     #[trusted]
     pub fn struct_with_fields(store: &CShapeStore, fields: &[(usize, CShapeHandle)]) -> Self {
-        if fields.len() > MAX_FIELDS_PER_STRUCT {
-            panic!("too many fields");
-        }
-
         let mut size = 0usize;
         let mut align = 1usize;
         for &(offset, shape_handle) in fields {
@@ -288,23 +261,17 @@ impl CShapeDef {
         size = (size + align - 1) & !(align - 1);
         let layout = CLayout::from_size_align(size, align).expect("valid layout");
 
-        let mut field_array = [CFieldDef {
-            offset: 0,
-            shape_handle: CShapeHandle(0),
-        }; MAX_FIELDS_PER_STRUCT];
-        for (i, &(offset, shape_handle)) in fields.iter().enumerate() {
-            field_array[i] = CFieldDef {
+        let mut field_vec = Vec::with_capacity(fields.len());
+        for &(offset, shape_handle) in fields.iter() {
+            field_vec.push(CFieldDef {
                 offset,
                 shape_handle,
-            };
+            });
         }
 
         Self {
             layout,
-            def: CDef::Struct(CStructDef {
-                field_count: fields.len() as u8,
-                fields: field_array,
-            }),
+            def: CDef::Struct(CStructDef { fields: field_vec }),
         }
     }
 }
@@ -317,7 +284,7 @@ pub struct CRuntime<'s> {
 impl<'s> IRuntime for CRuntime<'s> {
     type Shape = CShapeView<'s>;
     type Heap = CHeap;
-    type Arena<T> = CArena<T, MAX_CARENA_SLOTS>;
+    type Arena<T> = CArena<T>;
 
     fn heap() -> Self::Heap {
         CHeap::new()
@@ -480,41 +447,40 @@ mod proofs;
 // Arena (Creusot)
 // ==================================================================
 
-pub const MAX_CARENA_SLOTS: usize = 32;
-
 #[derive(DeepModel, Clone, Copy)]
 enum CSlotState {
     Empty,
     Occupied,
 }
 
-pub struct CArena<T, const N: usize = MAX_CARENA_SLOTS> {
-    slots: [Option<T>; N],
-    states: [CSlotState; N],
+pub struct CArena<T> {
+    slots: Vec<Option<T>>,
+    states: Vec<CSlotState>,
     next: usize,
 }
 
-impl<T, const N: usize> CArena<T, N> {
+impl<T> CArena<T> {
     #[trusted]
     pub fn new() -> Self {
+        // Slot 0 is reserved for NOT_STARTED.
         Self {
-            slots: core::array::from_fn(|_| None),
-            states: [CSlotState::Empty; N],
+            slots: vec![None],
+            states: vec![CSlotState::Empty],
             next: 1,
         }
     }
 }
 
-impl<T, const N: usize> Default for CArena<T, N> {
+impl<T> Default for CArena<T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T, const N: usize> IArena<T> for CArena<T, N> {
+impl<T> IArena<T> for CArena<T> {
     #[trusted]
     fn alloc(&mut self, value: T) -> Idx<T> {
-        for i in self.next..N {
+        for i in self.next..self.states.len() {
             if matches!(self.states[i], CSlotState::Empty) {
                 self.slots[i] = Some(value);
                 self.states[i] = CSlotState::Occupied;
@@ -530,14 +496,20 @@ impl<T, const N: usize> IArena<T> for CArena<T, N> {
                 return Idx::from_raw(i as u32);
             }
         }
-        panic!("arena full");
+
+        // No free slot: extend.
+        let idx = self.states.len();
+        self.slots.push(Some(value));
+        self.states.push(CSlotState::Occupied);
+        self.next = idx + 1;
+        Idx::from_raw(idx as u32)
     }
 
     #[trusted]
     fn free(&mut self, id: Idx<T>) -> T {
         assert!(id.is_valid(), "cannot free sentinel index");
         let idx = id.index();
-        assert!(idx < N, "index out of bounds");
+        assert!(idx < self.states.len(), "index out of bounds");
         assert!(
             matches!(self.states[idx], CSlotState::Occupied),
             "double-free"
@@ -551,7 +523,7 @@ impl<T, const N: usize> IArena<T> for CArena<T, N> {
     fn get(&self, id: Idx<T>) -> &T {
         assert!(id.is_valid(), "cannot get sentinel index");
         let idx = id.index();
-        assert!(idx < N, "index out of bounds");
+        assert!(idx < self.states.len(), "index out of bounds");
         assert!(
             matches!(self.states[idx], CSlotState::Occupied),
             "slot not occupied"
@@ -566,7 +538,7 @@ impl<T, const N: usize> IArena<T> for CArena<T, N> {
     fn get_mut(&mut self, id: Idx<T>) -> &mut T {
         assert!(id.is_valid(), "cannot get sentinel index");
         let idx = id.index();
-        assert!(idx < N, "index out of bounds");
+        assert!(idx < self.states.len(), "index out of bounds");
         assert!(
             matches!(self.states[idx], CSlotState::Occupied),
             "slot not occupied"

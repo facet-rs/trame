@@ -19,17 +19,12 @@ use crate::{
 use core::marker::PhantomData;
 
 #[cfg(creusot)]
-use creusot_std::macros::{ensures, proof_assert, requires, trusted};
+use creusot_std::macros::{ensures, trusted};
 
 type Heap<R> = <R as IRuntime>::Heap;
 type Shape<R> = <R as IRuntime>::Shape;
 type NodeIdx<R> = Idx<Node<Heap<R>, Shape<R>>>;
 type Ptr<R> = <Heap<R> as IHeap<Shape<R>>>::Ptr;
-
-#[cfg(creusot)]
-#[requires(a < b)]
-#[ensures(a@ < b@)]
-fn usize_lt_to_int(a: usize, b: usize) {}
 
 #[cfg(creusot)]
 #[ensures(result == Ok(()) ==> field_idx@ < fields.len_logic())]
@@ -38,9 +33,8 @@ fn prove_field_idx_in_bounds<F>(
     field_idx: usize,
 ) -> Result<(), TrameError> {
     let field_count = fields.len();
-    proof_assert!(field_count@ == fields.len_logic());
     if field_idx < field_count {
-        usize_lt_to_int(field_idx, field_count);
+        fields.prove_idx_in_bounds(field_idx, field_count);
         Ok(())
     } else {
         Err(TrameError::FieldOutOfBounds {
@@ -516,8 +510,7 @@ where
                 while i < field_count {
                     #[cfg(creusot)]
                     {
-                        proof_assert!(field_count@ == fields.len_logic());
-                        usize_lt_to_int(i, field_count);
+                        fields.prove_idx_in_bounds(i, field_count);
                     }
                     match fields.slot(i) {
                         FieldSlot::Untracked => return false,
@@ -680,8 +673,7 @@ where
                 while i < field_count {
                     #[cfg(creusot)]
                     {
-                        proof_assert!(field_count@ == fields.len_logic());
-                        usize_lt_to_int(i, field_count);
+                        fields.prove_idx_in_bounds(i, field_count);
                     }
                     if let Some(child_idx) = fields.get_child(i) {
                         children.push(child_idx);
@@ -714,8 +706,7 @@ where
                     while i < field_count {
                         #[cfg(creusot)]
                         {
-                            proof_assert!(field_count@ == fields.len_logic());
-                            usize_lt_to_int(i, field_count);
+                            fields.prove_idx_in_bounds(i, field_count);
                         }
                         if matches!(fields.slot(i), FieldSlot::Complete) {
                             if let Ok((field_shape, ptr, _size)) = Self::field_ptr(node, i) {

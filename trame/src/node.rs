@@ -158,6 +158,11 @@ impl<F> FieldStates<F> {
         pearlite! { self.slots@.len() }
     }
 
+    #[cfg(creusot)]
+    #[requires(a < b)]
+    #[ensures(a@ < b@)]
+    fn usize_lt_to_int(a: usize, b: usize) {}
+
     /// Create field states for a struct with `count` fields.
     pub(crate) fn new(count: usize) -> Self {
         #[cfg(creusot)]
@@ -200,6 +205,15 @@ impl<F> FieldStates<F> {
             FieldSlot::Child(child) => Some(child),
             _ => None,
         }
+    }
+
+    /// Prove a usize index is within bounds as a logic int.
+    #[cfg(creusot)]
+    #[requires(idx < len)]
+    #[requires(len@ == self.len_logic())]
+    #[ensures(idx@ < self.len_logic())]
+    pub(crate) fn prove_idx_in_bounds(&self, idx: usize, len: usize) {
+        Self::usize_lt_to_int(idx, len);
     }
 
     /// Check if a field is complete (initialized).

@@ -544,6 +544,51 @@ end()
 Finalization turns the staged elements into the actual list or set (strict:
 on list/set `end()`, deferred: when exiting deferred mode).
 
+### Stable addresses
+
+Each element frame points into the list's staging allocation. If we used a
+single contiguous staging buffer, a grow would relocate that buffer and
+invalidate every descendant pointer.
+
+Single staging buffer (safe before growth):
+
+```
+▶ ⟨Root: Vec<Pair>⟩ 📦
+  └─ 0 → ⟨Child: Pair⟩
+      ├─ a ●
+      └─ b ○
+```
+
+After growth, the staging buffer moves, but child nodes still point at the old
+address. That pointer is now stale, and the tree no longer represents reality.
+
+```
+▶ ⟨Root: Vec<Pair>⟩ 📦 ✨
+  └─ 0 → ⟨Child: Pair⟩  (stale pointer)
+      ├─ a ●
+      └─ b ○
+```
+
+One possible option would be to patch every descendant pointer on every grow,
+which is both expensive and fragile.
+
+Instead, we use a **rope of staging chunks**: a list/set owns multiple fixed
+allocations (`📦0`, `📦1`, …). New elements go into the next chunk, and existing
+pointers remain stable.
+
+```
+▶ ⟨Root: Vec<Pair>⟩ 📦0 📦1 ✨
+  ├─ 0 → ⟨Child: Pair⟩
+  │     ├─ a ●
+  │     └─ b ○
+  └─ 1 → ⟨Child: Pair⟩
+        ├─ a ● ✨
+        └─ b ● ✨
+```
+
+Finalization flattens the rope into the actual vector/set in one pass, with a
+preallocated target sized from the total element count.
+
 ## Verification Abstractions
 
 Trame is parameterized over a small set of interfaces so the same construction

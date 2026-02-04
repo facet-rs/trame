@@ -5,26 +5,35 @@ mod builder;
 use core::marker::PhantomData;
 use std::collections::VecDeque;
 
-#[cfg(not(kani))]
+#[cfg(creusot)]
+use creusot_std::prelude::DeepModel;
+
+#[cfg(creusot)]
+use creusot_std::std::vec::vec as creusot_vec;
+
+#[cfg(all(not(kani), not(creusot)))]
 use smallvec::SmallVec;
 
-#[cfg(not(kani))]
+#[cfg(all(not(kani), not(creusot)))]
 type PathVec = SmallVec<PathSegment, 4>;
 
-#[cfg(kani)]
+#[cfg(any(kani, creusot))]
 type PathVec = Vec<PathSegment>;
 
 /// Creates a PathVec with the given elements.
 macro_rules! path_vec {
     ($($x:expr),* $(,)?) => {{
-        #[cfg(not(kani))]
+        #[cfg(creusot)]
+        { creusot_vec![$($x),*] }
+        #[cfg(all(not(creusot), not(kani)))]
         { smallvec::smallvec![$($x),*] }
-        #[cfg(kani)]
+        #[cfg(all(not(creusot), kani))]
         { vec![$($x),*] }
     }};
 }
 
 /// A segment in a path through a nested structure.
+#[cfg_attr(creusot, derive(DeepModel))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PathSegment {
     /// Struct field, tuple element, array index, enum variant.

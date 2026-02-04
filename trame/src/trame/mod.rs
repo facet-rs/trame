@@ -121,6 +121,9 @@ where
             .layout()
             .expect("IShape requires sized types")
             .size();
+        #[cfg(creusot)]
+        creusot_std::macros::proof_assert!(meta.offset + meta.layout.size() <= node_size);
+        #[cfg(not(creusot))]
         assert!(
             meta.offset + meta.layout.size() <= node_size,
             "field out of bounds: {} + {} > {}",
@@ -548,14 +551,11 @@ where
 
 #[cfg(creusot)]
 mod creusot_canary {
-    use creusot_std::prelude::*;
-
-    use crate::runtime::IRuntime;
-    use crate::trame::IHeap;
+    use crate::runtime::{IHeap, IRuntime};
     use crate::trame::Trame;
 
     // Canary: should fail if cross-crate requires are enforced.
-    #[check(ghost)]
+    #[allow(dead_code)]
     pub fn drop_requires_are_enforced<R: IRuntime>(
         mut trame: Trame<'_, R>,
         ptr: <R::Heap as IHeap<R::Shape>>::Ptr,

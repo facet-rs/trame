@@ -889,6 +889,48 @@ enum Op {
 fn apply(op: Op) -> Result<(), Error>;
 ```
 
+### Concrete helpers
+
+The concrete API includes a `Path` value type and builder helpers. These are
+convenience surfaces; the semantics match the `PathSegment`/`Op` model above.
+
+```rust
+struct Path(PathVec);
+
+impl Path {
+    fn empty() -> Self;
+    fn field(n: u32) -> Self;
+    fn append() -> Self;
+    fn root() -> Self;
+    fn then(self, seg: PathSegment) -> Self;
+    fn then_field(self, n: u32) -> Self;
+    fn then_append(self) -> Self;
+    fn segments(&self) -> &[PathSegment];
+}
+
+impl Op<'_> {
+    fn set() -> SetBuilder;
+    fn end() -> Op<'static>;
+}
+
+struct SetBuilder;
+```
+
+`SetBuilder` creates `Set` operations with a fluent API (`at`, `append`,
+`root`, `imm`, `default`, `stage`, `stage_with_capacity`). This is purely a
+builder; it does not change semantics.
+
+### Op batches
+
+`OpBatch` exists to support an `apply_ops`/`apply_batch` entry point (semantics
+equivalent to repeatedly calling `apply(op)`), while preserving correctness.
+
+Operations are stored in a queue and consumed from the front as they are
+applied. After `apply_batch` returns:
+- Consumed operations have been removed from the batch. Callers must forget
+  any source values they moved into those ops.
+- Remaining operations were not consumed and should be dropped normally.
+
 ### Paths
 
 Paths are relative to the current node.

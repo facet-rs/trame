@@ -1,5 +1,8 @@
 use crate::runtime::{IHeap, IShape, IStructType, Idx};
 
+#[cfg(creusot)]
+use creusot_std::model::DeepModel;
+
 /// Maximum fields tracked per node (for verification).
 pub const MAX_NODE_FIELDS: usize = 8;
 
@@ -24,13 +27,36 @@ pub struct Node<H: IHeap<S>, S: IShape> {
 }
 
 /// Completion state for a node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Eq)]
 pub(crate) enum NodeState {
     /// Node is currently partially-initialized ()
     Staged,
 
     /// Node has been finalized (complete).
     Sealed,
+}
+
+#[cfg(creusot)]
+impl DeepModel for NodeState {
+    type DeepModelTy = NodeState;
+
+    #[creusot_std::macros::logic(open, inline)]
+    fn deep_model(self) -> Self::DeepModelTy {
+        self
+    }
+}
+
+impl PartialEq for NodeState {
+    #[cfg_attr(
+        creusot,
+        creusot_std::macros::ensures(result == (self.deep_model() == other.deep_model()))
+    )]
+    fn eq(&self, other: &Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::Staged, Self::Staged) | (Self::Sealed, Self::Sealed)
+        )
+    }
 }
 
 impl<H: IHeap<S>, S: IShape> Node<H, S> {
@@ -51,7 +77,7 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
             shape,
             kind: Self::kind_for_shape(shape),
             state: NodeState::Staged,
-            parent: Idx::NOT_STARTED,
+            parent: Idx::not_started(),
         }
     }
 }
@@ -118,6 +144,7 @@ impl<F> Clone for FieldStates<F> {
 impl<F> Copy for FieldStates<F> {}
 impl<F> FieldStates<F> {
     /// Create field states for a struct with `count` fields.
+    #[cfg_attr(creusot, creusot_std::macros::requires(count <= MAX_NODE_FIELDS))]
     pub(crate) fn new(count: usize) -> Self {
         assert!(count <= MAX_NODE_FIELDS, "too many fields");
         Self {
@@ -127,24 +154,32 @@ impl<F> FieldStates<F> {
     }
 
     /// Mark a field as complete (initialized).
+    #[cfg_attr(creusot, creusot_std::macros::requires(idx < self.count as usize))]
+    #[cfg_attr(creusot, creusot_std::macros::requires(idx < MAX_NODE_FIELDS))]
     pub(crate) fn mark_complete(&mut self, idx: usize) {
         debug_assert!(idx < self.count as usize);
         self.slots[idx] = FieldSlot::Complete;
     }
 
     /// Mark a field as not started.
+    #[cfg_attr(creusot, creusot_std::macros::requires(idx < self.count as usize))]
+    #[cfg_attr(creusot, creusot_std::macros::requires(idx < MAX_NODE_FIELDS))]
     pub(crate) fn mark_not_started(&mut self, idx: usize) {
         debug_assert!(idx < self.count as usize);
         self.slots[idx] = FieldSlot::Untracked;
     }
 
     /// Set a field's child frame index.
+    #[cfg_attr(creusot, creusot_std::macros::requires(idx < self.count as usize))]
+    #[cfg_attr(creusot, creusot_std::macros::requires(idx < MAX_NODE_FIELDS))]
     pub(crate) fn set_child(&mut self, idx: usize, child: Idx<F>) {
         debug_assert!(idx < self.count as usize);
         self.slots[idx] = FieldSlot::Child(child);
     }
 
     /// Get a field's child frame index, if it has one.
+    #[cfg_attr(creusot, creusot_std::macros::requires(idx < self.count as usize))]
+    #[cfg_attr(creusot, creusot_std::macros::requires(idx < MAX_NODE_FIELDS))]
     pub(crate) fn get_child(&self, idx: usize) -> Option<Idx<F>> {
         debug_assert!(idx < self.count as usize);
         match self.slots[idx] {
@@ -154,12 +189,16 @@ impl<F> FieldStates<F> {
     }
 
     /// Check if a field is complete (initialized).
+    #[cfg_attr(creusot, creusot_std::macros::requires(idx < self.count as usize))]
+    #[cfg_attr(creusot, creusot_std::macros::requires(idx < MAX_NODE_FIELDS))]
     pub(crate) fn is_init(&self, idx: usize) -> bool {
         debug_assert!(idx < self.count as usize);
         matches!(self.slots[idx], FieldSlot::Complete)
     }
 
     /// Get the raw slot for a field.
+    #[cfg_attr(creusot, creusot_std::macros::requires(idx < self.count as usize))]
+    #[cfg_attr(creusot, creusot_std::macros::requires(idx < MAX_NODE_FIELDS))]
     pub(crate) fn slot(&self, idx: usize) -> FieldSlot<F> {
         debug_assert!(idx < self.count as usize);
         self.slots[idx]

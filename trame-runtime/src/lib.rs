@@ -23,6 +23,15 @@ use creusot_std::macros::{ensures, logic, requires};
 #[cfg(creusot)]
 use creusot_std::prelude::trusted;
 
+#[cfg(creusot)]
+pub type VLayout = creusot_rt::CLayout;
+
+#[cfg(creusot)]
+pub type VLayoutError = creusot_rt::CLayoutError;
+
+#[cfg(not(creusot))]
+pub use verified::{VLayout, VLayoutError};
+
 /// A heap and a shape implementation, over which Trame can be parameterized
 pub trait IRuntime {
     type Shape: IShape;
@@ -67,13 +76,25 @@ pub trait IShapeStore: Clone {
     fn get<'a>(&'a self, handle: Self::Handle) -> Self::View<'a>;
 }
 
+#[cfg(creusot)]
+pub trait IShapeExtra: DeepModel {}
+
+#[cfg(creusot)]
+impl<T: DeepModel> IShapeExtra for T {}
+
+#[cfg(not(creusot))]
+pub trait IShapeExtra {}
+
+#[cfg(not(creusot))]
+impl<T> IShapeExtra for T {}
+
 /// Common interface for shapes.
 ///
 /// Implemented by:
 /// - `&'static facet_core::Shape` (real shapes)
 /// - store-specific shape views (synthetic shapes for verification)
 ///
-pub trait IShape: Copy + PartialEq {
+pub trait IShape: Copy + PartialEq + IShapeExtra {
     /// The struct type returned by `as_struct()`.
     type StructType: IStructType<Field = Self::Field>;
 
@@ -260,16 +281,28 @@ impl<T> Eq for Idx<T> {}
 
 impl<T> Idx<T> {
     /// Sentinel: slot not started (reserved, slot 0)
-    pub const NOT_STARTED: Self = Self {
-        raw: 0,
-        _ty: PhantomData,
-    };
+    pub const fn not_started() -> Self {
+        Self {
+            raw: 0,
+            _ty: PhantomData,
+        }
+    }
 
     /// Sentinel: slot completed/freed
-    pub const COMPLETE: Self = Self {
-        raw: u32::MAX,
-        _ty: PhantomData,
-    };
+    pub const fn complete() -> Self {
+        Self {
+            raw: u32::MAX,
+            _ty: PhantomData,
+        }
+    }
+
+    /// Sentinel: slot not started (reserved, slot 0)
+    #[cfg(not(creusot))]
+    pub const NOT_STARTED: Self = Self::not_started();
+
+    /// Sentinel: slot completed/freed
+    #[cfg(not(creusot))]
+    pub const COMPLETE: Self = Self::complete();
 
     #[inline]
     pub fn is_not_started(self) -> bool {

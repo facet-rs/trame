@@ -24,7 +24,9 @@ mod trame;
 // Re-export trame-runtime
 pub use trame_runtime as runtime;
 
-pub use ops::{Op, OpBatch, Path, PathSegment, SetBuilder, Source};
+#[cfg(not(creusot))]
+pub use ops::SetBuilder;
+pub use ops::{Op, OpBatch, Path, PathSegment, Source};
 
 #[cfg(not(creusot))]
 pub use runtime::live::LRuntime;

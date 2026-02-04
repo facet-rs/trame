@@ -16,7 +16,7 @@ pub const MAX_SHAPES_PER_STORE: usize = 32;
 pub const MAX_FIELDS_PER_STRUCT: usize = 32;
 
 /// Logical layout for creusot builds.
-#[derive(Clone, Copy, DeepModel)]
+#[derive(Clone, Copy, Debug, DeepModel)]
 pub struct CLayout {
     pub size: usize,
     pub align: usize,

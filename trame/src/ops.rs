@@ -1,5 +1,6 @@
 //! Operations for partial value construction.
 
+#[cfg(not(creusot))]
 mod builder;
 
 use core::marker::PhantomData;
@@ -34,7 +35,7 @@ macro_rules! path_vec {
 
 /// A segment in a path through a nested structure.
 #[cfg_attr(creusot, derive(DeepModel))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq)]
 pub enum PathSegment {
     /// Struct field, tuple element, array index, enum variant.
     Field(u32),
@@ -42,6 +43,21 @@ pub enum PathSegment {
     Append,
     /// Jump to root (only valid as first segment).
     Root,
+}
+
+impl PartialEq for PathSegment {
+    #[cfg_attr(
+        creusot,
+        creusot_std::macros::ensures(result == (self.deep_model() == other.deep_model()))
+    )]
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Field(a), Self::Field(b)) => a == b,
+            (Self::Append, Self::Append) => true,
+            (Self::Root, Self::Root) => true,
+            _ => false,
+        }
+    }
 }
 
 /// A path into a nested structure.
@@ -96,6 +112,14 @@ impl Path {
     }
 
     /// Returns true if the path is empty.
+    #[cfg(creusot)]
+    #[cfg_attr(creusot, creusot_std::macros::trusted)]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Returns true if the path is empty.
+    #[cfg(not(creusot))]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -206,6 +230,7 @@ impl<'facet, P, S> Source<'facet, P, S> {
 // Live runtime constructors (facet shapes, raw pointers)
 // ============================================================================
 
+#[cfg(not(creusot))]
 impl<'facet> Source<'facet, *mut u8, &'static facet_core::Shape> {
     /// Build an immediate source from a typed reference.
     ///
@@ -336,4 +361,5 @@ impl<'facet, P, S> Default for OpBatch<'facet, P, S> {
     }
 }
 
+#[cfg(not(creusot))]
 pub use builder::SetBuilder;

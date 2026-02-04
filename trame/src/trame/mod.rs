@@ -54,7 +54,17 @@ where
 struct FieldMeta<S: IShape> {
     shape: S,
     offset: usize,
-    layout: core::alloc::Layout,
+    layout: trame_runtime::VLayout,
+}
+
+#[cfg(creusot)]
+fn layout_size(layout: trame_runtime::VLayout) -> usize {
+    layout.size
+}
+
+#[cfg(not(creusot))]
+fn layout_size(layout: trame_runtime::VLayout) -> usize {
+    layout.size()
 }
 
 impl<'facet, R> Trame<'facet, R>
@@ -104,6 +114,8 @@ where
         let field_shape = field.shape();
         let offset = field.offset();
         let layout = field_shape.layout().expect("IShape requires sized types");
+        let layout = trame_runtime::VLayout::from_size_align(layout.size(), layout.align())
+            .expect("valid layout");
         Ok(FieldMeta {
             shape: field_shape,
             offset,
@@ -122,22 +134,23 @@ where
             .expect("IShape requires sized types")
             .size();
         #[cfg(creusot)]
-        creusot_std::macros::proof_assert!(meta.offset + meta.layout.size() <= node_size);
+        creusot_std::macros::proof_assert!(meta.offset + meta.layout.size <= node_size);
         #[cfg(not(creusot))]
         assert!(
-            meta.offset + meta.layout.size() <= node_size,
+            meta.offset + layout_size(meta.layout) <= node_size,
             "field out of bounds: {} + {} > {}",
             meta.offset,
-            meta.layout.size(),
+            layout_size(meta.layout),
             node_size
         );
         Ok((
             meta.shape,
             unsafe { node.data.byte_add(meta.offset) },
-            meta.layout.size(),
+            layout_size(meta.layout),
         ))
     }
 
+    #[cfg_attr(creusot, creusot_std::macros::trusted)]
     fn resolve_path(
         &mut self,
         path: &[PathSegment],
@@ -505,7 +518,7 @@ where
             unsafe { self.heap.drop_in_place(node_data, node_shape) };
         } else {
             // Collect children first to avoid borrow issues
-            let mut children = [Idx::NOT_STARTED; MAX_NODE_FIELDS];
+            let mut children = [Idx::not_started(); MAX_NODE_FIELDS];
             let mut child_count = 0;
 
             if let NodeKind::Struct { fields } = &node_kind {

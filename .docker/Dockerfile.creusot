@@ -75,14 +75,17 @@ RUN rustup default stable && \
 COPY --from=builder /root/.cargo/bin/cargo-creusot /root/.cargo/bin/
 COPY --from=builder /root/.local/share/creusot /usr/local/share/creusot
 COPY --from=builder /root/.config/creusot /usr/local/etc/creusot
+COPY --from=builder /root/.rustup/toolchains/nightly-2026-01-29-x86_64-unknown-linux-gnu /root/.rustup/toolchains/nightly-2026-01-29-x86_64-unknown-linux-gnu
 RUN mkdir -p /root/.local/share /root/.config && \
     ln -sfn /usr/local/share/creusot /root/.local/share/creusot && \
-    ln -sfn /usr/local/etc/creusot /root/.config/creusot
+    ln -sfn /usr/local/etc/creusot /root/.config/creusot && \
+    ln -sfn /root/.rustup/toolchains/nightly-2026-01-29-x86_64-unknown-linux-gnu/lib /usr/local/share/creusot/toolchains/nightly-2026-01-29/lib
 
 # Make Creusot discoverable for any runtime HOME/user.
 ENV XDG_DATA_HOME=/usr/local/share
 ENV XDG_CONFIG_HOME=/usr/local/etc
 ENV PATH="/usr/local/bin:/root/.cargo/bin:/usr/local/share/creusot/bin:/usr/local/share/creusot/toolchains/nightly-2026-01-29/bin:$PATH"
+ENV LD_LIBRARY_PATH="/root/.rustup/toolchains/nightly-2026-01-29-x86_64-unknown-linux-gnu/lib:/root/.rustup/toolchains/nightly-2026-01-29-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib:/usr/local/share/creusot/toolchains/nightly-2026-01-29/lib"
 
 # Minimal workspace for sanity check
 WORKDIR /work
@@ -92,6 +95,8 @@ RUN mkdir -p /work/src && \
 
 # Sanity check
 RUN cargo creusot --help && \
+    ls -l /root/.rustup/toolchains/nightly-2026-01-29-x86_64-unknown-linux-gnu/lib/librustc_driver-*.so && \
+    creusot-rustc -vV && \
     which creusot-rustc && \
     which why3 && \
     which why3find && \

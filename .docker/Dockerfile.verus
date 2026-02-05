@@ -1,0 +1,38 @@
+FROM debian:13 AS builder
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+
+ARG VERUS_VERSION=0.2026.01.30.44ebdee
+ARG VERUS_ASSET=verus-${VERUS_VERSION}-x86-linux.zip
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/verus
+RUN curl -fsSL -o "${VERUS_ASSET}" "https://github.com/verus-lang/verus/releases/download/release%2F${VERUS_VERSION}/${VERUS_ASSET}" && \
+    unzip "${VERUS_ASSET}" && \
+    mv verus-x86-linux verus && \
+    rm -f "${VERUS_ASSET}"
+
+FROM rust:slim
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+
+# Git + Node.js are needed for GitHub Actions steps in container jobs.
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    ca-certificates \
+    && curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /opt/verus/verus /opt/verus
+ENV PATH="/opt/verus:$PATH"
+
+# Sanity check
+RUN verus --version && cargo-verus --help >/dev/null && node --version && cargo --version
+
+WORKDIR /work

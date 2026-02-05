@@ -25,6 +25,9 @@ prove *args:
     cargo creusot clean --force
     cargo creusot prove {{ args }} -- -p trame-runtime -p trame
 
+verus:
+    cargo verus verify --workspace --exclude trame-fuzz --exclude trame-proptest
+
 # Run fuzzing with afl
 fuzz:
     cd trame-fuzz && CARGO_TARGET_DIR=target-afl cargo afl build
@@ -37,3 +40,4 @@ ci-push-all:
     just ci-push afl
     just ci-push soteria
     just ci-push creusot
+    just ci-push verus

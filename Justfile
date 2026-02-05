@@ -29,3 +29,6 @@ prove *args:
 fuzz:
     cd trame-fuzz && cargo afl build
     cd trame-fuzz && cargo afl fuzz -i in -o out ./target/debug/trame-afl
+
+ci-push ident:
+    depot build --push --build-platform=linux/amd64 -t ghcr.io/facet-rs/{{ ident }}-ci:latest -f .docker/Dockerfile.{{ ident }} .docker/

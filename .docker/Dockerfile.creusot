@@ -1,25 +1,70 @@
+# Base stage: Debian + Nix (no daemon)
+FROM debian:13 AS nixbase
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates curl xz-utils git && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | \
+    sh -s -- install linux --no-confirm --init none --extra-conf "sandbox = false"
+
+ENV PATH="/root/.nix-profile/bin:/root/.nix-profile/sbin:/nix/var/nix/profiles/default/bin:$PATH"
+ENV NIX_SSL_CERT_FILE="/etc/ssl/certs/ca-certificates.crt"
+ENV NIX_REMOTE=local
+
+# Build stage: build Creusot from its flake
+FROM nixbase AS creusot
+
+# Enable flakes + build Creusot
+RUN --mount=type=cache,target=/root/.cache/nix \
+    nix --version && \
+    nix build github:creusot-rs/creusot#creusot -L
+
 # Build stage: use Nix to get our tools
-FROM nixos/nix:latest AS tools
+FROM nixbase AS tools
 
 # Install the packages we need into a separate profile to avoid conflicts
-RUN nix-channel --update && \
-    nix-env -p /nix/var/nix/profiles/tools -iA nixpkgs.nodejs_22 nixpkgs.git nixpkgs.curl nixpkgs.cacert
+RUN --mount=type=cache,target=/root/.cache/nix \
+    nix profile install --profile /nix/var/nix/profiles/tools \
+    nixpkgs#nodejs_22 \
+    nixpkgs#git \
+    nixpkgs#curl \
+    nixpkgs#cacert \
+    nixpkgs#stdenv.cc.cc.lib
 
 # ---- Final stage ----
-FROM ghcr.io/creusot-rs/creusot:latest
+FROM debian:13
 
 # Copy the entire nix store from the tools stage
 COPY --from=tools /nix/store /nix/store
 COPY --from=tools /nix/var/nix/profiles/tools /nix/var/nix/profiles/tools
 
+# Copy Creusot build result from flake build stage
+COPY --from=creusot /nix/store /nix/store
+COPY --from=creusot /result /result
+
 # Add the tools to PATH
-ENV PATH="/nix/var/nix/profiles/tools/bin:$PATH"
+ENV PATH="/nix/var/nix/profiles/tools/bin:/result/bin:$PATH"
 ENV SSL_CERT_FILE="/nix/var/nix/profiles/tools/etc/ssl/certs/ca-bundle.crt"
 
-# Symlink glibc linker for GitHub Actions compatibility (GH Actions mounts its own node24 binary)
-RUN mkdir -p /lib64 && ln -s "$(find /nix/store -name 'ld-linux-x86-64.so.2' -type f | head -1)" /lib64/ld-linux-x86-64.so.2
+# Symlink glibc and libstdc++ for GitHub Actions compatibility (GH Actions mounts its own node24 binary)
+RUN mkdir -p /lib64 && \
+    ld_linux="$(find /nix/store -name 'ld-linux-x86-64.so.2' -type f | head -1)" && \
+    libstdcpp="$(find /nix/store -path '*cc-lib*/lib/libstdc++.so.6' | head -1)" && \
+    if [ -n "$ld_linux" ] && [ ! -e /lib64/ld-linux-x86-64.so.2 ]; then ln -s "$ld_linux" /lib64/ld-linux-x86-64.so.2; fi && \
+    if [ -n "$libstdcpp" ] && [ ! -e /lib64/libstdc++.so.6 ]; then ln -s "$libstdcpp" /lib64/libstdc++.so.6; fi
+
+# Minimal workspace so cargo-creusot can run in the image
+WORKDIR /work
+RUN mkdir -p /work/src && \
+    printf "[package]\nname = \"empty\"\nversion = \"0.1.0\"\nedition = \"2021\"\n" > /work/Cargo.toml && \
+    printf "fn main() {}\n" > /work/src/main.rs
+
+# Install a rust toolchain
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+ENV PATH="/root/.cargo/bin:$PATH"
 
 # Sanity check
-RUN node --version && npm --version && git --version && curl --version
-
-WORKDIR /work
+RUN cargo creusot --help >/dev/null && \
+    test -x /result/bin/creusot-rustc && \
+    node --version && npm --version && git --version && curl --version

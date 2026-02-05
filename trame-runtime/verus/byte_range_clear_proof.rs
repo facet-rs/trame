@@ -89,6 +89,40 @@ pub proof fn lemma_cleared_bytes_are_removed(r: Range, clear: Range, x: int)
     }
 }
 
+pub proof fn lemma_no_overlap_clear_is_identity(r: Range, clear: Range)
+    requires
+        valid_range(r),
+        valid_range(clear),
+        no_overlap(r, clear),
+    ensures
+        forall|x: int| #![auto] clear_output_contains(r, clear, x) == in_range(r, x),
+{
+    assert forall|x: int| #![auto] clear_output_contains(r, clear, x) == in_range(r, x) by {
+    }
+}
+
+pub proof fn lemma_full_cover_clear_is_empty(r: Range, clear: Range)
+    requires
+        valid_range(r),
+        valid_range(clear),
+        clear.start <= r.start,
+        r.end <= clear.end,
+    ensures
+        forall|x: int| !clear_output_contains(r, clear, x),
+{
+    assert forall|x: int| !clear_output_contains(r, clear, x) by {
+        assert(!no_overlap(r, clear));
+        if clear_output_contains(r, clear, x) {
+            if r.start < clear.start && r.start <= x < clear.start {
+                assert(false);
+            }
+            if clear.end < r.end && clear.end <= x < r.end {
+                assert(false);
+            }
+        }
+    }
+}
+
 fn main() {}
 
 }

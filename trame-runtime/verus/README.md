@@ -7,6 +7,9 @@ This folder contains standalone Verus proofs for core runtime invariants.
   `trame-runtime/src/verified/byte_range.rs`.
 - Main result: the computed output bytes are exactly
   `old_range \ cleared_range`, and any byte inside the cleared interval is absent.
+- Additional lemmas prove:
+  - no-overlap clear is identity
+  - full-cover clear is empty
 
 Run:
 

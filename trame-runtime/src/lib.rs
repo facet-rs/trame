@@ -77,10 +77,18 @@ pub trait IShapeStore: Clone {
 }
 
 #[cfg(creusot)]
-pub trait IShapeExtra: DeepModel {}
+pub trait IShapeExtra: DeepModel {
+    #[logic]
+    fn size_logic(self) -> usize;
+}
 
 #[cfg(creusot)]
-impl<T: DeepModel> IShapeExtra for T {}
+impl<T: DeepModel> IShapeExtra for T {
+    #[logic(opaque)]
+    fn size_logic(self) -> usize {
+        dead
+    }
+}
 
 #[cfg(not(creusot))]
 pub trait IShapeExtra {}
@@ -169,6 +177,8 @@ pub trait IHeap<S: IShape> {
     /// ranges do not overlap.
     #[cfg_attr(creusot, requires(self.range_init(src, len)))]
     #[cfg_attr(creusot, ensures(self.range_init(dst, len)))]
+    #[cfg_attr(creusot, ensures(forall<ptr2, shape2> ptr2 != dst ==> (^self).can_drop(ptr2, shape2) == (*self).can_drop(ptr2, shape2)))]
+    #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != dst ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
     unsafe fn memcpy(&mut self, dst: Self::Ptr, src: Self::Ptr, len: usize);
 
     /// Drop the value at `ptr` and mark the range as uninitialized.
@@ -177,7 +187,9 @@ pub trait IHeap<S: IShape> {
     /// The caller must ensure `ptr` points to a value of type `shape`, the
     /// value is fully initialized, and the allocation is still live.
     #[cfg_attr(creusot, requires(self.can_drop(ptr, shape)))]
-    #[cfg_attr(creusot, ensures(!self.can_drop(ptr, shape)))]
+    #[cfg_attr(creusot, ensures(!(^self).can_drop(ptr, shape) && !(^self).range_init(ptr, shape.size_logic())))]
+    #[cfg_attr(creusot, ensures(forall<ptr2, shape2> ptr2 != ptr ==> (^self).can_drop(ptr2, shape2) == (*self).can_drop(ptr2, shape2)))]
+    #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != ptr ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
     unsafe fn drop_in_place(&mut self, ptr: Self::Ptr, shape: S);
 
     /// Creusot-only predicate describing when a drop is permitted.
@@ -199,7 +211,11 @@ pub trait IHeap<S: IShape> {
     /// # Safety
     /// The caller must ensure the destination range is uninitialized, in-bounds,
     /// and corresponds to `shape`.
-    #[cfg_attr(creusot, ensures(result ==> self.can_drop(ptr, shape)))]
+    #[cfg_attr(creusot, ensures(result ==> self.can_drop(ptr, shape) && self.range_init(ptr, shape.size_logic())))]
+    #[cfg_attr(creusot, ensures(!result ==> (^self).can_drop(ptr, shape) == (*self).can_drop(ptr, shape)))]
+    #[cfg_attr(creusot, ensures(!result ==> (^self).range_init(ptr, shape.size_logic()) == (*self).range_init(ptr, shape.size_logic())))]
+    #[cfg_attr(creusot, ensures(forall<ptr2, shape2> ptr2 != ptr ==> (^self).can_drop(ptr2, shape2) == (*self).can_drop(ptr2, shape2)))]
+    #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != ptr ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
     unsafe fn default_in_place(&mut self, ptr: Self::Ptr, shape: S) -> bool;
 }
 
@@ -240,13 +256,29 @@ pub trait IArena<T> {
     ///
     /// # Panics
     /// Panics if the index is invalid or freed.
+    #[cfg_attr(creusot, requires(self.contains(id)))]
+    #[cfg_attr(creusot, ensures(*result == self.get_logic(id)))]
     fn get(&self, id: Idx<T>) -> &T;
 
     /// Get a mutable reference to an item.
     ///
     /// # Panics
     /// Panics if the index is invalid or freed.
+    #[cfg_attr(creusot, requires(self.contains(id)))]
+    #[cfg_attr(creusot, ensures(*result == (*self).get_logic(id)))]
+    #[cfg_attr(creusot, ensures(^result == (^self).get_logic(id)))]
+    #[cfg_attr(creusot, ensures((^self).contains(id)))]
+    #[cfg_attr(creusot, ensures(forall<j> j != id ==> (*self).contains(j) == (^self).contains(j)))]
+    #[cfg_attr(creusot, ensures(forall<j> j != id ==> (*self).get_logic(j) == (^self).get_logic(j)))]
     fn get_mut(&mut self, id: Idx<T>) -> &mut T;
+
+    #[cfg(creusot)]
+    #[logic]
+    fn contains(self, id: Idx<T>) -> bool;
+
+    #[cfg(creusot)]
+    #[logic]
+    fn get_logic(self, id: Idx<T>) -> T;
 }
 
 /// A typed index into an arena.

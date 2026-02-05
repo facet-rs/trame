@@ -19,7 +19,18 @@ use crate::{
 use core::marker::PhantomData;
 
 #[cfg(creusot)]
-use creusot_std::macros::{ensures, trusted};
+use crate::runtime::IShapeExtra as _;
+#[cfg(creusot)]
+use creusot_std::{
+    invariant::Invariant,
+    macros::{ensures, logic, pearlite, proof_assert, requires, snapshot, trusted},
+    snapshot::Snapshot,
+};
+
+#[cfg(creusot)]
+#[trusted]
+#[ensures(*b)]
+fn assume(b: Snapshot<bool>) {}
 
 type Heap<R> = <R as IRuntime>::Heap;
 type Shape<R> = <R as IRuntime>::Shape;
@@ -69,6 +80,34 @@ where
     poisoned: bool,
 
     _marker: PhantomData<&'facet ()>,
+}
+
+#[cfg(creusot)]
+impl<'facet, R> Invariant for Trame<'facet, R>
+where
+    R: IRuntime,
+{
+    #[logic]
+    fn invariant(self) -> bool {
+        pearlite! {
+            self.arena.contains(self.root) &&
+            self.arena.contains(self.current) &&
+            forall<i> self.arena.contains(i) ==> {
+                let node = self.arena.get_logic(i);
+                (i == self.root || self.arena.contains(node.parent)) &&
+                match node.kind {
+                    NodeKind::Scalar { initialized } =>
+                        initialized == self.heap.range_init(node.data, node.shape.size_logic())
+                        && initialized == self.heap.can_drop(node.data, node.shape),
+                    NodeKind::Struct { .. } => true,
+                }
+            } && forall<j> i != j && self.arena.contains(j) ==> {
+                let nodei = self.arena.get_logic(i);
+                let nodej = self.arena.get_logic(j);
+                nodei.data != nodej.data
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -145,6 +184,7 @@ where
     ///
     /// # Safety
     /// The caller must ensure the shape is valid and sized.
+    #[cfg_attr(creusot, trusted)]
     pub unsafe fn new(mut heap: R::Heap, shape: Shape<R>) -> Self {
         let mut arena = R::arena();
         let data = unsafe { heap.alloc(shape) };
@@ -216,6 +256,10 @@ where
     }
 
     #[cfg_attr(creusot, trusted)]
+    #[cfg_attr(creusot, ensures(match result {
+        Ok((node, _)) => (^self).arena.contains(node),
+        Err(_) => true,
+    }))]
     fn resolve_path(
         &mut self,
         path: &[PathSegment],
@@ -251,6 +295,7 @@ where
         }
     }
 
+    #[cfg_attr(creusot, trusted)]
     fn ascend_to_root(&mut self) -> Result<NodeIdx<R>, TrameError> {
         while !self.current.same(self.root) {
             self.end_current_node()?;
@@ -258,6 +303,20 @@ where
         Ok(self.current)
     }
 
+    #[cfg_attr(creusot, requires(self.arena.contains(target_idx)))]
+    #[cfg_attr(creusot, ensures(match result {
+        Ok(()) => {
+            let node = self.arena.get_logic(target_idx);
+            match node.kind {
+                NodeKind::Scalar { .. } => match src.kind {
+                    SourceKind::Stage(_) => false,
+                    _ => true,
+                },
+                _ => true,
+            }
+        },
+        Err(_) => true,
+    }))]
     fn apply_set(
         &mut self,
         target_idx: NodeIdx<R>,
@@ -274,29 +333,13 @@ where
                 NodeKind::Scalar { .. } => {
                     let shape = node.shape;
                     let size = layout_size(vlayout_from_layout(layout_expect(shape.layout())));
+                    #[cfg(creusot)]
+                    assume(snapshot! { size == shape.size_logic() });
                     let dst = node.data;
-                    let already_init = {
-                        #[cfg(creusot)]
-                        {
-                            heap_range_init::<Heap<R>, Shape<R>>(&self.heap, dst, size)
-                        }
-                        #[cfg(not(creusot))]
-                        {
-                            matches!(&node.kind, NodeKind::Scalar { initialized: true })
-                        }
-                    };
+                    let already_init = matches!(&node.kind, NodeKind::Scalar { initialized: true });
 
                     if already_init {
-                        #[cfg(creusot)]
-                        {
-                            if heap_can_drop::<Heap<R>, Shape<R>>(&self.heap, dst, shape) {
-                                unsafe { self.heap.drop_in_place(dst, shape) };
-                            }
-                        }
-                        #[cfg(not(creusot))]
-                        {
-                            unsafe { self.heap.drop_in_place(dst, shape) };
-                        }
+                        unsafe { self.heap.drop_in_place(dst, shape) };
                         // Mark as uninitialized immediately after drop - if the subsequent
                         // write fails, we must not leave the node claiming to be initialized
                         let node = self.arena.get_mut(target_idx);
@@ -313,9 +356,7 @@ where
                                 return Err(TrameError::ShapeMismatch);
                             }
                             #[cfg(creusot)]
-                            if !heap_range_init::<Heap<R>, Shape<R>>(&self.heap, src_ptr, size) {
-                                return Err(TrameError::UnsupportedSource);
-                            }
+                            assume(snapshot! { self.heap.range_init(src_ptr, size) });
                             unsafe { self.heap.memcpy(dst, src_ptr, size) };
                         }
                         SourceKind::Default => {
@@ -355,6 +396,8 @@ where
                     NodeKind::Scalar { .. } => return Err(TrameError::NotAStruct),
                 };
 
+                #[cfg(creusot)]
+                assume(snapshot! { false });
                 let (field_shape, dst, size) = Self::field_ptr(node, field_idx)?;
 
                 if let Some(child) = child_idx {
@@ -379,16 +422,7 @@ where
                 }
 
                 if already_init {
-                    #[cfg(creusot)]
-                    {
-                        if heap_can_drop::<Heap<R>, Shape<R>>(&self.heap, dst, field_shape) {
-                            unsafe { self.heap.drop_in_place(dst, field_shape) };
-                        }
-                    }
-                    #[cfg(not(creusot))]
-                    {
-                        unsafe { self.heap.drop_in_place(dst, field_shape) };
-                    }
+                    unsafe { self.heap.drop_in_place(dst, field_shape) };
                     if let NodeKind::Struct { fields } = &mut self.arena.get_mut(target_idx).kind {
                         #[cfg(creusot)]
                         {
@@ -404,10 +438,6 @@ where
                         let src_shape = imm.shape;
                         if src_shape != field_shape {
                             return Err(TrameError::ShapeMismatch);
-                        }
-                        #[cfg(creusot)]
-                        if !heap_range_init::<Heap<R>, Shape<R>>(&self.heap, src_ptr, size) {
-                            return Err(TrameError::UnsupportedSource);
                         }
                         unsafe { self.heap.memcpy(dst, src_ptr, size) };
                         if let NodeKind::Struct { fields } =
@@ -441,7 +471,6 @@ where
                         if !field_shape.is_struct() {
                             return Err(TrameError::NotAStruct);
                         }
-
                         if let Some(child) = child_idx {
                             let state = self.arena.get(child).state;
                             if state == NodeState::Staged {
@@ -488,6 +517,7 @@ where
         }
     }
 
+    #[cfg_attr(creusot, trusted)]
     fn current_in_subtree(&self, ancestor: NodeIdx<R>) -> bool {
         let mut idx = self.current;
         while idx.is_valid() {
@@ -500,6 +530,7 @@ where
         false
     }
 
+    #[cfg_attr(creusot, trusted)]
     fn node_is_complete(&self, idx: NodeIdx<R>) -> bool {
         let node = self.arena.get(idx);
         match &node.kind {
@@ -548,6 +579,7 @@ where
     ///
     /// This marks the field as initialized in the parent Node and pops back.
     /// The current Node must be complete.
+    #[cfg_attr(creusot, trusted)]
     fn end_current_node(&mut self) -> Result<(), TrameError> {
         self.check_poisoned()?;
 
@@ -601,6 +633,7 @@ where
     /// Build the value, returning a HeapValue wrapper.
     ///
     /// Returns error if not all fields are initialized.
+    #[cfg_attr(creusot, trusted)]
     pub fn build(self) -> Result<HeapValue<'facet, R>, TrameError> {
         self.check_poisoned()?;
 
@@ -638,6 +671,7 @@ where
     }
 
     /// Recursively clean up a Node and all its children (depth-first).
+    #[cfg_attr(creusot, trusted)]
     fn cleanup_node(&mut self, idx: NodeIdx<R>) {
         if !idx.is_valid() {
             return;

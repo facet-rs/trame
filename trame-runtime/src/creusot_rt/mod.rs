@@ -7,7 +7,9 @@ use creusot_std::macros::{ensures, pearlite, requires};
 use creusot_std::model::DeepModel;
 use creusot_std::prelude::{View, logic, trusted};
 
-use crate::{IArena, IField, IHeap, IPtr, IRuntime, IShape, IShapeStore, IStructType, Idx};
+use crate::{
+    IArena, IField, IHeap, IPtr, IRuntime, IShape, IShapeExtra, IShapeStore, IStructType, Idx,
+};
 
 /// Logical layout for creusot builds.
 #[derive(Clone, Copy, Debug, DeepModel)]
@@ -444,6 +446,8 @@ impl IHeap<CShapeView<'_>> for CHeap {
     #[trusted]
     #[cfg_attr(creusot, requires(self.range_init(src, _len)))]
     #[cfg_attr(creusot, ensures(self.range_init(dst, _len)))]
+    #[cfg_attr(creusot, ensures(forall<ptr2, shape2> ptr2 != dst ==> (^self).can_drop(ptr2, shape2) == (*self).can_drop(ptr2, shape2)))]
+    #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != dst ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
     unsafe fn memcpy(&mut self, dst: CPtr, src: CPtr, _len: usize) {
         let _ = (dst, src);
     }
@@ -464,10 +468,11 @@ impl IHeap<CShapeView<'_>> for CHeap {
 
     #[trusted]
     #[cfg_attr(creusot, ensures(result ==> self.can_drop(ptr, shape)))]
-    #[cfg_attr(
-        creusot,
-        ensures(shape_is_scalar(shape) ==> result ==> self.range_init(ptr, shape_size(shape)))
-    )]
+    #[cfg_attr(creusot, ensures(result ==> self.range_init(ptr, shape.size_logic())))]
+    #[cfg_attr(creusot, ensures(!result ==> (^self).can_drop(ptr, shape) == (*self).can_drop(ptr, shape)))]
+    #[cfg_attr(creusot, ensures(!result ==> (^self).range_init(ptr, shape.size_logic()) == (*self).range_init(ptr, shape.size_logic())))]
+    #[cfg_attr(creusot, ensures(forall<ptr2, shape2> ptr2 != ptr ==> (^self).can_drop(ptr2, shape2) == (*self).can_drop(ptr2, shape2)))]
+    #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != ptr ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
     unsafe fn default_in_place(&mut self, ptr: CPtr, shape: CShapeView<'_>) -> bool {
         let _ = (ptr, shape);
         true
@@ -585,6 +590,7 @@ impl<T> IArena<T> for CArena<T> {
     }
 
     #[trusted]
+    #[cfg_attr(creusot, ensures(*result == self.get_logic(id)))]
     fn get(&self, id: Idx<T>) -> &T {
         assert!(id.is_valid(), "cannot get sentinel index");
         let idx = id.index();
@@ -600,6 +606,11 @@ impl<T> IArena<T> for CArena<T> {
     }
 
     #[trusted]
+    #[cfg_attr(creusot, ensures(*result == (*self).get_logic(id)))]
+    #[cfg_attr(creusot, ensures(^result == (^self).get_logic(id)))]
+    #[cfg_attr(creusot, ensures((^self).contains(id)))]
+    #[cfg_attr(creusot, ensures(forall<j> j != id ==> (*self).contains(j) == (^self).contains(j)))]
+    #[cfg_attr(creusot, ensures(forall<j> j != id ==> (*self).get_logic(j) == (^self).get_logic(j)))]
     fn get_mut(&mut self, id: Idx<T>) -> &mut T {
         assert!(id.is_valid(), "cannot get sentinel index");
         let idx = id.index();

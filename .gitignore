@@ -1,4 +1,5 @@
 .handoffs
+target-afl
 target
 crate.llbc.json
 Cargo.lock

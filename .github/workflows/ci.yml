@@ -102,7 +102,7 @@ jobs:
 
       - name: Build fuzz target
         working-directory: trame-fuzz
-        run: cargo afl build
+        run: CARGO_TARGET_DIR=target-afl cargo afl build
 
       - name: Run fuzzing (2 minutes)
         working-directory: trame-fuzz
@@ -110,7 +110,7 @@ jobs:
           AFL_SKIP_CPUFREQ: 1
           AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES: 1
         run: |
-          timeout 120 cargo afl fuzz -i in -o out ./target/debug/trame-afl || test $? -eq 124
+          timeout 120 cargo afl fuzz -i in -o out ./target-afl/debug/trame-fuzz || test $? -eq 124
 
   creusot:
     name: Creusot Proofs

@@ -27,8 +27,13 @@ prove *args:
 
 # Run fuzzing with afl
 fuzz:
-    cd trame-fuzz && cargo afl build
-    cd trame-fuzz && cargo afl fuzz -i in -o out ./target/debug/trame-afl
+    cd trame-fuzz && CARGO_TARGET_DIR=target-afl cargo afl build
+    cd trame-fuzz && CARGO_TARGET_DIR=target-afl cargo afl fuzz -i in -o out ./target-afl/debug/trame-fuzz
 
 ci-push ident:
     depot build --push --build-platform=linux/amd64 -t ghcr.io/facet-rs/{{ ident }}-ci:latest -f .docker/Dockerfile.{{ ident }} .docker/
+
+ci-push-all:
+    just ci-push afl
+    just ci-push soteria
+    just ci-push creusot

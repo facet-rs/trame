@@ -7,6 +7,9 @@ This folder contains standalone Verus proofs for core runtime invariants.
   `trame-runtime/src/verified/byte_range.rs`.
 - `tree_init_recursive_proof.rs` models recursive struct-field initialization
   over a handle-based shape store.
+- `trame-runtime/src/verified/verus_bridge.rs` converts real `VShapeStore`
+  values into a proof-shaped model and checks recursive initialization
+  properties against real shape definitions.
 - Main result: the computed output bytes are exactly
   `old_range \ cleared_range`, and any byte inside the cleared interval is absent.
 - Additional lemmas prove:

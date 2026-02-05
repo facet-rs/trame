@@ -613,4 +613,14 @@ impl<T> IArena<T> for CArena<T> {
             .as_mut()
             .expect("slot was occupied but empty")
     }
+
+    #[logic(opaque)]
+    fn contains(self, id: Idx<T>) -> bool {
+        dead
+    }
+
+    #[logic(opaque)]
+    fn get_logic(self, id: Idx<T>) -> T {
+        dead
+    }
 }

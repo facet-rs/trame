@@ -30,21 +30,36 @@ Each verification technique targets a specific runtime:
 
 | Approach | Runtime | Coverage | Annotations | What it catches |
 |----------|---------|----------|-------------|-----------------|
-| [Proptest](https://github.com/proptest-rs/proptest) | VRuntime | Statistical | None | Logic bugs via random exploration |
-| [AFL](https://github.com/rust-fuzz/afl.rs) | LRuntime | Statistical | None | Memory bugs, crashes, UB |
-| [Kani](https://github.com/model-checking/kani) | VRuntime | Exhaustive within bounds | None | Logic bugs, invariant violations |
-| [Creusot](https://github.com/creusot-rs/creusot) | CRuntime | Universal | High | Everything, with proof |
+| [Proptest](https://github.com/proptest-rs/proptest) | Verified | Statistical | None | Logic bugs via random exploration |
+| [afl.rs](https://github.com/rust-fuzz/afl.rs) | Live | Statistical | None | Memory bugs, crashes, UB |
+| [Soteria Rust](https://github.com/soteria-tools/soteria) | Verified | Exhaustive within bounds | None | Logic bugs, invariant violations |
+| [Creusot](https://github.com/creusot-rs/creusot) | Creusot (for now) | Universal | High | Everything, with proof |
 
 ### Fuzzing and Property Testing
 
-[Proptest](https://github.com/proptest-rs/proptest) generates random shapes and operation sequences to exercise VRuntime statistically. [AFL](https://github.com/rust-fuzz/afl.rs) fuzzing exercises LRuntime with real memory allocations. Together they catch logic bugs, memory safety issues, and crashes through random exploration—with zero annotation overhead.
+[Proptest](https://github.com/proptest-rs/proptest) generates random shapes and
+operation sequences to exercise VRuntime statistically.
+
+[afl.rs](https://github.com/rust-fuzz/afl.rs) fuzzing exercises LRuntime with a
+static set of test shapes, and real memory allocations. Together they catch
+logic bugs, memory safety issues, and crashes through random exploration—with
+zero annotation overhead.
 
 ### Kani (Bounded Symbolic Execution)
 
-[Kani](https://github.com/model-checking/kani) exhaustively explores all execution paths within bounds (e.g., up to 8 fields, 2-3 operations). Unlike fuzzing, it doesn't sample—it proves no bugs exist within the bounded state space.
+[Soteria Rust](https://github.com/soteria-tools/soteria) performs symbolic
+execution to prove properties exhaustively within bounds. It's compatible with
+[Kani](https://github.com/model-checking/kani)-style proofs, which we use to
+verify the code. Unlike fuzzing, it doesn't sample—it proves no bugs exist
+within the bounded state space.
 
-Proofs are run via [soteria-rust](https://github.com/soteria-tools/soteria), a Kani-compatible symbolic execution engine.
+Unfortunately, bounds must be kept fairly small (e.g., up to 8 fields, 2-3
+operations) to avoid runtime explosion.
 
 ### Creusot (Deductive Verification)
 
-[Creusot](https://github.com/creusot-rs/creusot) translates Rust code to [Why3](https://www.why3.org/) for SMT-based proof discharge. This is inductive verification: it proves properties hold for *all* inputs, not just those within Kani's bounds. Requires contract annotations (preconditions, postconditions, invariants, logic functions) but provides universal guarantees.
+[Creusot](https://github.com/creusot-rs/creusot) translates Rust code to
+[Why3](https://www.why3.org/) for SMT-based proof discharge. This is inductive
+verification: it proves properties hold for *all* inputs, not just those within
+Kani's bounds. Requires contract annotations (preconditions, postconditions,
+invariants, logic functions) but provides universal guarantees.

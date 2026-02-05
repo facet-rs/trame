@@ -116,7 +116,26 @@ jobs:
           timeout 120 cargo afl fuzz -i in -o out ./target/debug/trame-afl || test $? -eq 124
 
   creusot:
-    name: Creusot Proofs (official)
+    name: Creusot Proofs
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/facet-rs/trame-ci:latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure why3
+        run: |
+          eval $(opam env)
+          why3 config detect
+
+      - name: Run Creusot proofs
+        run: |
+          eval $(opam env)
+          cargo creusot clean --force
+          cargo creusot prove -- -p trame-runtime -p trame
+
+  creusot2:
+    name: Creusot Proofs (official image)
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/creusot-rs/creusot:latest

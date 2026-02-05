@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 members = ["trame", "trame-runtime", "trame-fuzz", "trame-proptest"]
-default-members = ["trame", "trame-runtime"]
 
 [workspace.package]
 edition = "2024"

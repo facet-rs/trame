@@ -13,9 +13,6 @@ homepage = "https://facet.rs"
 [package.metadata.kani]
 default-unwind = 10
 
-[package.metadata.verus]
-verify = true
-
 [package.metadata."docs.rs"]
 rustdoc-args = ["--html-in-header", "arborium-header.html"]
 

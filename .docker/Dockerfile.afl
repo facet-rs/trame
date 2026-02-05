@@ -7,14 +7,21 @@ RUN apt-get update && apt-get install -y \
     clang \
     && rm -rf /var/lib/apt/lists/*
 
-# Install cargo-afl and pre-build AFL runtime for CI containers
-RUN cargo install cargo-afl && cargo afl config --build --force
+# Install cargo-afl and pre-build AFL runtime for CI containers.
+# Store runtime under /usr/local/share so it is independent from HOME.
+RUN cargo install cargo-afl && \
+    cargo afl config --build --force && \
+    mkdir -p /usr/local/share && \
+    cp -a /root/.local/share/afl.rs /usr/local/share/afl.rs
 
 # ---- Final stage ----
 FROM rustlang/rust:nightly-trixie-slim
 
 # Ensure rustup/cargo shims are available in non-login shells.
 ENV PATH="/usr/local/cargo/bin:/root/.cargo/bin:${PATH}"
+
+# Use shared XDG data so runtime is found even when HOME=/github/home in CI.
+ENV XDG_DATA_HOME=/usr/local/share
 
 # Git and Node.js
 RUN apt-get update && apt-get install -y git curl && \
@@ -24,12 +31,12 @@ RUN apt-get update && apt-get install -y git curl && \
 
 # Copy cargo-afl binary and pre-built runtime
 COPY --from=builder /usr/local/cargo/bin/cargo-afl /usr/local/cargo/bin/
-COPY --from=builder /root/.local/share/afl.rs /root/.local/share/afl.rs
+COPY --from=builder /usr/local/share/afl.rs /usr/local/share/afl.rs
 RUN ln -sf /usr/local/cargo/bin/cargo /usr/local/bin/cargo && \
     ln -sf /usr/local/cargo/bin/rustc /usr/local/bin/rustc && \
     ln -sf /usr/local/cargo/bin/cargo-afl /usr/local/bin/cargo-afl
 
 # Sanity check
-RUN cargo afl --help && node --version
+RUN cargo afl --help && node --version && test -d /usr/local/share/afl.rs
 
 WORKDIR /work

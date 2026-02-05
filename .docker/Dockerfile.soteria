@@ -18,28 +18,29 @@ RUN opam init --disable-sandboxing --auto-setup -y
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-# Build Soteria
-WORKDIR /opt
-RUN git clone https://github.com/soteria-tools/soteria.git
+# Build Soteria (pinned commit for reproducibility)
 WORKDIR /opt/soteria
+RUN git clone https://github.com/soteria-tools/soteria.git . && \
+    git checkout 1f6075bc9c273351f9508fe0a63945d7c094f974
 RUN opam switch create . --deps-only -y || true
 RUN opam install -y mdx alcotest
 RUN eval $(opam env) && dune build @install
 RUN eval $(opam env) && dune install
 
-# Build Obol (Rust frontend for Soteria)
-WORKDIR /opt
-RUN git clone https://github.com/soteria-tools/obol.git
+# Build Obol (Rust frontend for Soteria, pinned commit for reproducibility)
 WORKDIR /opt/obol
+RUN git clone https://github.com/soteria-tools/obol.git . && \
+    git checkout 6495682bbc9115ba56b20878ee57a8094947b42a
 RUN eval $(opam env --switch=/opt/soteria) && make build
 
 # ---- Final stage ----
 FROM rust:slim
 
-# Runtime dependencies for OCaml binaries
+# Runtime dependencies for OCaml binaries + Z3 SMT solver
 RUN apt-get update && apt-get install -y \
     libgmp10 \
     git \
+    z3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy Soteria/Obol binaries from builder
@@ -47,6 +48,9 @@ COPY --from=builder /opt/soteria/_opam/bin/soteria-rust /usr/local/bin/
 COPY --from=builder /opt/soteria/_opam/bin/soteria-c /usr/local/bin/
 COPY --from=builder /opt/obol/bin/obol /usr/local/bin/
 COPY --from=builder /opt/obol/bin/obol-driver /usr/local/bin/
+
+# Copy Soteria runtime data (plugins) — path is hardcoded at compile time
+COPY --from=builder /opt/soteria/_opam/share/soteria-rust /opt/soteria/_opam/share/soteria-rust
 
 # Node.js for GitHub Actions
 RUN apt-get update && apt-get install -y curl ca-certificates \
@@ -57,7 +61,10 @@ RUN apt-get update && apt-get install -y curl ca-certificates \
 # Symlink cargo to /bin for Obol compatibility (it hardcodes /bin/cargo)
 RUN ln -s /usr/local/cargo/bin/cargo /bin/cargo
 
+# Pre-install the nightly toolchain that Obol requires
+RUN obol toolchain-path
+
 # Sanity check
-RUN soteria-rust --help && soteria-c --help && node --version && cargo --version
+RUN soteria-rust --help && soteria-c --help && node --version && cargo --version && z3 --version
 
 WORKDIR /work

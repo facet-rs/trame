@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y \
     clang \
     && rm -rf /var/lib/apt/lists/*
 
-# Install cargo-afl and build LLVM runtime
+# Install cargo-afl and pre-build AFL runtime for CI containers
 RUN cargo install cargo-afl && cargo afl config --build --force
 
 # ---- Final stage ----

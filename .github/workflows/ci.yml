@@ -100,9 +100,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Build AFL runtime
-        run: cargo afl config --build
-
       - name: Build fuzz target
         working-directory: trame-fuzz
         run: cargo afl build

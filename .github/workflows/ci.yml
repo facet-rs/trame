@@ -78,16 +78,42 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
-  kani:
-    name: Kani Proofs
+  soteria:
+    name: Soteria Proofs
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/facet-rs/trame-ci:latest
     steps:
       - uses: actions/checkout@v6
 
-      - name: Run Kani
-        uses: model-checking/kani-github-action@v1.1
-        with:
-          working-directory: trame
+      - name: Run Soteria on trame-runtime
+        run: soteria-rust cargo trame-runtime --kani --summary --stats stdout
+
+      - name: Run Soteria on trame
+        run: soteria-rust cargo trame --kani --summary --stats stdout
+
+  fuzz:
+    name: Fuzzing (AFL++)
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/facet-rs/trame-ci:latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install nightly toolchain
+        run: rustup install nightly
+
+      - name: Build fuzz target
+        working-directory: trame-fuzz
+        run: cargo afl build
+
+      - name: Run fuzzing (2 minutes)
+        working-directory: trame-fuzz
+        env:
+          AFL_SKIP_CPUFREQ: 1
+          AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES: 1
+        run: |
+          timeout 120 cargo afl fuzz -i in -o out ./target/debug/trame-afl || test $? -eq 124
 
   creusot:
     name: Creusot Proofs

@@ -24,3 +24,9 @@ Run:
 verus trame-runtime/verus/byte_range_clear_proof.rs
 verus trame-runtime/verus/tree_init_recursive_proof.rs
 ```
+
+If you want to run Verus through Cargo at the workspace level:
+
+```bash
+cargo verus verify --workspace --exclude trame-fuzz --exclude trame-proptest
+```

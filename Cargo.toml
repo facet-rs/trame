@@ -12,8 +12,8 @@ repository = "https://github.com/facet-rs/trame"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(creusot)'] }
 
 [workspace.dependencies]
-facet-core = { git = "https://github.com/facet-rs/facet", branch = "main" }
-facet = { git = "https://github.com/facet-rs/facet", branch = "main" }
+facet-core = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43.2" }
+facet = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43.2" }
 smallvec = "2.0.0-alpha.12"
 afl = "0.17"
 arbitrary = { version = "1", features = ["derive"] }

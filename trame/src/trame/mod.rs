@@ -99,8 +99,7 @@ where
                 (i == self.root || self.arena.contains(node.parent)) &&
                 match node.kind {
                     NodeKind::Scalar { initialized } =>
-                        initialized == self.heap.range_init(node.data, node.shape.size_logic())
-                        && initialized == self.heap.can_drop(node.data, node.shape),
+                        initialized == self.heap.range_init(node.data, node.shape.size_logic()),
                     NodeKind::Struct { .. } => true,
                 }
             } && forall<j> i != j && self.arena.contains(j) ==> {
@@ -165,7 +164,7 @@ where
 
 #[cfg(creusot)]
 #[trusted]
-#[ensures(result == heap.can_drop(ptr, shape))]
+#[ensures(result == heap.range_init(ptr, shape.size_logic()))]
 fn heap_can_drop<H, S>(heap: &H, ptr: <H as IHeap<S>>::Ptr, shape: S) -> bool
 where
     H: IHeap<S>,
@@ -403,8 +402,6 @@ where
                     NodeKind::Scalar { .. } => return Err(TrameError::NotAStruct),
                 };
 
-                #[cfg(creusot)]
-                assume(snapshot! { false });
                 let (field_shape, dst, size) = Self::field_ptr(node, field_idx)?;
 
                 if let Some(child) = child_idx {
@@ -427,6 +424,9 @@ where
                         already_init = false;
                     }
                 }
+
+                #[cfg(creusot)]
+                assume(snapshot! { false });
 
                 if already_init {
                     unsafe { self.heap.drop_in_place(dst, field_shape) };
@@ -688,6 +688,10 @@ where
 
     /// Recursively clean up a Node and all its children (depth-first).
     #[cfg_attr(creusot, trusted)]
+    #[cfg_attr(creusot, ensures((^self).arena == (*self).arena))]
+    #[cfg_attr(creusot, ensures((^self).root == (*self).root))]
+    #[cfg_attr(creusot, ensures((^self).current == (*self).current))]
+    #[cfg_attr(creusot, ensures((^self).poisoned == (*self).poisoned))]
     fn cleanup_node(&mut self, idx: NodeIdx<R>) {
         if !idx.is_valid() {
             return;

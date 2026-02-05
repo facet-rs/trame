@@ -15,7 +15,7 @@ type Ptr<R> = <Heap<R> as IHeap<Shape<R>>>::Ptr;
 
 #[cfg(creusot)]
 #[trusted]
-#[ensures(result == heap.can_drop(ptr, shape))]
+#[ensures(result == heap.range_init(ptr, shape.size_logic()))]
 fn heap_can_drop<H, S>(heap: &H, ptr: <H as IHeap<S>>::Ptr, shape: S) -> bool
 where
     H: IHeap<S>,

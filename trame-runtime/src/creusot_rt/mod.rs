@@ -452,51 +452,26 @@ impl IHeap<CShapeView<'_>> for CHeap {
     #[trusted]
     #[cfg_attr(creusot, requires(self.range_init(src, _len)))]
     #[cfg_attr(creusot, ensures(self.range_init(dst, _len)))]
-    #[cfg_attr(creusot, ensures(forall<ptr2, shape2> ptr2 != dst ==> (^self).can_drop(ptr2, shape2) == (*self).can_drop(ptr2, shape2)))]
     #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != dst ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
     unsafe fn memcpy(&mut self, dst: CPtr, src: CPtr, _len: usize) {
         let _ = (dst, src);
     }
 
     #[trusted]
-    #[cfg_attr(
-        creusot,
-        requires(shape_is_scalar(shape) ==> self.range_init(ptr, shape_size(shape)))
-    )]
-    #[cfg_attr(creusot, ensures(!self.can_drop(ptr, shape)))]
-    #[cfg_attr(
-        creusot,
-        ensures(shape_is_scalar(shape) ==> !self.range_init(ptr, shape_size(shape)))
-    )]
+    #[cfg_attr(creusot, requires(self.range_init(ptr, shape.size_logic())))]
+    #[cfg_attr(creusot, ensures(!self.range_init(ptr, shape.size_logic())))]
+    #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != ptr ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
     unsafe fn drop_in_place(&mut self, ptr: CPtr, shape: CShapeView<'_>) {
         let _ = (ptr, shape);
     }
 
     #[trusted]
-    #[cfg_attr(creusot, ensures(result ==> self.can_drop(ptr, shape)))]
     #[cfg_attr(creusot, ensures(result ==> self.range_init(ptr, shape.size_logic())))]
-    #[cfg_attr(creusot, ensures(!result ==> (^self).can_drop(ptr, shape) == (*self).can_drop(ptr, shape)))]
     #[cfg_attr(creusot, ensures(!result ==> (^self).range_init(ptr, shape.size_logic()) == (*self).range_init(ptr, shape.size_logic())))]
-    #[cfg_attr(creusot, ensures(forall<ptr2, shape2> ptr2 != ptr ==> (^self).can_drop(ptr2, shape2) == (*self).can_drop(ptr2, shape2)))]
     #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != ptr ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
     unsafe fn default_in_place(&mut self, ptr: CPtr, shape: CShapeView<'_>) -> bool {
         let _ = (ptr, shape);
         true
-    }
-
-    #[logic(open, inline)]
-    fn can_drop(&self, ptr: CPtr, shape: CShapeView<'_>) -> bool {
-        pearlite! {
-            if shape_is_scalar(shape) {
-                self.range_init(ptr, shape_size(shape))
-            } else {
-                self@.init.contains(init_fact(
-                    ptr.alloc_id,
-                    ptr.offset as usize,
-                    shape.handle
-                ))
-            }
-        }
     }
 
     #[logic(open, inline)]

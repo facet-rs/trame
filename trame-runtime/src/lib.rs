@@ -184,7 +184,6 @@ pub trait IHeap<S: IShape> {
     /// ranges do not overlap.
     #[cfg_attr(creusot, requires(self.range_init(src, len)))]
     #[cfg_attr(creusot, ensures(self.range_init(dst, len)))]
-    #[cfg_attr(creusot, ensures(forall<ptr2, shape2> ptr2 != dst ==> (^self).can_drop(ptr2, shape2) == (*self).can_drop(ptr2, shape2)))]
     #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != dst ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
     unsafe fn memcpy(&mut self, dst: Self::Ptr, src: Self::Ptr, len: usize);
 
@@ -193,16 +192,10 @@ pub trait IHeap<S: IShape> {
     /// # Safety
     /// The caller must ensure `ptr` points to a value of type `shape`, the
     /// value is fully initialized, and the allocation is still live.
-    #[cfg_attr(creusot, requires(self.can_drop(ptr, shape)))]
-    #[cfg_attr(creusot, ensures(!(^self).can_drop(ptr, shape) && !(^self).range_init(ptr, shape.size_logic())))]
-    #[cfg_attr(creusot, ensures(forall<ptr2, shape2> ptr2 != ptr ==> (^self).can_drop(ptr2, shape2) == (*self).can_drop(ptr2, shape2)))]
+    #[cfg_attr(creusot, requires(self.range_init(ptr, shape.size_logic())))]
+    #[cfg_attr(creusot, ensures(!(^self).range_init(ptr, shape.size_logic())))]
     #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != ptr ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
     unsafe fn drop_in_place(&mut self, ptr: Self::Ptr, shape: S);
-
-    /// Creusot-only predicate describing when a drop is permitted.
-    #[cfg(creusot)]
-    #[logic]
-    fn can_drop(&self, ptr: Self::Ptr, shape: S) -> bool;
 
     /// Creusot-only predicate describing when a byte range is initialized.
     ///
@@ -218,10 +211,8 @@ pub trait IHeap<S: IShape> {
     /// # Safety
     /// The caller must ensure the destination range is uninitialized, in-bounds,
     /// and corresponds to `shape`.
-    #[cfg_attr(creusot, ensures(result ==> self.can_drop(ptr, shape) && self.range_init(ptr, shape.size_logic())))]
-    #[cfg_attr(creusot, ensures(!result ==> (^self).can_drop(ptr, shape) == (*self).can_drop(ptr, shape)))]
+    #[cfg_attr(creusot, ensures(result ==> self.range_init(ptr, shape.size_logic())))]
     #[cfg_attr(creusot, ensures(!result ==> (^self).range_init(ptr, shape.size_logic()) == (*self).range_init(ptr, shape.size_logic())))]
-    #[cfg_attr(creusot, ensures(forall<ptr2, shape2> ptr2 != ptr ==> (^self).can_drop(ptr2, shape2) == (*self).can_drop(ptr2, shape2)))]
     #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != ptr ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
     unsafe fn default_in_place(&mut self, ptr: Self::Ptr, shape: S) -> bool;
 }

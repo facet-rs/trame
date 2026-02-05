@@ -6,7 +6,7 @@ verified from the ground up.
 
 ## Verification Strategy
 
-Trame uses a layered verification approach combining four complementary techniques:
+Trame uses a layered verification approach combining five complementary techniques:
 
 | Approach | Coverage | Speed | Annotation Cost | What it catches |
 |----------|----------|-------|-----------------|-----------------|
@@ -14,6 +14,7 @@ Trame uses a layered verification approach combining four complementary techniqu
 | [Proptest](https://github.com/proptest-rs/proptest) + VRuntime | Statistical | Fast | None | Logic bugs via random exploration |
 | [AFL](https://github.com/rust-fuzz/afl.rs) + LRuntime | Statistical | Fast | None | Memory bugs, crashes, UB |
 | [Creusot](https://github.com/creusot-rs/creusot) + CRuntime | Unbounded/Universal | Fast (per-function) | High | Everything, with proof |
+| [Verus](https://github.com/verus-lang/verus) | Unbounded/Universal | Fast (per-function) | High | Everything, with proof |
 
 ### Runtimes
 
@@ -60,6 +61,17 @@ annotations (pre/post conditions, invariants, logic functions) but provides univ
 guarantees.
 
 Run proofs with `just prove`.
+
+### Verus (SMT-based Verification)
+
+[Verus](https://github.com/verus-lang/verus) verifies Rust code directly via
+SMT solving, without translation to an intermediate language. Like Creusot, it
+proves properties for all inputs, but operates on Rust syntax with proof
+annotations (`proof fn`, `requires`, `ensures`). The `trame-verus` crate
+contains proofs for byte-range clearing semantics and recursive tree
+initialization.
+
+Run proofs with `just verus`.
 
 ## Spec
 

@@ -34,6 +34,7 @@ Each verification technique targets a specific runtime:
 | [afl.rs](https://github.com/rust-fuzz/afl.rs) | Live | Statistical | Memory bugs, crashes, UB |
 | [Soteria Rust](https://github.com/soteria-tools/soteria) | Verified | Exhaustive within bounds | Logic bugs, invariant violations |
 | [Creusot](https://github.com/creusot-rs/creusot) | Creusot (for now) | Universal | Everything, with proof |
+| [Verus](https://github.com/verus-lang/verus) | N/A | Universal | Everything, with proof |
 
 ### Fuzzing and Property Testing
 
@@ -63,3 +64,12 @@ operations) to avoid runtime explosion.
 verification: it proves properties hold for *all* inputs, not just those within
 Kani's bounds. Requires contract annotations (preconditions, postconditions,
 invariants, logic functions) but provides universal guarantees.
+
+### Verus (SMT-based Verification)
+
+[Verus](https://github.com/verus-lang/verus) verifies Rust code directly via
+SMT solving, without translation to an intermediate language. Like Creusot, it
+proves properties for all inputs, but operates on Rust syntax with proof
+annotations (`proof fn`, `requires`, `ensures`). The `trame-verus` crate
+contains proofs for byte-range clearing semantics and recursive tree
+initialization.

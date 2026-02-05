@@ -8,6 +8,8 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     libgmp-dev \
     zlib1g-dev \
+    autoconf \
+    libzmq3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Sanity check
@@ -51,6 +53,8 @@ RUN eval $(opam env) && alt-ergo --version && why3find --version
 RUN git clone https://github.com/creusot-rs/creusot /opt/creusot
 WORKDIR /opt/creusot
 RUN git checkout 8417c628d848dd967a42b917acd879b77a94f636
+# Skip why3-ide (GUI) - not needed for CI
+RUN opam --cli=2.1 var --global in-creusot-ci=true
 RUN eval $(opam env) && ./INSTALL
 
 # Sanity check Creusot

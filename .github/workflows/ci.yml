@@ -88,3 +88,22 @@ jobs:
         uses: model-checking/kani-github-action@v1.1
         with:
           working-directory: trame
+
+  creusot:
+    name: Creusot Proofs
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/facet-rs/trame-ci:latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure why3
+        run: |
+          eval $(opam env)
+          why3 config detect
+
+      - name: Run Creusot proofs
+        working-directory: trame
+        run: |
+          eval $(opam env)
+          cargo creusot prove

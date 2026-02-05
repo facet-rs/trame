@@ -59,3 +59,42 @@ RUN eval $(opam env) && ./INSTALL
 
 # Sanity check Creusot
 RUN cargo creusot --help
+
+# Install Soteria
+WORKDIR /opt
+RUN git clone https://github.com/soteria-tools/soteria.git
+WORKDIR /opt/soteria
+RUN opam switch create . --deps-only -y || true
+RUN opam install -y mdx alcotest
+RUN eval $(opam env) && dune build @install
+RUN eval $(opam env) && dune install
+# Add Soteria local switch bin to PATH
+ENV PATH="/opt/soteria/_opam/bin:${PATH}"
+
+# Sanity check Soteria
+RUN soteria-rust --help && soteria-c --help
+
+# Install Obol (Rust frontend for Soteria)
+WORKDIR /opt
+RUN git clone https://github.com/soteria-tools/obol.git
+WORKDIR /opt/obol
+RUN eval $(opam env --switch=/opt/soteria) && make build
+ENV PATH="/opt/obol/bin:${PATH}"
+
+# Sanity check Obol
+RUN obol --help
+
+# Install AFL++ for fuzzing
+RUN apt-get update && apt-get install -y \
+    afl++ \
+    llvm \
+    clang \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install cargo-afl
+RUN cargo install cargo-afl
+
+# Sanity check AFL
+RUN afl-fuzz --version && cargo afl --help
+
+WORKDIR /work

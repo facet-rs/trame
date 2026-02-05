@@ -1,82 +1,93 @@
-# Base stage: Debian + Nix (no daemon)
-FROM debian:13 AS nixbase
+# Build stage: install Creusot from source
+FROM debian:13 AS builder
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
+# Install build dependencies
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl xz-utils git && \
-    rm -rf /var/lib/apt/lists/*
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+        build-essential \
+        opam \
+        pkg-config \
+        libgmp-dev \
+        zlib1g-dev \
+        autoconf \
+        automake \
+        m4 \
+        unzip \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | \
-    sh -s -- install linux --no-confirm --init none --extra-conf "sandbox = false"
+# Install Rust with the specific nightly required by Creusot
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --default-toolchain nightly-2026-01-29 --profile minimal \
+        --component rustfmt --component rustc-dev --component llvm-tools
+ENV PATH="/root/.cargo/bin:$PATH"
 
-ENV PATH="/root/.nix-profile/bin:/root/.nix-profile/sbin:/nix/var/nix/profiles/default/bin:$PATH"
-ENV NIX_SSL_CERT_FILE="/etc/ssl/certs/ca-certificates.crt"
-ENV NIX_REMOTE=local
+# Clone Creusot at pinned commit
+WORKDIR /creusot
+RUN git clone https://github.com/creusot-rs/creusot.git . && \
+    git checkout 8417c628d848dd967a42b917acd879b77a94f636
 
-# Build stage: build Creusot from its flake
-FROM nixbase AS creusot
-SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+# Additional dependencies discovered during build
+RUN apt-get update && apt-get install -y --no-install-recommends rsync && rm -rf /var/lib/apt/lists/*
 
-# Enable flakes + build Creusot
-RUN --mount=type=cache,target=/root/.cache/nix \
-    nix --version && \
-    nix build github:creusot-rs/creusot#creusot -L && \
-    mkdir -p /out && \
-    nix-store -qR /result | sed 's|^/||' > /out/closure && \
-    printf "result\n" >> /out/closure && \
-    tar -C / -cf /out/creusot-closure.tar -T /out/closure
-
-# Build stage: use Nix to get our tools
-FROM nixbase AS tools
-SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
-
-# Install the packages we need into a separate profile to avoid conflicts
-RUN --mount=type=cache,target=/root/.cache/nix \
-    nix profile install --profile /nix/var/nix/profiles/tools \
-    nixpkgs#nodejs_22 \
-    nixpkgs#git \
-    nixpkgs#curl \
-    nixpkgs#cacert \
-    nixpkgs#stdenv.cc.cc.lib && \
-    mkdir -p /out && \
-    nix-store -qR /nix/var/nix/profiles/tools | sed 's|^/||' > /out/closure && \
-    printf "nix/var/nix/profiles/tools\n" >> /out/closure && \
-    tar -C / -cf /out/tools-closure.tar -T /out/closure
+# Build and install Creusot
+# Set in-creusot-ci=true to skip why3-ide (avoids GTK dependencies)
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/creusot/target \
+    --mount=type=cache,target=/root/.opam \
+    --mount=type=cache,target=/root/.cache \
+    rm -rf /root/.opam/* && \
+    opam init --disable-sandboxing --bare --yes && \
+    opam --cli=2.1 var --global in-creusot-ci=true && \
+    ./INSTALL
 
 # ---- Final stage ----
 FROM debian:13
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
-# Copy closures only (avoid full /nix/store) without persisting tarballs as layers
-RUN --mount=type=bind,from=tools,source=/out/tools-closure.tar,target=/tmp/tools-closure.tar,ro \
-    --mount=type=bind,from=creusot,source=/out/creusot-closure.tar,target=/tmp/creusot-closure.tar,ro \
-    tar -C / -xf /tmp/tools-closure.tar && \
-    tar -C / -xf /tmp/creusot-closure.tar
+# Install runtime dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+        build-essential \
+        libgmp10 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Add the tools to PATH
-ENV PATH="/nix/var/nix/profiles/tools/bin:/result/bin:$PATH"
-ENV SSL_CERT_FILE="/nix/var/nix/profiles/tools/etc/ssl/certs/ca-bundle.crt"
+# Install Rust with the specific nightly required by Creusot
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --default-toolchain nightly-2026-01-29 --profile minimal \
+        --component rustfmt --component rustc-dev --component llvm-tools
+ENV PATH="/root/.cargo/bin:$PATH"
 
-# Symlink glibc and libstdc++ for GitHub Actions compatibility (GH Actions mounts its own node24 binary)
-RUN mkdir -p /lib64 && \
-    ld_linux="$(find /nix/store -name 'ld-linux-x86-64.so.2' -type f | head -1)" && \
-    libstdcpp="$(find /nix/store -path '*cc-lib*/lib/libstdc++.so.6' | head -1)" && \
-    if [ -n "$ld_linux" ] && [ ! -e /lib64/ld-linux-x86-64.so.2 ]; then ln -s "$ld_linux" /lib64/ld-linux-x86-64.so.2; fi && \
-    if [ -n "$libstdcpp" ] && [ ! -e /lib64/libstdc++.so.6 ]; then ln -s "$libstdcpp" /lib64/libstdc++.so.6; fi
+# Copy Creusot installation from builder
+# cargo-creusot is installed to ~/.cargo/bin
+COPY --from=builder /root/.cargo/bin/cargo-creusot /root/.cargo/bin/
+
+# Copy Creusot data directory (toolchains with creusot-rustc, why3, why3find, provers)
+COPY --from=builder /root/.local/share/creusot /root/.local/share/creusot
+
+# Copy Creusot config directory (why3.conf)
+COPY --from=builder /root/.config/creusot /root/.config/creusot
+
+# Add Creusot bin and toolchain to PATH (for why3, why3find, provers, creusot-rustc)
+ENV PATH="/root/.local/share/creusot/bin:/root/.local/share/creusot/toolchains/nightly-2026-01-29/bin:$PATH"
 
 # Minimal workspace so cargo-creusot can run in the image
 WORKDIR /work
 RUN mkdir -p /work/src && \
-    printf "[package]\nname = \"empty\"\nversion = \"0.1.0\"\nedition = \"2021\"\n" > /work/Cargo.toml && \
-    printf "fn main() {}\n" > /work/src/main.rs
-
-# Install a rust toolchain
-RUN test -x /nix/var/nix/profiles/tools/bin/curl && \
-    /nix/var/nix/profiles/tools/bin/curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-    sh -s -- -y --default-toolchain stable --profile minimal
-ENV PATH="/root/.cargo/bin:$PATH"
+    printf '[package]\nname = "empty"\nversion = "0.1.0"\nedition = "2021"\n' > /work/Cargo.toml && \
+    printf 'fn main() {}\n' > /work/src/main.rs
 
 # Sanity check
-RUN cargo creusot --help >/dev/null && \
-    test -x /result/bin/creusot-rustc && \
-    node --version && npm --version && git --version && curl --version
+RUN cargo creusot --help && \
+    which creusot-rustc && \
+    which why3 && \
+    which why3find && \
+    git --version && \
+    curl --version

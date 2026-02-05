@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block title %}{{ section.title }} - trame{% endblock title %}
+
+{% block body %}
+<div class="docs-layout">
+    <main class="docs-content">
+        <article>
+            {{ section.content | safe }}
+        </article>
+    </main>
+
+    {% if section.toc and section.toc | length > 0 %}
+    <aside class="toc">
+        <div class="toc-inner">
+            <h2>On this page</h2>
+            <ul>
+            {% for h1 in section.toc %}
+                <li>
+                    <a href="{{ h1.permalink }}">{{ h1.title }}</a>
+                    {% if h1.children %}
+                    <ul>
+                        {% for h2 in h1.children %}
+                        <li><a href="{{ h2.permalink }}">{{ h2.title }}</a></li>
+                        {% endfor %}
+                    </ul>
+                    {% endif %}
+                </li>
+            {% endfor %}
+            </ul>
+        </div>
+    </aside>
+    {% endif %}
+</div>
+{% endblock body %}

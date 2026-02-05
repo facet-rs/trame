@@ -37,3 +37,4 @@ ci-push-all:
     just ci-push afl
     just ci-push soteria
     just ci-push creusot
+    just ci-push verus

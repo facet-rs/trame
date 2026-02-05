@@ -124,3 +124,16 @@ jobs:
         run: |
           cargo creusot clean --force
           cargo creusot prove -- -p trame-runtime -p trame
+
+  verus:
+    name: Verus Proofs
+    runs-on: depot-ubuntu-24.04-32
+    container:
+      image: ghcr.io/facet-rs/verus-ci:latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run Verus proof files
+        run: |
+          verus trame-runtime/verus/byte_range_clear_proof.rs
+          verus trame-runtime/verus/tree_init_recursive_proof.rs

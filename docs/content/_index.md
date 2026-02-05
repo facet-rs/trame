@@ -28,12 +28,12 @@ Trame uses a layered verification approach. The codebase is generic over an `IRu
 
 Each verification technique targets a specific runtime:
 
-| Approach | Runtime | Coverage | Annotations | What it catches |
-|----------|---------|----------|-------------|-----------------|
-| [Proptest](https://github.com/proptest-rs/proptest) | Verified | Statistical | None | Logic bugs via random exploration |
-| [afl.rs](https://github.com/rust-fuzz/afl.rs) | Live | Statistical | None | Memory bugs, crashes, UB |
-| [Soteria Rust](https://github.com/soteria-tools/soteria) | Verified | Exhaustive within bounds | None | Logic bugs, invariant violations |
-| [Creusot](https://github.com/creusot-rs/creusot) | Creusot (for now) | Universal | High | Everything, with proof |
+| Approach | Runtime | Coverage | What it catches |
+|----------|---------|----------|-----------------|
+| [Proptest](https://github.com/proptest-rs/proptest) | Verified | Statistical | Logic bugs via random exploration |
+| [afl.rs](https://github.com/rust-fuzz/afl.rs) | Live | Statistical | Memory bugs, crashes, UB |
+| [Soteria Rust](https://github.com/soteria-tools/soteria) | Verified | Exhaustive within bounds | Logic bugs, invariant violations |
+| [Creusot](https://github.com/creusot-rs/creusot) | Creusot (for now) | Universal | Everything, with proof |
 
 ### Fuzzing and Property Testing
 

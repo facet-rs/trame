@@ -8,11 +8,13 @@ mod heap_value;
 pub use errors::TrameError;
 pub use heap_value::HeapValue;
 
+#[cfg(creusot)]
+use crate::node::FieldStates;
 #[cfg(not(creusot))]
 use crate::runtime::LiveRuntime;
 use crate::{
     Op, PathSegment, Source,
-    node::{FieldSlot, FieldStates, Node, NodeKind, NodeState},
+    node::{FieldSlot, Node, NodeKind, NodeState},
     ops::SourceKind,
     runtime::{IArena, IField, IHeap, IPtr, IRuntime, IShape, IStructType, Idx},
 };

@@ -142,6 +142,7 @@ fn vlayout_from_layout(layout: std::alloc::Layout) -> trame_runtime::VLayout {
 
 #[cfg(creusot)]
 #[trusted]
+#[ensures(layout == Some(result))]
 fn layout_expect(layout: Option<std::alloc::Layout>) -> std::alloc::Layout {
     layout.expect("IShape requires sized types")
 }
@@ -150,6 +151,7 @@ fn layout_expect(layout: Option<std::alloc::Layout>) -> std::alloc::Layout {
 fn layout_expect(layout: Option<std::alloc::Layout>) -> std::alloc::Layout {
     layout.expect("IShape requires sized types")
 }
+
 
 #[cfg(creusot)]
 #[trusted]
@@ -334,9 +336,7 @@ where
             None => match &node.kind {
                 NodeKind::Scalar { .. } => {
                     let shape = node.shape;
-                    let size = layout_size(vlayout_from_layout(layout_expect(shape.layout())));
-                    #[cfg(creusot)]
-                    assume(snapshot! { size == shape.size_logic() });
+                    let size = layout_expect(shape.layout()).size();
                     let dst = node.data;
                     let already_init = matches!(&node.kind, NodeKind::Scalar { initialized: true });
 

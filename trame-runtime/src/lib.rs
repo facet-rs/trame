@@ -15,6 +15,9 @@ pub mod creusot_rt;
 use std::{alloc::Layout, marker::PhantomData};
 
 #[cfg(creusot)]
+use creusot_rt::layout_size_logic;
+
+#[cfg(creusot)]
 use creusot_std::model::DeepModel;
 
 #[cfg(creusot)]
@@ -112,6 +115,10 @@ pub trait IShape: Copy + PartialEq + IShapeExtra {
     /// Get the layout (size and alignment) of this shape.
     ///
     /// Returns `None` for unsized types.
+    #[cfg_attr(creusot, ensures(match result {
+        Some(l) => layout_size_logic(l) == (*self).size_logic()@,
+        None => true,
+    }))]
     fn layout(&self) -> Option<Layout>;
 
     /// Check if this is a struct type.

@@ -1,11 +1,12 @@
 #![allow(unused_imports)]
 
 use core::{marker::PhantomData, mem};
+use std::alloc::Layout;
 
 use creusot_std::logic::FSet;
 use creusot_std::macros::{ensures, pearlite, requires};
 use creusot_std::model::DeepModel;
-use creusot_std::prelude::{View, logic, trusted};
+use creusot_std::prelude::{Int, View, check, extern_spec, logic, trusted};
 
 use crate::{
     IArena, IField, IHeap, IPtr, IRuntime, IShape, IShapeExtra, IShapeStore, IStructType, Idx,
@@ -211,6 +212,11 @@ impl<'a> IShape for CShapeView<'a> {
     type StructType = CStructView<'a>;
     type Field = CFieldView<'a>;
 
+    #[trusted]
+    #[ensures(match result {
+        Some(l) => layout_size_logic(l) == (*self).size_logic()@,
+        None => true,
+    })]
     fn layout(&self) -> Option<std::alloc::Layout> {
         Some(self.store.get_def(self.handle).layout.to_layout())
     }
@@ -633,5 +639,22 @@ impl<T> IArena<T> for CArena<T> {
     #[logic(opaque)]
     fn get_logic(self, id: Idx<T>) -> T {
         dead
+    }
+}
+
+#[logic(opaque)]
+pub fn layout_size_logic(layout: std::alloc::Layout) -> Int {
+    dead
+}
+
+extern_spec! {
+    mod core {
+        mod alloc {
+            impl Layout {
+                #[check(ghost)]
+                #[ensures(result@ == layout_size_logic(*self))]
+                fn size(&self) -> usize;
+            }
+        }
     }
 }

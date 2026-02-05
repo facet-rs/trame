@@ -16,6 +16,9 @@ COPY --from=tools /nix/var/nix/profiles/tools /nix/var/nix/profiles/tools
 ENV PATH="/nix/var/nix/profiles/tools/bin:$PATH"
 ENV SSL_CERT_FILE="/nix/var/nix/profiles/tools/etc/ssl/certs/ca-bundle.crt"
 
+# Symlink glibc linker for GitHub Actions compatibility (GH Actions mounts its own node24 binary)
+RUN mkdir -p /lib64 && ln -s "$(find /nix/store -name 'ld-linux-x86-64.so.2' -type f | head -1)" /lib64/ld-linux-x86-64.so.2
+
 # Sanity check
 RUN node --version && npm --version && git --version && curl --version
 

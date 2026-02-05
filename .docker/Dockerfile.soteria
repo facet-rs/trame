@@ -54,6 +54,9 @@ RUN apt-get update && apt-get install -y curl ca-certificates \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
+# Symlink cargo to /bin for Obol compatibility (it hardcodes /bin/cargo)
+RUN ln -s /usr/local/cargo/bin/cargo /bin/cargo
+
 # Sanity check
 RUN soteria-rust --help && soteria-c --help && node --version && cargo --version
 

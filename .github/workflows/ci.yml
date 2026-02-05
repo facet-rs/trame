@@ -103,7 +103,7 @@ jobs:
           why3 config detect
 
       - name: Run Creusot proofs
-        working-directory: trame
         run: |
           eval $(opam env)
-          cargo creusot prove
+          cargo creusot clean --force
+          cargo creusot prove -- -p trame-runtime -p trame

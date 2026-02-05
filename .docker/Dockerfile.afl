@@ -1,0 +1,29 @@
+FROM rustlang/rust:nightly-trixie-slim AS builder
+
+# Build dependencies for AFL runtime
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    llvm-dev \
+    clang \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install cargo-afl and build LLVM runtime
+RUN cargo install cargo-afl && cargo afl config --build --force
+
+# ---- Final stage ----
+FROM rustlang/rust:nightly-trixie-slim
+
+# Git and Node.js
+RUN apt-get update && apt-get install -y git curl && \
+    curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - && \
+    apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy cargo-afl binary and pre-built runtime
+COPY --from=builder /usr/local/cargo/bin/cargo-afl /usr/local/cargo/bin/
+COPY --from=builder /root/.local/share/afl.rs /root/.local/share/afl.rs
+
+# Sanity check
+RUN cargo afl --help && node --version
+
+WORKDIR /work

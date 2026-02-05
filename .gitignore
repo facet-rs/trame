@@ -1,3 +1,4 @@
+.handoffs
 target
 crate.llbc.json
 Cargo.lock

@@ -82,7 +82,7 @@ jobs:
     name: Soteria Proofs
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/facet-rs/trame-ci:latest
+      image: ghcr.io/facet-rs/soteria-ci:latest
     steps:
       - uses: actions/checkout@v6
 
@@ -96,12 +96,12 @@ jobs:
     name: Fuzzing (AFL++)
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/facet-rs/trame-ci:latest
+      image: ghcr.io/facet-rs/afl-ci:latest
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install nightly toolchain
-        run: rustup install nightly
+      - name: Build AFL runtime for current nightly
+        run: cargo afl config --build --force
 
       - name: Build fuzz target
         working-directory: trame-fuzz
@@ -119,26 +119,7 @@ jobs:
     name: Creusot Proofs
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/facet-rs/trame-ci:latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Configure why3
-        run: |
-          eval $(opam env)
-          why3 config detect
-
-      - name: Run Creusot proofs
-        run: |
-          eval $(opam env)
-          cargo creusot clean --force
-          cargo creusot prove -- -p trame-runtime -p trame
-
-  creusot2:
-    name: Creusot Proofs (official image)
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/creusot-rs/creusot:latest
+      image: ghcr.io/facet-rs/creusot-ci:latest
     steps:
       - uses: actions/checkout@v6
 

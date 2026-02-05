@@ -1,0 +1,22 @@
+# Build stage: use Nix to get our tools
+FROM nixos/nix:latest AS tools
+
+# Install the packages we need into a separate profile to avoid conflicts
+RUN nix-channel --update && \
+    nix-env -p /nix/var/nix/profiles/tools -iA nixpkgs.nodejs_22 nixpkgs.git nixpkgs.curl nixpkgs.cacert
+
+# ---- Final stage ----
+FROM ghcr.io/creusot-rs/creusot:latest
+
+# Copy the entire nix store from the tools stage
+COPY --from=tools /nix/store /nix/store
+COPY --from=tools /nix/var/nix/profiles/tools /nix/var/nix/profiles/tools
+
+# Add the tools to PATH
+ENV PATH="/nix/var/nix/profiles/tools/bin:$PATH"
+ENV SSL_CERT_FILE="/nix/var/nix/profiles/tools/etc/ssl/certs/ca-bundle.crt"
+
+# Sanity check
+RUN node --version && npm --version && git --version && curl --version
+
+WORKDIR /work

@@ -10,6 +10,7 @@ This folder contains standalone Verus proofs for core runtime invariants.
 - Additional lemmas prove:
   - no-overlap clear is identity
   - full-cover clear is empty
+  - two clears compose as set-difference and commute
 
 Run:
 

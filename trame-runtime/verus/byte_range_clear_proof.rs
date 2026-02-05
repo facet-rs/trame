@@ -123,6 +123,36 @@ pub proof fn lemma_full_cover_clear_is_empty(r: Range, clear: Range)
     }
 }
 
+pub proof fn lemma_two_clears_compose_and_commute(r: Range, clear1: Range, clear2: Range)
+    requires
+        valid_range(r),
+        valid_range(clear1),
+        valid_range(clear2),
+    ensures
+        forall|x: int| #![auto]
+            (clear_output_contains(r, clear1, x) && !in_range(clear2, x))
+                == (in_range(r, x) && !in_range(clear1, x) && !in_range(clear2, x)),
+        forall|x: int| #![auto]
+            (clear_output_contains(r, clear1, x) && !in_range(clear2, x))
+                == (clear_output_contains(r, clear2, x) && !in_range(clear1, x)),
+{
+    lemma_clear_output_matches_set_difference(r, clear1);
+    lemma_clear_output_matches_set_difference(r, clear2);
+
+    assert forall|x: int| #![auto]
+        (clear_output_contains(r, clear1, x) && !in_range(clear2, x))
+            == (in_range(r, x) && !in_range(clear1, x) && !in_range(clear2, x)) by {
+        assert(clear_output_contains(r, clear1, x) == (in_range(r, x) && !in_range(clear1, x)));
+    }
+
+    assert forall|x: int| #![auto]
+        (clear_output_contains(r, clear1, x) && !in_range(clear2, x))
+            == (clear_output_contains(r, clear2, x) && !in_range(clear1, x)) by {
+        assert(clear_output_contains(r, clear1, x) == (in_range(r, x) && !in_range(clear1, x)));
+        assert(clear_output_contains(r, clear2, x) == (in_range(r, x) && !in_range(clear2, x)));
+    }
+}
+
 fn main() {}
 
 }

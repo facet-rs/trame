@@ -17,6 +17,7 @@ RUN apt-get update && \
         automake \
         m4 \
         unzip \
+        rsync \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Rust with the specific nightly required by Creusot
@@ -30,9 +31,6 @@ WORKDIR /creusot
 RUN git clone https://github.com/creusot-rs/creusot.git . && \
     git checkout 8417c628d848dd967a42b917acd879b77a94f636
 
-# Additional dependencies discovered during build
-RUN apt-get update && apt-get install -y --no-install-recommends rsync && rm -rf /var/lib/apt/lists/*
-
 # Build and install Creusot
 # Set in-creusot-ci=true to skip why3-ide (avoids GTK dependencies)
 RUN --mount=type=cache,target=/root/.cargo/registry \
@@ -43,7 +41,8 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
     rm -rf /root/.opam/* && \
     opam init --disable-sandboxing --bare --yes && \
     opam --cli=2.1 var --global in-creusot-ci=true && \
-    ./INSTALL
+    ./INSTALL && \
+    opam clean --all-switches --download-cache --logs --repo-cache
 
 # ---- Final stage ----
 FROM debian:13
@@ -59,26 +58,20 @@ RUN apt-get update && \
         libgmp10 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Rust with the specific nightly required by Creusot
+# Install minimal Rust (just cargo to drive builds - creusot-rustc has its own toolchain)
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-    sh -s -- -y --default-toolchain nightly-2026-01-29 --profile minimal \
-        --component rustfmt --component rustc-dev --component llvm-tools
+    sh -s -- -y --default-toolchain stable --profile minimal
 ENV PATH="/root/.cargo/bin:$PATH"
 
 # Copy Creusot installation from builder
-# cargo-creusot is installed to ~/.cargo/bin
 COPY --from=builder /root/.cargo/bin/cargo-creusot /root/.cargo/bin/
-
-# Copy Creusot data directory (toolchains with creusot-rustc, why3, why3find, provers)
 COPY --from=builder /root/.local/share/creusot /root/.local/share/creusot
-
-# Copy Creusot config directory (why3.conf)
 COPY --from=builder /root/.config/creusot /root/.config/creusot
 
-# Add Creusot bin and toolchain to PATH (for why3, why3find, provers, creusot-rustc)
+# Add Creusot bin and toolchain to PATH
 ENV PATH="/root/.local/share/creusot/bin:/root/.local/share/creusot/toolchains/nightly-2026-01-29/bin:$PATH"
 
-# Minimal workspace so cargo-creusot can run in the image
+# Minimal workspace for sanity check
 WORKDIR /work
 RUN mkdir -p /work/src && \
     printf '[package]\nname = "empty"\nversion = "0.1.0"\nedition = "2021"\n' > /work/Cargo.toml && \

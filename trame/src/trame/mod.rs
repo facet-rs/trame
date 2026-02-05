@@ -147,6 +147,7 @@ fn vlayout_from_layout(layout: std::alloc::Layout) -> trame_runtime::VLayout {
 
 #[cfg(creusot)]
 #[trusted]
+#[ensures(layout == Some(result))]
 fn layout_expect(layout: Option<std::alloc::Layout>) -> std::alloc::Layout {
     layout.expect("IShape requires sized types")
 }

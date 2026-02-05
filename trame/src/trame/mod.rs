@@ -12,7 +12,7 @@ pub use heap_value::HeapValue;
 use crate::runtime::LiveRuntime;
 use crate::{
     Op, PathSegment, Source,
-    node::{FieldSlot, FieldStates, Node, NodeKind, NodeState},
+    node::{FieldSlot, Node, NodeKind, NodeState},
     ops::SourceKind,
     runtime::{IArena, IField, IHeap, IPtr, IRuntime, IShape, IStructType, Idx},
 };

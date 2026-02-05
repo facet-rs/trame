@@ -10,4 +10,4 @@ publish = false
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(creusot)'] }
 
 [dependencies]
-creusot-std = { git = "https://github.com/creusot-rs/creusot", package = "creusot-std" }
+creusot-std.workspace = true

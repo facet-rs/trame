@@ -153,6 +153,4 @@ pub proof fn lemma_two_clears_compose_and_commute(r: Range, clear1: Range, clear
     }
 }
 
-fn main() {}
-
 }

@@ -133,7 +133,5 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Run Verus proof files
-        run: |
-          verus trame-runtime/verus/byte_range_clear_proof.rs
-          verus trame-runtime/verus/tree_init_recursive_proof.rs
+      - name: Run Verus proofs
+        run: cargo verus verify --workspace --exclude trame-fuzz --exclude trame-proptest

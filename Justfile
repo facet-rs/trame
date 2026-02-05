@@ -26,8 +26,7 @@ prove *args:
     cargo creusot prove {{ args }} -- -p trame-runtime -p trame
 
 verus:
-    verus trame-runtime/verus/byte_range_clear_proof.rs
-    verus trame-runtime/verus/tree_init_recursive_proof.rs
+    cargo verus verify --workspace --exclude trame-fuzz --exclude trame-proptest
 
 # Run fuzzing with afl
 fuzz:

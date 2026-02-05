@@ -121,6 +121,4 @@ pub proof fn lemma_all_init_implies_struct_field_init(
     }
 }
 
-fn main() {}
-
 }

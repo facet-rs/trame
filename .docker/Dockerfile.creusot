@@ -61,15 +61,28 @@ RUN apt-get update && \
 # Install minimal Rust (just cargo to drive builds - creusot-rustc has its own toolchain)
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
     sh -s -- -y --default-toolchain stable --profile minimal
-ENV PATH="/root/.cargo/bin:$PATH"
+ENV PATH="/usr/local/bin:/root/.cargo/bin:$PATH"
+
+# Expose non-proxy cargo/rustc binaries so runtime users do not need a rustup default.
+RUN rustup default stable && \
+    toolchain_bin="$(dirname "$(rustup which cargo)")" && \
+    ln -sf "${toolchain_bin}/cargo" /root/.cargo/bin/cargo && \
+    ln -sf "${toolchain_bin}/rustc" /root/.cargo/bin/rustc && \
+    ln -sf "${toolchain_bin}/cargo" /usr/local/bin/cargo && \
+    ln -sf "${toolchain_bin}/rustc" /usr/local/bin/rustc
 
 # Copy Creusot installation from builder
 COPY --from=builder /root/.cargo/bin/cargo-creusot /root/.cargo/bin/
-COPY --from=builder /root/.local/share/creusot /root/.local/share/creusot
-COPY --from=builder /root/.config/creusot /root/.config/creusot
+COPY --from=builder /root/.local/share/creusot /usr/local/share/creusot
+COPY --from=builder /root/.config/creusot /usr/local/etc/creusot
+RUN mkdir -p /root/.local/share /root/.config && \
+    ln -sfn /usr/local/share/creusot /root/.local/share/creusot && \
+    ln -sfn /usr/local/etc/creusot /root/.config/creusot
 
-# Add Creusot bin and toolchain to PATH
-ENV PATH="/root/.local/share/creusot/bin:/root/.local/share/creusot/toolchains/nightly-2026-01-29/bin:$PATH"
+# Make Creusot discoverable for any runtime HOME/user.
+ENV XDG_DATA_HOME=/usr/local/share
+ENV XDG_CONFIG_HOME=/usr/local/etc
+ENV PATH="/usr/local/bin:/root/.cargo/bin:/usr/local/share/creusot/bin:/usr/local/share/creusot/toolchains/nightly-2026-01-29/bin:$PATH"
 
 # Minimal workspace for sanity check
 WORKDIR /work

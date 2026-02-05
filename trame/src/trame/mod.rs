@@ -152,7 +152,6 @@ fn layout_expect(layout: Option<std::alloc::Layout>) -> std::alloc::Layout {
     layout.expect("IShape requires sized types")
 }
 
-
 #[cfg(creusot)]
 #[trusted]
 #[ensures(result == heap.range_init(ptr, len))]
@@ -308,6 +307,14 @@ where
     }
 
     #[cfg_attr(creusot, requires(self.arena.contains(target_idx)))]
+    #[cfg_attr(creusot, requires(match src.kind {
+        SourceKind::Imm(imm) => {
+            let node = self.arena.get_logic(target_idx);
+            self.heap.range_init(imm.ptr, node.shape.size_logic())
+            && imm.ptr != node.data
+        },
+        _ => true,
+    }))]
     #[cfg_attr(creusot, ensures(match result {
         Ok(()) => {
             let node = self.arena.get_logic(target_idx);
@@ -357,8 +364,6 @@ where
                             if src_shape != shape {
                                 return Err(TrameError::ShapeMismatch);
                             }
-                            #[cfg(creusot)]
-                            assume(snapshot! { self.heap.range_init(src_ptr, size) });
                             unsafe { self.heap.memcpy(dst, src_ptr, size) };
                         }
                         SourceKind::Default => {
@@ -572,6 +577,15 @@ where
             Op::End => self.end_current_node(),
             Op::Set { dst, src } => {
                 let (target, field_idx) = self.resolve_path(dst.segments())?;
+                #[cfg(creusot)]
+                assume(snapshot! { match src.kind {
+                    SourceKind::Imm(imm) => {
+                        let node = self.arena.get_logic(target);
+                        self.heap.range_init(imm.ptr, node.shape.size_logic())
+                        && imm.ptr != node.data
+                    },
+                    _ => true,
+                }});
                 self.apply_set(target, field_idx, src)
             }
         }

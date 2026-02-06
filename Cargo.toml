@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["trame", "trame-runtime", "trame-fuzz", "trame-proptest", "trame-verus"]
+members = ["trame", "trame-runtime", "trame-fuzz", "trame-proptest", "trame-verus", "trame-toy-json"]
 
 [workspace.package]
 edition = "2024"

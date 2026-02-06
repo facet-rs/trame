@@ -1098,7 +1098,7 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
         self.allocs[id as usize] = None;
     }
 
-    unsafe fn memcpy(&mut self, dst: VPtr, src: VPtr, len: usize) {
+    unsafe fn memcpy(&mut self, dst: VPtr, src: VPtr, _src_shape: S, len: usize) {
         if len == 0 {
             return;
         }

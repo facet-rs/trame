@@ -566,7 +566,7 @@ impl IHeap<CShapeView<'_>> for CHeap {
     #[cfg_attr(creusot, ensures(self.range_init(dst, _len)))]
     #[cfg_attr(creusot, ensures(forall<ptr2, shape2> ptr2 != dst ==> (^self).can_drop(ptr2, shape2) == (*self).can_drop(ptr2, shape2)))]
     #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != dst ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
-    unsafe fn memcpy(&mut self, dst: CPtr, src: CPtr, _len: usize) {
+    unsafe fn memcpy(&mut self, dst: CPtr, src: CPtr, _src_shape: CShapeView<'_>, _len: usize) {
         let _ = (dst, src);
     }
 

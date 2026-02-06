@@ -206,13 +206,13 @@ pub trait IHeap<S: IShape> {
     ///
     /// # Safety
     /// The caller must ensure both ranges are in-bounds for their allocations,
-    /// that `src` is fully initialized, `dst` is fully uninitialized, and the
-    /// ranges do not overlap.
+    /// that `src` is fully initialized as `src_shape`, `dst` is fully
+    /// uninitialized, and the ranges do not overlap.
     #[cfg_attr(creusot, requires(self.range_init(src, len)))]
     #[cfg_attr(creusot, ensures(self.range_init(dst, len)))]
     #[cfg_attr(creusot, ensures(forall<ptr2, shape2> ptr2 != dst ==> (^self).can_drop(ptr2, shape2) == (*self).can_drop(ptr2, shape2)))]
     #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != dst ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
-    unsafe fn memcpy(&mut self, dst: Self::Ptr, src: Self::Ptr, len: usize);
+    unsafe fn memcpy(&mut self, dst: Self::Ptr, src: Self::Ptr, src_shape: S, len: usize);
 
     /// Drop the value at `ptr` and mark the range as uninitialized.
     ///

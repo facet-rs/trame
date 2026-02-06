@@ -190,7 +190,13 @@ impl IHeap<&'static Shape> for LHeap {
         unsafe { self.dealloc(ptr, shape) };
     }
 
-    unsafe fn memcpy(&mut self, dst: *mut u8, src: *mut u8, len: usize) {
+    unsafe fn memcpy(
+        &mut self,
+        dst: *mut u8,
+        src: *mut u8,
+        _src_shape: &'static Shape,
+        len: usize,
+    ) {
         if len > 0 {
             // SAFETY: caller guarantees non-overlapping, valid pointers
             unsafe {

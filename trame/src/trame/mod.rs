@@ -499,7 +499,7 @@ where
                 }
                 #[cfg(creusot)]
                 assume(snapshot! { self.heap.range_init(src_ptr, size) });
-                unsafe { self.heap.memcpy(dst, src_ptr, size) };
+                unsafe { self.heap.memcpy(dst, src_ptr, shape, size) };
             }
             SourceKind::Default => {
                 let ok = unsafe { self.heap.default_in_place(dst, shape) };
@@ -552,7 +552,7 @@ where
                 }
                 #[cfg(creusot)]
                 assume(snapshot! { self.heap.range_init(src_ptr, size) });
-                unsafe { self.heap.memcpy(dst, src_ptr, size) };
+                unsafe { self.heap.memcpy(dst, src_ptr, shape, size) };
             }
             SourceKind::Default => {
                 let ok = unsafe { self.heap.default_in_place(dst, shape) };
@@ -667,7 +667,7 @@ where
                 if src_shape != field_shape {
                     return Err(TrameError::ShapeMismatch);
                 }
-                unsafe { self.heap.memcpy(dst, src_ptr, size) };
+                unsafe { self.heap.memcpy(dst, src_ptr, field_shape, size) };
                 self.mark_field_complete(target_idx, field_idx);
                 Ok(())
             }

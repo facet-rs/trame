@@ -8,7 +8,8 @@ use creusot_std::model::DeepModel;
 use creusot_std::prelude::{View, logic, trusted};
 
 use crate::{
-    IArena, IField, IHeap, IPtr, IRuntime, IShape, IShapeExtra, IShapeStore, IStructType, Idx,
+    IArena, IField, IHeap, IPointerType, IPtr, IRuntime, IShape, IShapeExtra, IShapeStore,
+    IStructType, Idx,
 };
 
 /// Logical layout for creusot builds.
@@ -83,6 +84,15 @@ pub struct CShapeDef {
 pub enum CDef {
     Scalar,
     Struct(CStructDef),
+    Pointer(CPointerDef),
+}
+
+/// A smart-pointer definition.
+#[derive(DeepModel, Clone, Copy)]
+pub struct CPointerDef {
+    pub pointee_handle: CShapeHandle,
+    pub constructible_from_pointee: bool,
+    pub known_box: bool,
 }
 
 /// Shape store (bounded).
@@ -207,9 +217,17 @@ pub struct CStructView<'a> {
     pub def: &'a CStructDef,
 }
 
+/// Pointer view.
+#[derive(Clone, Copy)]
+pub struct CPointerView<'a> {
+    pub store: &'a CShapeStore,
+    pub def: &'a CPointerDef,
+}
+
 impl<'a> IShape for CShapeView<'a> {
     type StructType = CStructView<'a>;
     type Field = CFieldView<'a>;
+    type PointerType = CPointerView<'a>;
 
     fn layout(&self) -> Option<std::alloc::Layout> {
         Some(self.store.get_def(self.handle).layout.to_layout())
@@ -227,6 +245,36 @@ impl<'a> IShape for CShapeView<'a> {
             }),
             _ => None,
         }
+    }
+
+    fn is_pointer(&self) -> bool {
+        matches!(self.store.get_def(self.handle).def, CDef::Pointer(_))
+    }
+
+    fn as_pointer(&self) -> Option<Self::PointerType> {
+        match &self.store.get_def(self.handle).def {
+            CDef::Pointer(def) => Some(CPointerView {
+                store: self.store,
+                def,
+            }),
+            _ => None,
+        }
+    }
+}
+
+impl<'a> IPointerType for CPointerView<'a> {
+    type Shape = CShapeView<'a>;
+
+    fn pointee(&self) -> Option<Self::Shape> {
+        Some(self.store.view(self.def.pointee_handle))
+    }
+
+    fn constructible_from_pointee(&self) -> bool {
+        self.def.constructible_from_pointee
+    }
+
+    fn is_known_box(&self) -> bool {
+        self.def.known_box
     }
 }
 
@@ -291,6 +339,17 @@ impl CShapeDef {
         Self {
             layout,
             def: CDef::Struct(CStructDef { fields: field_vec }),
+        }
+    }
+
+    pub const fn pointer_to(pointee: CShapeHandle, constructible: bool, known_box: bool) -> Self {
+        Self {
+            layout: CLayout::new::<usize>(),
+            def: CDef::Pointer(CPointerDef {
+                pointee_handle: pointee,
+                constructible_from_pointee: constructible,
+                known_box,
+            }),
         }
     }
 }
@@ -443,6 +502,10 @@ impl IHeap<CShapeView<'_>> for CHeap {
         let _ = ptr;
     }
 
+    unsafe fn dealloc_moved(&mut self, ptr: CPtr, shape: CShapeView<'_>) {
+        let _ = (ptr, shape);
+    }
+
     #[trusted]
     #[cfg_attr(creusot, requires(self.range_init(src, _len)))]
     #[cfg_attr(creusot, ensures(self.range_init(dst, _len)))]
@@ -478,10 +541,23 @@ impl IHeap<CShapeView<'_>> for CHeap {
         true
     }
 
+    unsafe fn pointer_from_pointee(
+        &mut self,
+        dst: CPtr,
+        pointer_shape: CShapeView<'_>,
+        src: CPtr,
+        pointee_shape: CShapeView<'_>,
+    ) -> bool {
+        let _ = (dst, src, pointee_shape);
+        pointer_shape
+            .as_pointer()
+            .is_some_and(|p| p.constructible_from_pointee())
+    }
+
     #[logic(open, inline)]
     fn can_drop(&self, ptr: CPtr, shape: CShapeView<'_>) -> bool {
         pearlite! {
-            if shape_is_scalar(shape) {
+            if shape_is_scalar(shape) || shape.is_pointer() {
                 self.range_init(ptr, shape_size(shape))
             } else {
                 self@.init.contains(init_fact(

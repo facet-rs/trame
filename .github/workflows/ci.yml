@@ -157,3 +157,5 @@ jobs:
         run: |
           cargo miri test -p trame box_live_stage_end_builds -- --exact
           cargo miri test -p trame box_live_imm_whole_value -- --exact
+          cargo miri test -p trame toy_json_parser_builds_boxed_value -- --exact
+          cargo miri test -p trame toy_json_parser_accepts_any_field_order -- --exact

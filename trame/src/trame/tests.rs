@@ -695,3 +695,118 @@ fn box_verified_stage_end_builds() {
 
     let _ = trame.build().unwrap();
 }
+
+#[derive(facet::Facet, Debug, PartialEq)]
+struct ToyJsonDoc {
+    boxed: Box<u32>,
+    plain: u32,
+}
+
+fn parse_toy_json_to_doc(input: &str) -> Result<ToyJsonDoc, String> {
+    let src = input.trim();
+    if !(src.starts_with('{') && src.ends_with('}')) {
+        return Err("expected JSON object".to_string());
+    }
+
+    let inner = src[1..src.len() - 1].trim();
+    let mut boxed_value: Option<u32> = None;
+    let mut plain_value: Option<u32> = None;
+
+    if !inner.is_empty() {
+        for pair in inner.split(',') {
+            let mut parts = pair.splitn(2, ':');
+            let raw_key = parts
+                .next()
+                .ok_or_else(|| "missing key".to_string())?
+                .trim();
+            let raw_value = parts
+                .next()
+                .ok_or_else(|| "missing value".to_string())?
+                .trim();
+
+            if !(raw_key.starts_with('"') && raw_key.ends_with('"') && raw_key.len() >= 2) {
+                return Err("key must be a quoted string".to_string());
+            }
+            let key = &raw_key[1..raw_key.len() - 1];
+            let parsed = raw_value
+                .parse::<u32>()
+                .map_err(|_| format!("value for key `{key}` must be a u32"))?;
+
+            match key {
+                "boxed" => boxed_value = Some(parsed),
+                "plain" => plain_value = Some(parsed),
+                _ => return Err(format!("unsupported key `{key}`")),
+            }
+        }
+    }
+
+    let mut trame =
+        Trame::<LRuntime>::alloc::<ToyJsonDoc>().map_err(|e| format!("alloc failed: {e:?}"))?;
+
+    if let Some(value) = boxed_value {
+        trame
+            .apply(Op::Set {
+                dst: Path::from_segments(&[PathSegment::Field(0)]),
+                src: Source::stage(None),
+            })
+            .map_err(|e| format!("stage boxed failed: {e:?}"))?;
+        trame
+            .apply(Op::Set {
+                dst: Path::from_segments(&[PathSegment::Field(0)]),
+                src: Source::stage(None),
+            })
+            .map_err(|e| format!("stage boxed inner failed: {e:?}"))?;
+
+        let mut n = value;
+        trame
+            .apply(Op::Set {
+                dst: Path::empty(),
+                src: Source::from_ref(&mut n),
+            })
+            .map_err(|e| format!("set boxed inner failed: {e:?}"))?;
+        trame
+            .apply(Op::End)
+            .map_err(|e| format!("end boxed failed: {e:?}"))?;
+        trame
+            .apply(Op::End)
+            .map_err(|e| format!("end boxed node failed: {e:?}"))?;
+    }
+
+    if let Some(value) = plain_value {
+        let mut n = value;
+        trame
+            .apply(Op::Set {
+                dst: Path::from_segments(&[PathSegment::Field(1)]),
+                src: Source::from_ref(&mut n),
+            })
+            .map_err(|e| format!("set plain failed: {e:?}"))?;
+    }
+
+    let hv = trame.build().map_err(|e| format!("build failed: {e:?}"))?;
+    hv.materialize::<ToyJsonDoc>()
+        .map_err(|e| format!("materialize failed: {e:?}"))
+}
+
+#[test]
+fn toy_json_parser_builds_boxed_value() {
+    let parsed = parse_toy_json_to_doc(r#"{"boxed":42,"plain":7}"#).unwrap();
+    assert_eq!(
+        parsed,
+        ToyJsonDoc {
+            boxed: Box::new(42),
+            plain: 7,
+        }
+    );
+}
+
+#[test]
+fn toy_json_parser_accepts_any_field_order() {
+    let parsed = parse_toy_json_to_doc(r#"{"plain":9,"boxed":5}"#).unwrap();
+    assert_eq!(
+        parsed,
+        ToyJsonDoc {
+            boxed: Box::new(5),
+            plain: 9,
+        }
+    );
+}

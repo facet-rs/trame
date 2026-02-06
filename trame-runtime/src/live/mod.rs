@@ -216,11 +216,14 @@ impl IHeap<&'static Shape> for LHeap {
         dst: *mut u8,
         pointer_shape: &'static Shape,
         src: *mut u8,
-        _pointee_shape: &'static Shape,
+        pointee_shape: &'static Shape,
     ) -> bool {
         let Def::Pointer(pointer_def) = pointer_shape.def else {
             return false;
         };
+        if pointer_def.pointee() != Some(pointee_shape) {
+            return false;
+        }
         let Some(new_into_fn) = pointer_def.vtable.new_into_fn else {
             return false;
         };

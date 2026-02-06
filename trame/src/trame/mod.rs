@@ -490,7 +490,10 @@ where
                         return Err(TrameError::UnsupportedSource);
                     }
                     let pointee = pointer.pointee().ok_or(TrameError::NotAStruct)?;
-                    let layout = layout_expect(pointee.layout());
+                    let layout = match pointee.layout() {
+                        Some(layout) => layout,
+                        None => return Err(TrameError::UnsupportedSource),
+                    };
                     (pointee, target_data, layout.size())
                 } else {
                     #[cfg(creusot)]

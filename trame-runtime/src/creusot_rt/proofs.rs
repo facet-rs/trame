@@ -16,11 +16,11 @@ pub fn can_drop_matches_init(store: &CShapeStore, handle: CShapeHandle, heap: CH
             heap.can_drop(ptr, shape) == heap.range_init(ptr, shape_size(shape))
         } else if shape_is_pointer(shape) {
             heap.can_drop(ptr, shape)
-                ==> heap@.init.contains(init_fact(
-                        ptr.alloc_id,
-                        ptr.offset as usize,
-                        shape.handle
-                    ))
+                == heap@.init.contains(init_fact(
+                    ptr.alloc_id,
+                    ptr.offset as usize,
+                    shape.handle
+                ))
         } else {
             heap.can_drop(ptr, shape)
                 == heap@.init.contains(init_fact(

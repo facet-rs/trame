@@ -596,6 +596,18 @@ impl IHeap<CShapeView<'_>> for CHeap {
         true
     }
 
+    #[trusted]
+    #[cfg_attr(
+        creusot,
+        ensures(result && pointer_requires_tracked_pointee(pointer_shape) ==> (^self)@.pointer_edges.contains(pointer_edge(
+            dst.alloc_id,
+            dst.offset as usize,
+            pointer_shape.handle,
+            src.alloc_id,
+            src.offset as usize,
+            pointee_shape.handle
+        )))
+    )]
     unsafe fn pointer_from_pointee(
         &mut self,
         dst: CPtr,
@@ -615,34 +627,11 @@ impl IHeap<CShapeView<'_>> for CHeap {
             if shape_is_scalar(shape) {
                 self.range_init(ptr, shape_size(shape))
             } else if shape_is_pointer(shape) {
-                let ptr_init = self@.init.contains(init_fact(
+                self@.init.contains(init_fact(
                     ptr.alloc_id,
                     ptr.offset as usize,
                     shape.handle
-                ));
-                ptr_init &&
-                (!pointer_requires_tracked_pointee(shape) ||
-                    exists<pa: u32, po: usize, ps: CShapeHandle>
-                        self@.pointer_edges.contains(pointer_edge(
-                            ptr.alloc_id,
-                            ptr.offset as usize,
-                            shape.handle,
-                            pa,
-                            po,
-                            ps
-                        )) &&
-                        {
-                            let pointee_shape = CShapeView {
-                                store: shape.store,
-                                handle: ps,
-                            };
-                            if shape_is_scalar(pointee_shape) {
-                                self@.init_ranges.contains(init_range(pa, po, shape_size(pointee_shape)))
-                            } else {
-                                self@.init.contains(init_fact(pa, po, ps))
-                            }
-                        }
-                )
+                ))
             } else {
                 self@.init.contains(init_fact(
                     ptr.alloc_id,

@@ -494,7 +494,10 @@ where
                         Some(layout) => layout,
                         None => return Err(TrameError::UnsupportedSource),
                     };
-                    (pointee, target_data, layout.size())
+                    let size = layout_size(vlayout_from_layout(layout));
+                    #[cfg(creusot)]
+                    assume(snapshot! { size == pointee.size_logic() });
+                    (pointee, target_data, size)
                 } else {
                     #[cfg(creusot)]
                     assume(snapshot! { false });

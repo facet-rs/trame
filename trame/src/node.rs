@@ -31,8 +31,28 @@ pub struct Node<H: IHeap<S>, S: IShape> {
 }
 
 /// Node-level bit flags.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub(crate) struct NodeFlags(u8);
+#[derive(Debug, Clone, Copy, Eq)]
+pub(crate) struct NodeFlags(pub(crate) u8);
+
+#[cfg(creusot)]
+impl DeepModel for NodeFlags {
+    type DeepModelTy = NodeFlags;
+
+    #[logic(open, inline)]
+    fn deep_model(self) -> Self::DeepModelTy {
+        self
+    }
+}
+
+impl PartialEq for NodeFlags {
+    #[cfg_attr(
+        creusot,
+        ensures(result == (self.deep_model() == other.deep_model()))
+    )]
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
 
 impl NodeFlags {
     const OWNS_ALLOCATION: u8 = 1 << 0;

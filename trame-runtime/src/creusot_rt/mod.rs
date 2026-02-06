@@ -193,6 +193,19 @@ pub fn shape_is_scalar(shape: CShapeView<'_>) -> bool {
         match shape.store.shapes[shape.handle.0 as usize].def {
             CDef::Scalar => true,
             CDef::Struct(_) => false,
+            CDef::Pointer(_) => false,
+        }
+    }
+}
+
+#[cfg(creusot)]
+#[logic(open, inline)]
+pub fn shape_is_pointer(shape: CShapeView<'_>) -> bool {
+    pearlite! {
+        match shape.store.shapes[shape.handle.0 as usize].def {
+            CDef::Scalar => false,
+            CDef::Struct(_) => false,
+            CDef::Pointer(_) => true,
         }
     }
 }
@@ -444,10 +457,21 @@ pub struct InitRange {
     pub len: usize,
 }
 
+#[derive(DeepModel, Clone, Copy)]
+pub struct PointerEdge {
+    pub ptr_alloc: u32,
+    pub ptr_offset: usize,
+    pub ptr_shape: CShapeHandle,
+    pub pointee_alloc: u32,
+    pub pointee_offset: usize,
+    pub pointee_shape: CShapeHandle,
+}
+
 pub struct HeapModel {
     pub live: FSet<u32>,
     pub init: FSet<InitFact>,
     pub init_ranges: FSet<InitRange>,
+    pub pointer_edges: FSet<PointerEdge>,
 }
 
 pub struct CHeap {
@@ -484,6 +508,37 @@ pub fn init_fact(alloc: u32, offset: usize, shape: CShapeHandle) -> InitFact {
 #[logic]
 pub fn init_range(alloc: u32, start: usize, len: usize) -> InitRange {
     InitRange { alloc, start, len }
+}
+
+#[cfg(creusot)]
+#[logic]
+pub fn pointer_edge(
+    ptr_alloc: u32,
+    ptr_offset: usize,
+    ptr_shape: CShapeHandle,
+    pointee_alloc: u32,
+    pointee_offset: usize,
+    pointee_shape: CShapeHandle,
+) -> PointerEdge {
+    PointerEdge {
+        ptr_alloc,
+        ptr_offset,
+        ptr_shape,
+        pointee_alloc,
+        pointee_offset,
+        pointee_shape,
+    }
+}
+
+#[cfg(creusot)]
+#[logic(open, inline)]
+pub fn pointer_requires_tracked_pointee(shape: CShapeView<'_>) -> bool {
+    pearlite! {
+        match shape.store.shapes[shape.handle.0 as usize].def {
+            CDef::Pointer(def) => def.known_box && def.constructible_from_pointee,
+            _ => false,
+        }
+    }
 }
 
 impl IHeap<CShapeView<'_>> for CHeap {
@@ -557,8 +612,37 @@ impl IHeap<CShapeView<'_>> for CHeap {
     #[logic(open, inline)]
     fn can_drop(&self, ptr: CPtr, shape: CShapeView<'_>) -> bool {
         pearlite! {
-            if shape_is_scalar(shape) || shape.is_pointer() {
+            if shape_is_scalar(shape) {
                 self.range_init(ptr, shape_size(shape))
+            } else if shape_is_pointer(shape) {
+                let ptr_init = self@.init.contains(init_fact(
+                    ptr.alloc_id,
+                    ptr.offset as usize,
+                    shape.handle
+                ));
+                ptr_init &&
+                (!pointer_requires_tracked_pointee(shape) ||
+                    exists<pa: u32, po: usize, ps: CShapeHandle>
+                        self@.pointer_edges.contains(pointer_edge(
+                            ptr.alloc_id,
+                            ptr.offset as usize,
+                            shape.handle,
+                            pa,
+                            po,
+                            ps
+                        )) &&
+                        {
+                            let pointee_shape = CShapeView {
+                                store: shape.store,
+                                handle: ps,
+                            };
+                            if shape_is_scalar(pointee_shape) {
+                                self@.init_ranges.contains(init_range(pa, po, shape_size(pointee_shape)))
+                            } else {
+                                self@.init.contains(init_fact(pa, po, ps))
+                            }
+                        }
+                )
             } else {
                 self@.init.contains(init_fact(
                     ptr.alloc_id,

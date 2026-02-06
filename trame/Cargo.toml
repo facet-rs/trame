@@ -33,6 +33,3 @@ workspace = true
 
 [target.'cfg(creusot)'.dependencies]
 creusot-std.workspace = true
-
-[dev-dependencies]
-facet.workspace = true

@@ -308,7 +308,7 @@ where
         Ok(self.current)
     }
 
-    #[cfg_attr(creusot, trusted)]
+    #[cfg_attr(creusot, requires(self.arena.contains(target_idx)))]
     fn set_scalar_initialized(&mut self, target_idx: NodeIdx<R>, initialized: bool) {
         let node = self.arena.get_mut(target_idx);
         if let NodeKind::Scalar {
@@ -319,7 +319,7 @@ where
         }
     }
 
-    #[cfg_attr(creusot, trusted)]
+    #[cfg_attr(creusot, requires(self.arena.contains(target_idx)))]
     fn set_pointer_initialized(&mut self, target_idx: NodeIdx<R>, initialized: bool) {
         let node = self.arena.get_mut(target_idx);
         if let NodeKind::Pointer {
@@ -330,14 +330,21 @@ where
         }
     }
 
-    #[cfg_attr(creusot, trusted)]
+    #[cfg_attr(creusot, requires(self.arena.contains(target_idx)))]
     fn clear_pointer_child(&mut self, target_idx: NodeIdx<R>) {
         if let NodeKind::Pointer { child, .. } = &mut self.arena.get_mut(target_idx).kind {
             *child = None;
         }
     }
 
-    #[cfg_attr(creusot, trusted)]
+    #[cfg_attr(creusot, requires(self.arena.contains(target_idx)))]
+    #[cfg_attr(
+        creusot,
+        requires(match self.arena.get_logic(target_idx).kind {
+            NodeKind::Struct { fields } => field_idx@ < fields.len_logic(),
+            _ => true,
+        })
+    )]
     fn mark_field_not_started(&mut self, target_idx: NodeIdx<R>, field_idx: usize) {
         match &mut self.arena.get_mut(target_idx).kind {
             NodeKind::Struct { fields } => fields.mark_not_started(field_idx),
@@ -346,7 +353,14 @@ where
         }
     }
 
-    #[cfg_attr(creusot, trusted)]
+    #[cfg_attr(creusot, requires(self.arena.contains(target_idx)))]
+    #[cfg_attr(
+        creusot,
+        requires(match self.arena.get_logic(target_idx).kind {
+            NodeKind::Struct { fields } => field_idx@ < fields.len_logic(),
+            _ => true,
+        })
+    )]
     fn mark_field_complete(&mut self, target_idx: NodeIdx<R>, field_idx: usize) {
         match &mut self.arena.get_mut(target_idx).kind {
             NodeKind::Struct { fields } => fields.mark_complete(field_idx),

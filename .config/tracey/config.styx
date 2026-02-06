@@ -4,7 +4,7 @@ specs (
     {
         name trame
         prefix t
-        include (docs/**/*.md)
+        include (docs/content/**/*.md)
         impls (
             {
                 name rust

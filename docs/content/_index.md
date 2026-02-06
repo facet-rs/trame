@@ -8,7 +8,7 @@ trame is a library for safe partial construction of Rust values using facet refl
 ## Quick Links
 
 - [Specification](/spec/) - Full specification document
-- [GitHub](https://github.com/bearcove/trame)
+- [GitHub](https://github.com/facet-rs/trame)
 
 ## Overview
 

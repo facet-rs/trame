@@ -1,7 +1,9 @@
 //! Live implementations of all of trame's runtime traits: no verification involved, real memory
 //! allocations, etc.
 
-use crate::{IArena, IField, IHeap, IPointerType, IRuntime, IShape, IShapeStore, IStructType, Idx};
+use crate::{
+    CopyDesc, IArena, IField, IHeap, IPointerType, IRuntime, IShape, IShapeStore, IStructType, Idx,
+};
 use facet_core::{
     Def, Field, KnownPointer, PointerDef, PtrMut, PtrUninit, Shape, StructType, Type, UserType,
 };
@@ -190,7 +192,8 @@ impl IHeap<&'static Shape> for LHeap {
         unsafe { self.dealloc(ptr, shape) };
     }
 
-    unsafe fn memcpy(&mut self, dst: *mut u8, src: *mut u8, len: usize) {
+    unsafe fn memcpy(&mut self, dst: *mut u8, src: *mut u8, desc: CopyDesc<&'static Shape>) {
+        let len = desc.byte_len();
         if len > 0 {
             // SAFETY: caller guarantees non-overlapping, valid pointers
             unsafe {

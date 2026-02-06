@@ -83,6 +83,10 @@ pub trait IShapeStore: Clone {
 pub trait IShapeExtra: DeepModel {
     #[logic]
     fn size_logic(self) -> usize;
+
+    #[logic(law)]
+    #[ensures(self.deep_model() == other.deep_model() ==> self == other)]
+    fn extensionality(self, other: Self);
 }
 
 #[cfg(creusot)]
@@ -91,6 +95,11 @@ impl<T: DeepModel> IShapeExtra for T {
     fn size_logic(self) -> usize {
         dead
     }
+
+    #[trusted]
+    #[logic(law)]
+    #[ensures(self.deep_model() == other.deep_model() ==> self == other)]
+    fn extensionality(self, other: Self) {}
 }
 
 #[cfg(not(creusot))]
@@ -166,6 +175,9 @@ pub trait IHeap<S: IShape> {
     /// # Safety
     /// The caller must ensure `shape` is valid for allocation and that any
     /// constraints required by the heap implementation are satisfied.
+    #[cfg_attr(creusot, ensures((^self).is_alloc(result, shape)))]
+    #[cfg_attr(creusot, ensures(forall<p, s> self.is_alloc(p, s) ==> (^self).is_alloc(p, s) && p != result))]
+    #[cfg_attr(creusot, ensures(forall<p, s> self.is_init(p, s) ==> (^self).is_init(p, s) && p != result))]
     unsafe fn alloc(&mut self, shape: S) -> Self::Ptr;
 
     /// Deallocate a region.
@@ -182,9 +194,10 @@ pub trait IHeap<S: IShape> {
     /// The caller must ensure both ranges are in-bounds for their allocations,
     /// that `src` is fully initialized, `dst` is fully uninitialized, and the
     /// ranges do not overlap.
-    #[cfg_attr(creusot, requires(self.range_init(src, len)))]
-    #[cfg_attr(creusot, ensures(self.range_init(dst, len)))]
-    #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != dst ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
+    #[cfg_attr(creusot, requires(exists<shape> self.is_init(src, shape) && shape.size_logic() == len && self.is_alloc(dst, shape)))]
+    #[cfg_attr(creusot, ensures(forall<shape> self.is_init(dst, shape) && shape.size_logic() == len ==> (^self).is_init(dst, shape)))]
+    #[cfg_attr(creusot, ensures(forall<p, s> p != dst && (*self).is_alloc(p, s) ==> (^self).is_alloc(p, s)))]
+    #[cfg_attr(creusot, ensures(forall<p, s> p != dst && (*self).is_init(p, s) ==> (^self).is_init(p, s)))]
     unsafe fn memcpy(&mut self, dst: Self::Ptr, src: Self::Ptr, len: usize);
 
     /// Drop the value at `ptr` and mark the range as uninitialized.
@@ -192,17 +205,11 @@ pub trait IHeap<S: IShape> {
     /// # Safety
     /// The caller must ensure `ptr` points to a value of type `shape`, the
     /// value is fully initialized, and the allocation is still live.
-    #[cfg_attr(creusot, requires(self.range_init(ptr, shape.size_logic())))]
-    #[cfg_attr(creusot, ensures(!(^self).range_init(ptr, shape.size_logic())))]
-    #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != ptr ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
+    #[cfg_attr(creusot, requires(self.is_init(ptr, shape)))]
+    #[cfg_attr(creusot, ensures((^self).is_alloc(ptr, shape)))]
+    #[cfg_attr(creusot, ensures(forall<p, s> p != ptr ==> (*self).is_alloc(p, s) == (^self).is_alloc(p, s)))]
+    #[cfg_attr(creusot, ensures(forall<p, s> p != ptr ==> (*self).is_init(p, s) == (^self).is_init(p, s)))]
     unsafe fn drop_in_place(&mut self, ptr: Self::Ptr, shape: S);
-
-    /// Creusot-only predicate describing when a byte range is initialized.
-    ///
-    /// The range is interpreted as the `len` bytes starting at `ptr`.
-    #[cfg(creusot)]
-    #[logic]
-    fn range_init(&self, ptr: Self::Ptr, len: usize) -> bool;
 
     /// Default-initialize the value at `ptr` and mark the range as initialized.
     ///
@@ -211,10 +218,22 @@ pub trait IHeap<S: IShape> {
     /// # Safety
     /// The caller must ensure the destination range is uninitialized, in-bounds,
     /// and corresponds to `shape`.
-    #[cfg_attr(creusot, ensures(result ==> self.range_init(ptr, shape.size_logic())))]
-    #[cfg_attr(creusot, ensures(!result ==> (^self).range_init(ptr, shape.size_logic()) == (*self).range_init(ptr, shape.size_logic())))]
-    #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != ptr ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
+    #[cfg_attr(creusot, requires(self.is_alloc(ptr, shape)))]
+    #[cfg_attr(creusot, ensures(result ==> (^self).is_init(ptr, shape)))]
+    #[cfg_attr(creusot, ensures(!result ==> (^self).is_alloc(ptr, shape)))]
+    #[cfg_attr(creusot, ensures(forall<p, s> p != ptr ==> (*self).is_alloc(p, s) == (^self).is_alloc(p, s)))]
+    #[cfg_attr(creusot, ensures(forall<p, s> p != ptr ==> (*self).is_init(p, s) == (^self).is_init(p, s)))]
     unsafe fn default_in_place(&mut self, ptr: Self::Ptr, shape: S) -> bool;
+
+    /// The byte range has been allocated for a given shape, but still uninitialized.
+    #[cfg(creusot)]
+    #[logic]
+    fn is_alloc(&self, ptr: Self::Ptr, shape: S) -> bool;
+
+    /// The byte range has been initialized for a given shape.
+    #[cfg(creusot)]
+    #[logic]
+    fn is_init(&self, ptr: Self::Ptr, shape: S) -> bool;
 }
 
 /// Pointer type

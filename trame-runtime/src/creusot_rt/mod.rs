@@ -437,6 +437,9 @@ impl IHeap<CShapeView<'_>> for CHeap {
     type Ptr = CPtr;
 
     #[trusted]
+    #[cfg_attr(creusot, ensures((^self).is_alloc(result, shape)))]
+    #[cfg_attr(creusot, ensures(forall<p, s> self.is_alloc(p, s) ==> (^self).is_alloc(p, s) && p != result))]
+    #[cfg_attr(creusot, ensures(forall<p, s> self.is_init(p, s) ==> (^self).is_init(p, s) && p != result))]
     unsafe fn alloc(&mut self, shape: CShapeView<'_>) -> CPtr {
         let layout = shape.layout().expect("IShape requires sized types");
         let id = self.next_id;
@@ -450,39 +453,42 @@ impl IHeap<CShapeView<'_>> for CHeap {
     }
 
     #[trusted]
-    #[cfg_attr(creusot, requires(self.range_init(src, _len)))]
-    #[cfg_attr(creusot, ensures(self.range_init(dst, _len)))]
-    #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != dst ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
-    unsafe fn memcpy(&mut self, dst: CPtr, src: CPtr, _len: usize) {
+    #[cfg_attr(creusot, requires(exists<shape> self.is_init(src, shape) && shape.size_logic() == len && self.is_alloc(dst, shape)))]
+    #[cfg_attr(creusot, ensures(forall<shape> self.is_init(src, shape) && shape.size_logic() == len ==> (^self).is_init(dst, shape)))]
+    #[cfg_attr(creusot, ensures(forall<p, s> p != dst && (*self).is_alloc(p, s) ==> (^self).is_alloc(p, s)))]
+    #[cfg_attr(creusot, ensures(forall<p, s> p != dst && (*self).is_init(p, s) ==> (^self).is_init(p, s)))]
+    unsafe fn memcpy(&mut self, dst: CPtr, src: CPtr, len: usize) {
         let _ = (dst, src);
     }
 
     #[trusted]
-    #[cfg_attr(creusot, requires(self.range_init(ptr, shape.size_logic())))]
-    #[cfg_attr(creusot, ensures(!self.range_init(ptr, shape.size_logic())))]
-    #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != ptr ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
+    #[cfg_attr(creusot, requires(self.is_init(ptr, shape)))]
+    #[cfg_attr(creusot, ensures((^self).is_alloc(ptr, shape)))]
+    #[cfg_attr(creusot, ensures(forall<p, s> p != ptr ==> (*self).is_alloc(p, s) == (^self).is_alloc(p, s)))]
+    #[cfg_attr(creusot, ensures(forall<p, s> p != ptr ==> (*self).is_init(p, s) == (^self).is_init(p, s)))]
     unsafe fn drop_in_place(&mut self, ptr: CPtr, shape: CShapeView<'_>) {
         let _ = (ptr, shape);
     }
 
     #[trusted]
-    #[cfg_attr(creusot, ensures(result ==> self.range_init(ptr, shape.size_logic())))]
-    #[cfg_attr(creusot, ensures(!result ==> (^self).range_init(ptr, shape.size_logic()) == (*self).range_init(ptr, shape.size_logic())))]
-    #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != ptr ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
+    #[cfg_attr(creusot, requires(self.is_alloc(ptr, shape)))]
+    #[cfg_attr(creusot, ensures(result ==> (^self).is_init(ptr, shape)))]
+    #[cfg_attr(creusot, ensures(!result ==> (^self).is_alloc(ptr, shape)))]
+    #[cfg_attr(creusot, ensures(forall<p, s> p != ptr ==> (*self).is_alloc(p, s) == (^self).is_alloc(p, s)))]
+    #[cfg_attr(creusot, ensures(forall<p, s> p != ptr ==> (*self).is_init(p, s) == (^self).is_init(p, s)))]
     unsafe fn default_in_place(&mut self, ptr: CPtr, shape: CShapeView<'_>) -> bool {
         let _ = (ptr, shape);
         true
     }
 
-    #[logic(open, inline)]
-    fn range_init(&self, ptr: CPtr, len: usize) -> bool {
-        pearlite! {
-            self@.init_ranges.contains(init_range(
-                ptr.alloc_id,
-                ptr.offset as usize,
-                len
-            ))
-        }
+    #[logic(opaque)]
+    fn is_alloc(&self, ptr: CPtr, shape: CShapeView<'_>) -> bool {
+        dead
+    }
+
+    #[logic(opaque)]
+    fn is_init(&self, ptr: CPtr, shape: CShapeView<'_>) -> bool {
+        dead
     }
 }
 

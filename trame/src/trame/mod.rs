@@ -99,7 +99,7 @@ where
                 (i == self.root || self.arena.contains(node.parent)) &&
                 match node.kind {
                     NodeKind::Scalar { initialized } =>
-                        initialized == self.heap.range_init(node.data, node.shape.size_logic()),
+                        if initialized { self.heap.is_init(node.data, node.shape) } else { self.heap.is_alloc(node.data, node.shape) },
                     NodeKind::Struct { .. } => true,
                 }
             } && forall<j> i != j && self.arena.contains(j) ==> {
@@ -153,18 +153,7 @@ fn layout_expect(layout: Option<std::alloc::Layout>) -> std::alloc::Layout {
 
 #[cfg(creusot)]
 #[trusted]
-#[ensures(result == heap.range_init(ptr, len))]
-fn heap_range_init<H, S>(heap: &H, ptr: <H as IHeap<S>>::Ptr, len: usize) -> bool
-where
-    H: IHeap<S>,
-    S: IShape,
-{
-    false
-}
-
-#[cfg(creusot)]
-#[trusted]
-#[ensures(result == heap.range_init(ptr, shape.size_logic()))]
+#[ensures(result == heap.is_init(ptr, shape))]
 fn heap_can_drop<H, S>(heap: &H, ptr: <H as IHeap<S>>::Ptr, shape: S) -> bool
 where
     H: IHeap<S>,
@@ -309,7 +298,7 @@ where
     #[cfg_attr(creusot, requires(match src.kind {
         SourceKind::Imm(imm) => {
             let node = self.arena.get_logic(target_idx);
-            self.heap.range_init(imm.ptr, node.shape.size_logic())
+            self.heap.is_init(imm.ptr, imm.shape)
             && imm.ptr != node.data
         },
         _ => true,
@@ -364,6 +353,8 @@ where
                                 return Err(TrameError::ShapeMismatch);
                             }
                             unsafe { self.heap.memcpy(dst, src_ptr, size) };
+                            #[cfg(creusot)]
+                            assume(snapshot! { false });
                         }
                         SourceKind::Default => {
                             let ok = unsafe { self.heap.default_in_place(dst, shape) };
@@ -373,7 +364,6 @@ where
                         }
                         SourceKind::Stage(_) => return Err(TrameError::UnsupportedSource),
                     }
-
                     let node = self.arena.get_mut(target_idx);
                     if let NodeKind::Scalar { initialized } = &mut node.kind {
                         *initialized = true;
@@ -581,7 +571,7 @@ where
                 assume(snapshot! { match src.kind {
                     SourceKind::Imm(imm) => {
                         let node = self.arena.get_logic(target);
-                        self.heap.range_init(imm.ptr, node.shape.size_logic())
+                        self.heap.is_init(imm.ptr, node.shape)
                         && imm.ptr != node.data
                     },
                     _ => true,

@@ -16,7 +16,9 @@ use crate::{
     Op, PathSegment, Source,
     node::{FieldSlot, Node, NodeFlags, NodeKind, NodeState},
     ops::SourceKind,
-    runtime::{IArena, IField, IHeap, IPointerType, IPtr, IRuntime, IShape, IStructType, Idx},
+    runtime::{
+        CopyDesc, IArena, IField, IHeap, IPointerType, IPtr, IRuntime, IShape, IStructType, Idx,
+    },
 };
 use core::marker::PhantomData;
 
@@ -481,6 +483,7 @@ where
     where
         Shape<R>: IShape + PartialEq,
     {
+        #[cfg(creusot)]
         let size = layout_size(vlayout_from_layout(layout_expect(shape.layout())));
         #[cfg(creusot)]
         assume(snapshot! { size == shape.size_logic() });
@@ -499,7 +502,7 @@ where
                 }
                 #[cfg(creusot)]
                 assume(snapshot! { self.heap.range_init(src_ptr, size) });
-                unsafe { self.heap.memcpy(dst, src_ptr, shape, size) };
+                unsafe { self.heap.memcpy(dst, src_ptr, CopyDesc::value(shape)) };
             }
             SourceKind::Default => {
                 let ok = unsafe { self.heap.default_in_place(dst, shape) };
@@ -526,6 +529,7 @@ where
     where
         Shape<R>: IShape + PartialEq,
     {
+        #[cfg(creusot)]
         let size = layout_size(vlayout_from_layout(layout_expect(shape.layout())));
         #[cfg(creusot)]
         assume(snapshot! { size == shape.size_logic() });
@@ -552,7 +556,7 @@ where
                 }
                 #[cfg(creusot)]
                 assume(snapshot! { self.heap.range_init(src_ptr, size) });
-                unsafe { self.heap.memcpy(dst, src_ptr, shape, size) };
+                unsafe { self.heap.memcpy(dst, src_ptr, CopyDesc::value(shape)) };
             }
             SourceKind::Default => {
                 let ok = unsafe { self.heap.default_in_place(dst, shape) };
@@ -617,25 +621,28 @@ where
             return Err(TrameError::UnsupportedSource);
         }
 
-        let (field_shape, dst, size) = if is_pointer_parent {
+        let (field_shape, dst) = if is_pointer_parent {
             let pointer = target_shape.as_pointer().ok_or(TrameError::NotAStruct)?;
             if !pointer.constructible_from_pointee() {
                 return Err(TrameError::UnsupportedSource);
             }
             let pointee = pointer.pointee().ok_or(TrameError::NotAStruct)?;
-            let layout = match pointee.layout() {
-                Some(layout) => layout,
-                None => return Err(TrameError::UnsupportedSource),
-            };
-            let size = layout_size(vlayout_from_layout(layout));
+            if pointee.layout().is_none() {
+                return Err(TrameError::UnsupportedSource);
+            }
             #[cfg(creusot)]
-            assume(snapshot! { size == pointee.size_logic() });
-            (pointee, target_data, size)
+            {
+                let layout = layout_expect(pointee.layout());
+                let size = layout_size(vlayout_from_layout(layout));
+                assume(snapshot! { size == pointee.size_logic() });
+            }
+            (pointee, target_data)
         } else {
             #[cfg(creusot)]
             assume(snapshot! { false });
             let node_ref = self.arena.get(target_idx);
-            Self::field_ptr(node_ref, field_idx)?
+            let (field_shape, dst, _size) = Self::field_ptr(node_ref, field_idx)?;
+            (field_shape, dst)
         };
 
         if let Some(child) = child_idx {
@@ -667,7 +674,7 @@ where
                 if src_shape != field_shape {
                     return Err(TrameError::ShapeMismatch);
                 }
-                unsafe { self.heap.memcpy(dst, src_ptr, field_shape, size) };
+                unsafe { self.heap.memcpy(dst, src_ptr, CopyDesc::value(field_shape)) };
                 self.mark_field_complete(target_idx, field_idx);
                 Ok(())
             }

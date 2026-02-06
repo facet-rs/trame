@@ -12,7 +12,8 @@ mod byte_range;
 use byte_range::{ByteRangeError, ByteRangeTracker, Range};
 
 use crate::{
-    IArena, IField, IHeap, IPointerType, IPtr, IRuntime, IShape, IShapeStore, IStructType, Idx,
+    CopyDesc, IArena, IField, IHeap, IPointerType, IPtr, IRuntime, IShape, IShapeStore,
+    IStructType, Idx,
 };
 
 /// A runtime that verifies all operations
@@ -1098,7 +1099,8 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
         self.allocs[id as usize] = None;
     }
 
-    unsafe fn memcpy(&mut self, dst: VPtr, src: VPtr, _src_shape: S, len: usize) {
+    unsafe fn memcpy(&mut self, dst: VPtr, src: VPtr, desc: CopyDesc<S>) {
+        let len = desc.byte_len();
         if len == 0 {
             return;
         }

@@ -8,8 +8,8 @@ use creusot_std::model::DeepModel;
 use creusot_std::prelude::{View, logic, trusted};
 
 use crate::{
-    IArena, IField, IHeap, IPointerType, IPtr, IRuntime, IShape, IShapeExtra, IShapeStore,
-    IStructType, Idx,
+    CopyDesc, IArena, IField, IHeap, IPointerType, IPtr, IRuntime, IShape, IShapeExtra,
+    IShapeStore, IStructType, Idx,
 };
 
 /// Logical layout for creusot builds.
@@ -562,11 +562,12 @@ impl IHeap<CShapeView<'_>> for CHeap {
     }
 
     #[trusted]
-    #[cfg_attr(creusot, requires(self.range_init(src, _len)))]
-    #[cfg_attr(creusot, ensures(self.range_init(dst, _len)))]
+    #[cfg_attr(creusot, requires(self.range_init(src, desc.byte_len_logic())))]
+    #[cfg_attr(creusot, ensures(self.range_init(dst, desc.byte_len_logic())))]
     #[cfg_attr(creusot, ensures(forall<ptr2, shape2> ptr2 != dst ==> (^self).can_drop(ptr2, shape2) == (*self).can_drop(ptr2, shape2)))]
     #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != dst ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
-    unsafe fn memcpy(&mut self, dst: CPtr, src: CPtr, _src_shape: CShapeView<'_>, _len: usize) {
+    unsafe fn memcpy(&mut self, dst: CPtr, src: CPtr, desc: CopyDesc<CShapeView<'_>>) {
+        let _ = desc;
         let _ = (dst, src);
     }
 

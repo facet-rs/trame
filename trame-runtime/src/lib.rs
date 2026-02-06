@@ -18,7 +18,7 @@ use std::{alloc::Layout, marker::PhantomData};
 use creusot_std::model::DeepModel;
 
 #[cfg(creusot)]
-use creusot_std::macros::{ensures, logic, requires};
+use creusot_std::macros::{ensures, logic, pearlite, requires};
 
 #[cfg(creusot)]
 use creusot_std::prelude::trusted;
@@ -173,6 +173,54 @@ pub trait IField: Copy {
 // Heap
 // ==================================================================
 
+/// Descriptor for typed copy operations.
+#[derive(Clone, Copy, Debug)]
+pub enum CopyDesc<S> {
+    /// Copy one value of this shape.
+    Value(S),
+    /// Copy `count` consecutive elements of this shape.
+    Repeat { elem: S, count: usize },
+}
+
+impl<S> CopyDesc<S> {
+    pub const fn value(shape: S) -> Self {
+        Self::Value(shape)
+    }
+
+    pub const fn repeat(elem: S, count: usize) -> Self {
+        Self::Repeat { elem, count }
+    }
+}
+
+impl<S: IShape> CopyDesc<S> {
+    /// Compute the byte length described by this descriptor.
+    pub fn byte_len(self) -> usize {
+        match self {
+            Self::Value(shape) => shape
+                .layout()
+                .expect("CopyDesc::Value requires a sized shape")
+                .size(),
+            Self::Repeat { elem, count } => elem
+                .layout()
+                .expect("CopyDesc::Repeat requires a sized element shape")
+                .size()
+                .checked_mul(count)
+                .expect("CopyDesc byte length overflow"),
+        }
+    }
+
+    #[cfg(creusot)]
+    #[logic(open, inline)]
+    pub fn byte_len_logic(self) -> usize {
+        pearlite! {
+            match self {
+                CopyDesc::Value(shape) => shape.size_logic(),
+                CopyDesc::Repeat { elem, count } => elem.size_logic() * count,
+            }
+        }
+    }
+}
+
 /// Heap for memory operations, generic over shape type.
 pub trait IHeap<S: IShape> {
     /// Pointer type used by this heap.
@@ -202,17 +250,17 @@ pub trait IHeap<S: IShape> {
     /// The caller must ensure `ptr` points to a live allocation for `shape`.
     unsafe fn dealloc_moved(&mut self, ptr: Self::Ptr, shape: S);
 
-    /// Copy `len` bytes from `src` to `dst`.
+    /// Copy bytes from `src` to `dst` according to a typed descriptor.
     ///
     /// # Safety
     /// The caller must ensure both ranges are in-bounds for their allocations,
-    /// that `src` is fully initialized as `src_shape`, `dst` is fully
-    /// uninitialized, and the ranges do not overlap.
-    #[cfg_attr(creusot, requires(self.range_init(src, len)))]
-    #[cfg_attr(creusot, ensures(self.range_init(dst, len)))]
+    /// that `src` is fully initialized for the descriptor span, `dst` is fully
+    /// uninitialized for that same span, and the ranges do not overlap.
+    #[cfg_attr(creusot, requires(self.range_init(src, desc.byte_len_logic())))]
+    #[cfg_attr(creusot, ensures(self.range_init(dst, desc.byte_len_logic())))]
     #[cfg_attr(creusot, ensures(forall<ptr2, shape2> ptr2 != dst ==> (^self).can_drop(ptr2, shape2) == (*self).can_drop(ptr2, shape2)))]
     #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != dst ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
-    unsafe fn memcpy(&mut self, dst: Self::Ptr, src: Self::Ptr, src_shape: S, len: usize);
+    unsafe fn memcpy(&mut self, dst: Self::Ptr, src: Self::Ptr, desc: CopyDesc<S>);
 
     /// Drop the value at `ptr` and mark the range as uninitialized.
     ///

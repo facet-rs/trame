@@ -109,6 +109,9 @@ pub trait IShape: Copy + PartialEq + IShapeExtra {
     /// The field type used by struct types.
     type Field: IField<Shape = Self>;
 
+    /// The smart-pointer metadata returned by `as_pointer()`.
+    type PointerType: IPointerType<Shape = Self>;
+
     /// Get the layout (size and alignment) of this shape.
     ///
     /// Returns `None` for unsized types.
@@ -119,6 +122,27 @@ pub trait IShape: Copy + PartialEq + IShapeExtra {
 
     /// Get struct-specific information, if this is a struct.
     fn as_struct(&self) -> Option<Self::StructType>;
+
+    /// Check if this is a smart-pointer type.
+    fn is_pointer(&self) -> bool;
+
+    /// Get smart-pointer specific information, if this is a pointer.
+    fn as_pointer(&self) -> Option<Self::PointerType>;
+}
+
+/// Interface for smart pointer type information.
+pub trait IPointerType: Copy {
+    /// The shape type.
+    type Shape: IShape;
+
+    /// Shape of the pointee, if available.
+    fn pointee(&self) -> Option<Self::Shape>;
+
+    /// Whether this pointer can be constructed from a pointee value.
+    fn constructible_from_pointee(&self) -> bool;
+
+    /// Whether this pointer is specifically `Box<T>`.
+    fn is_known_box(&self) -> bool;
 }
 
 /// Interface for struct type information.
@@ -169,6 +193,15 @@ pub trait IHeap<S: IShape> {
     /// `shape`, and that no bytes in the region are still initialized.
     unsafe fn dealloc(&mut self, ptr: Self::Ptr, shape: S);
 
+    /// Deallocate storage that was moved out without running drop.
+    ///
+    /// This is used when ownership has been transferred elsewhere (for example,
+    /// when constructing a smart pointer from a staged pointee allocation).
+    ///
+    /// # Safety
+    /// The caller must ensure `ptr` points to a live allocation for `shape`.
+    unsafe fn dealloc_moved(&mut self, ptr: Self::Ptr, shape: S);
+
     /// Copy `len` bytes from `src` to `dst`.
     ///
     /// # Safety
@@ -217,6 +250,28 @@ pub trait IHeap<S: IShape> {
     #[cfg_attr(creusot, ensures(forall<ptr2, shape2> ptr2 != ptr ==> (^self).can_drop(ptr2, shape2) == (*self).can_drop(ptr2, shape2)))]
     #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != ptr ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
     unsafe fn default_in_place(&mut self, ptr: Self::Ptr, shape: S) -> bool;
+
+    /// Construct a pointer value at `dst` from a pointee value at `src`.
+    ///
+    /// Returns `false` if this pointer type cannot be constructed from a pointee.
+    ///
+    /// # Safety
+    /// The caller must ensure `dst` points to uninitialized storage for `pointer_shape`
+    /// and `src` points to an initialized value of `pointee_shape`.
+    #[cfg_attr(creusot, requires(self.can_drop(src, pointee_shape)))]
+    #[cfg_attr(creusot, ensures(result ==> self.can_drop(dst, pointer_shape)))]
+    #[cfg_attr(creusot, ensures(result ==> self.range_init(dst, pointer_shape.size_logic())))]
+    #[cfg_attr(creusot, ensures(!result ==> (^self).can_drop(dst, pointer_shape) == (*self).can_drop(dst, pointer_shape)))]
+    #[cfg_attr(creusot, ensures(!result ==> (^self).range_init(dst, pointer_shape.size_logic()) == (*self).range_init(dst, pointer_shape.size_logic())))]
+    #[cfg_attr(creusot, ensures(forall<ptr2, shape2> ptr2 != dst ==> (^self).can_drop(ptr2, shape2) == (*self).can_drop(ptr2, shape2)))]
+    #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != dst ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
+    unsafe fn pointer_from_pointee(
+        &mut self,
+        dst: Self::Ptr,
+        pointer_shape: S,
+        src: Self::Ptr,
+        pointee_shape: S,
+    ) -> bool;
 }
 
 /// Pointer type

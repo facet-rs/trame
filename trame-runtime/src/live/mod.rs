@@ -1,8 +1,10 @@
 //! Live implementations of all of trame's runtime traits: no verification involved, real memory
 //! allocations, etc.
 
-use crate::{IArena, IField, IHeap, IRuntime, IShape, IShapeStore, IStructType, Idx};
-use facet_core::{Field, Shape, StructType, Type, UserType};
+use crate::{IArena, IField, IHeap, IPointerType, IRuntime, IShape, IShapeStore, IStructType, Idx};
+use facet_core::{
+    Def, Field, KnownPointer, PointerDef, PtrMut, PtrUninit, Shape, StructType, Type, UserType,
+};
 
 /// A "live" runtime that just peforms raw unsafe Rust operations
 pub struct LRuntime;
@@ -44,6 +46,7 @@ impl IShapeStore for LShapeStore {
 impl IShape for &'static Shape {
     type StructType = &'static StructType;
     type Field = &'static Field;
+    type PointerType = PointerDef;
 
     #[inline]
     fn layout(&self) -> Option<std::alloc::Layout> {
@@ -61,6 +64,38 @@ impl IShape for &'static Shape {
             Type::User(UserType::Struct(st)) => Some(st),
             _ => None,
         }
+    }
+
+    #[inline]
+    fn is_pointer(&self) -> bool {
+        matches!(self.def, Def::Pointer(_))
+    }
+
+    #[inline]
+    fn as_pointer(&self) -> Option<Self::PointerType> {
+        match self.def {
+            Def::Pointer(def) => Some(def),
+            _ => None,
+        }
+    }
+}
+
+impl IPointerType for PointerDef {
+    type Shape = &'static Shape;
+
+    #[inline]
+    fn pointee(&self) -> Option<Self::Shape> {
+        self.pointee()
+    }
+
+    #[inline]
+    fn constructible_from_pointee(&self) -> bool {
+        self.constructible_from_pointee()
+    }
+
+    #[inline]
+    fn is_known_box(&self) -> bool {
+        matches!(self.known, Some(KnownPointer::Box))
     }
 }
 
@@ -151,6 +186,10 @@ impl IHeap<&'static Shape> for LHeap {
         }
     }
 
+    unsafe fn dealloc_moved(&mut self, ptr: *mut u8, shape: &'static Shape) {
+        unsafe { self.dealloc(ptr, shape) };
+    }
+
     unsafe fn memcpy(&mut self, dst: *mut u8, src: *mut u8, len: usize) {
         if len > 0 {
             // SAFETY: caller guarantees non-overlapping, valid pointers
@@ -170,6 +209,28 @@ impl IHeap<&'static Shape> for LHeap {
                 .call_default_in_place(facet_core::PtrMut::new(ptr).into())
                 .is_some()
         }
+    }
+
+    unsafe fn pointer_from_pointee(
+        &mut self,
+        dst: *mut u8,
+        pointer_shape: &'static Shape,
+        src: *mut u8,
+        pointee_shape: &'static Shape,
+    ) -> bool {
+        let Def::Pointer(pointer_def) = pointer_shape.def else {
+            return false;
+        };
+        if pointer_def.pointee() != Some(pointee_shape) {
+            return false;
+        }
+        let Some(new_into_fn) = pointer_def.vtable.new_into_fn else {
+            return false;
+        };
+        unsafe {
+            new_into_fn(PtrUninit::new(dst), PtrMut::new(src));
+        }
+        true
     }
 }
 

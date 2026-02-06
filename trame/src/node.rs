@@ -25,6 +25,53 @@ pub struct Node<H: IHeap<S>, S: IShape> {
 
     /// Parent node index (NOT_STARTED if root).
     pub(crate) parent: Idx<Self>,
+
+    /// Node behavior flags.
+    pub(crate) flags: NodeFlags,
+}
+
+/// Node-level bit flags.
+#[derive(Debug, Clone, Copy, Eq)]
+pub(crate) struct NodeFlags(pub(crate) u8);
+
+#[cfg(creusot)]
+impl DeepModel for NodeFlags {
+    type DeepModelTy = NodeFlags;
+
+    #[logic(open, inline)]
+    fn deep_model(self) -> Self::DeepModelTy {
+        self
+    }
+}
+
+impl PartialEq for NodeFlags {
+    #[cfg_attr(
+        creusot,
+        ensures(result == (self.deep_model() == other.deep_model()))
+    )]
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl NodeFlags {
+    const OWNS_ALLOCATION: u8 = 1 << 0;
+
+    #[inline]
+    pub(crate) const fn empty() -> Self {
+        Self(0)
+    }
+
+    #[inline]
+    pub(crate) const fn with_owns_allocation(mut self) -> Self {
+        self.0 |= Self::OWNS_ALLOCATION;
+        self
+    }
+
+    #[inline]
+    pub(crate) const fn owns_allocation(self) -> bool {
+        (self.0 & Self::OWNS_ALLOCATION) != 0
+    }
 }
 
 /// Completion state for a node.
@@ -66,6 +113,11 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
             NodeKind::Struct {
                 fields: FieldStates::new(st.field_count()),
             }
+        } else if shape.as_pointer().is_some() {
+            NodeKind::Pointer {
+                child: None,
+                initialized: false,
+            }
         } else {
             NodeKind::Scalar { initialized: false }
         }
@@ -79,6 +131,7 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
             kind: Self::kind_for_shape(shape),
             state: NodeState::Staged,
             parent: Idx::not_started(),
+            flags: NodeFlags::empty().with_owns_allocation(),
         }
     }
 }
@@ -92,6 +145,11 @@ pub(crate) enum NodeKind<F> {
     Scalar { initialized: bool },
     /// Struct with tracked fields.
     Struct { fields: FieldStates<F> },
+    /// Smart pointer (`Box<T>`/etc) with one staged pointee child.
+    Pointer {
+        child: Option<Idx<F>>,
+        initialized: bool,
+    },
 }
 
 impl<F> Clone for NodeKind<F> {
@@ -102,6 +160,10 @@ impl<F> Clone for NodeKind<F> {
             },
             Self::Struct { fields } => Self::Struct {
                 fields: fields.clone(),
+            },
+            Self::Pointer { child, initialized } => Self::Pointer {
+                child: *child,
+                initialized: *initialized,
             },
         }
     }

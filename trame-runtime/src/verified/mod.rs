@@ -11,7 +11,9 @@ use creusot_std::model::DeepModel;
 mod byte_range;
 use byte_range::{ByteRangeError, ByteRangeTracker, Range};
 
-use crate::{IArena, IField, IHeap, IPtr, IRuntime, IShape, IShapeStore, IStructType, Idx};
+use crate::{
+    IArena, IField, IHeap, IPointerType, IPtr, IRuntime, IShape, IShapeStore, IStructType, Idx,
+};
 
 /// A runtime that verifies all operations
 pub struct VRuntime;
@@ -152,7 +154,21 @@ pub enum VDef {
     Scalar,
     /// A struct with indexed fields.
     Struct(VStructDef),
+    /// A smart pointer with a known pointee shape.
+    Pointer(VPointerDef),
     // TODO: Enum, Option, Result, List, Map, etc.
+}
+
+/// A synthetic smart-pointer definition for verification.
+#[cfg_attr(creusot, derive(DeepModel))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VPointerDef {
+    /// Handle to pointee shape.
+    pub pointee_handle: VShapeHandle,
+    /// Whether pointer can be created from pointee.
+    pub constructible_from_pointee: bool,
+    /// Whether pointer is known to be `Box<T>`.
+    pub known_box: bool,
 }
 
 /// A store of DynShape definitions.
@@ -268,6 +284,13 @@ pub struct VStructView<'a> {
     pub def: &'a VStructDef,
 }
 
+/// A pointer type view that borrows from a store.
+#[derive(Clone, Copy)]
+pub struct VPointerView<'a> {
+    pub store: &'a VShapeStore,
+    pub def: &'a VPointerDef,
+}
+
 impl<'a> PartialEq for VShapeView<'a, VShapeStore> {
     fn eq(&self, other: &Self) -> bool {
         // Two views are equal if they point to the same store and handle.
@@ -281,6 +304,7 @@ impl<'a> Eq for VShapeView<'a, VShapeStore> {}
 impl<'a> IShape for VShapeView<'a, VShapeStore> {
     type StructType = VStructView<'a>;
     type Field = VFieldView<'a>;
+    type PointerType = VPointerView<'a>;
 
     #[inline]
     fn layout(&self) -> Option<Layout> {
@@ -308,6 +332,41 @@ impl<'a> IShape for VShapeView<'a, VShapeStore> {
             }),
             _ => None,
         }
+    }
+
+    #[inline]
+    fn is_pointer(&self) -> bool {
+        matches!(self.store.get_def(self.handle).def, VDef::Pointer(_))
+    }
+
+    #[inline]
+    fn as_pointer(&self) -> Option<Self::PointerType> {
+        match &self.store.get_def(self.handle).def {
+            VDef::Pointer(def) => Some(VPointerView {
+                store: self.store,
+                def,
+            }),
+            _ => None,
+        }
+    }
+}
+
+impl<'a> IPointerType for VPointerView<'a> {
+    type Shape = VShapeView<'a, VShapeStore>;
+
+    #[inline]
+    fn pointee(&self) -> Option<Self::Shape> {
+        Some(self.store.view(self.def.pointee_handle))
+    }
+
+    #[inline]
+    fn constructible_from_pointee(&self) -> bool {
+        self.def.constructible_from_pointee
+    }
+
+    #[inline]
+    fn is_known_box(&self) -> bool {
+        self.def.known_box
     }
 }
 
@@ -399,6 +458,18 @@ impl VShapeDef {
             def: VDef::Struct(VStructDef {
                 field_count: fields.len() as u8,
                 fields: field_array,
+            }),
+        }
+    }
+
+    /// Create a smart-pointer shape with a pointee.
+    pub fn pointer_to(pointee: VShapeHandle, constructible: bool, known_box: bool) -> Self {
+        Self {
+            layout: VLayout::new::<usize>(),
+            def: VDef::Pointer(VPointerDef {
+                pointee_handle: pointee,
+                constructible_from_pointee: constructible,
+                known_box,
             }),
         }
     }
@@ -1004,6 +1075,29 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
         self.allocs[id as usize] = None;
     }
 
+    unsafe fn dealloc_moved(&mut self, ptr: VPtr, shape: S) {
+        let id = ptr.alloc_id();
+        self.assert_with_history(
+            ptr.is_at_start(),
+            id,
+            "dealloc_moved: pointer not at allocation start",
+        );
+
+        let (_tracker, stored_shape) = self.get_tracker(id);
+        #[cfg(not(creusot))]
+        self.assert_with_history(*stored_shape == shape, id, "dealloc_moved: shape mismatch");
+        #[cfg(creusot)]
+        {
+            if *stored_shape != shape {
+                self.print_history(id);
+                panic!("dealloc_moved: shape mismatch");
+            }
+        }
+
+        self.record_op(id, HeapOpKind::Dealloc, None);
+        self.allocs[id as usize] = None;
+    }
+
     unsafe fn memcpy(&mut self, dst: VPtr, src: VPtr, len: usize) {
         if len == 0 {
             return;
@@ -1140,6 +1234,44 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
         if let Err(e) = tracker.mark_init(ptr.offset, ptr.offset + len as u32) {
             self.print_history(alloc_id);
             panic!("default_in_place: range already initialized: {:?}", e);
+        }
+        true
+    }
+
+    unsafe fn pointer_from_pointee(
+        &mut self,
+        dst: VPtr,
+        pointer_shape: S,
+        _src: VPtr,
+        _pointee_shape: S,
+    ) -> bool {
+        let Some(layout) = pointer_shape.layout() else {
+            return false;
+        };
+        let len = layout.size();
+        if len == 0 {
+            return true;
+        }
+
+        let alloc_id = dst.alloc_id();
+        if dst.offset_bytes() + len > dst.alloc_size() {
+            self.print_history(alloc_id);
+            panic!("pointer_from_pointee: out of bounds");
+        }
+
+        self.record_op(
+            alloc_id,
+            HeapOpKind::Memcpy,
+            Some(Range::new(dst.offset, dst.offset + len as u32)),
+        );
+
+        let (tracker, _) = self.get_tracker_mut(alloc_id);
+        if let Err(e) = tracker.mark_init(dst.offset, dst.offset + len as u32) {
+            self.print_history(alloc_id);
+            panic!(
+                "pointer_from_pointee: destination already initialized: {:?}",
+                e
+            );
         }
         true
     }

@@ -135,3 +135,24 @@ jobs:
 
       - name: Run Verus proofs
         run: cargo verus verify --workspace --exclude trame-fuzz --exclude trame-proptest
+
+  miri-toy-json:
+    name: Miri (Toy JSON Paths)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install nightly Rust with Miri
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Miri
+        run: cargo miri setup
+
+      - name: Run trame-toy-json tests under Miri
+        run: |
+          cargo miri test -p trame-toy-json

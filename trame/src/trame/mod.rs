@@ -893,11 +893,13 @@ where
                         i += 1;
                     }
                 }
-                NodeKind::Pointer { child, .. } => {
-                    if let Some(child_idx) = child {
-                        children.push(*child_idx);
-                    }
+                NodeKind::Pointer {
+                    child: Some(child_idx),
+                    ..
+                } => {
+                    children.push(*child_idx);
                 }
+                NodeKind::Pointer { child: None, .. } => {}
                 _ => {}
             }
 

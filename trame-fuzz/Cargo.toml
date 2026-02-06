@@ -22,7 +22,7 @@ afl.workspace = true
 arbitrary.workspace = true
 facet.workspace = true
 facet-core.workspace = true
-trame = { path = "../trame" }
+trame.workspace = true
 
 [lints]
 workspace = true

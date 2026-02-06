@@ -25,7 +25,7 @@ creusot-canary = []
 
 [dependencies]
 facet-core.workspace = true
-trame-runtime = { path = "../trame-runtime" }
+trame-runtime.workspace = true
 smallvec.workspace = true
 
 [lints]

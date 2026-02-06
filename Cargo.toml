@@ -12,6 +12,10 @@ repository = "https://github.com/facet-rs/trame"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(creusot)'] }
 
 [workspace.dependencies]
+# workspace deps
+trame = { path = "trame", version = "0.1.0" }
+trame-runtime = { path = "trame-runtime", version = "0.1.0" }
+# third-party deps
 creusot-std = { git = "https://github.com/creusot-rs/creusot", package = "creusot-std", version = "0.9.0" }
 facet-core = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43.2" }
 facet = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43.2" }

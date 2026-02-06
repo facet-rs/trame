@@ -309,6 +309,13 @@ where
     }
 
     #[cfg_attr(creusot, requires(self.arena.contains(target_idx)))]
+    #[cfg_attr(
+        creusot,
+        ensures(match (^self).arena.get_logic(target_idx).kind {
+            NodeKind::Scalar { initialized: state } => state == initialized,
+            _ => true,
+        })
+    )]
     fn set_scalar_initialized(&mut self, target_idx: NodeIdx<R>, initialized: bool) {
         let node = self.arena.get_mut(target_idx);
         if let NodeKind::Scalar {
@@ -320,6 +327,13 @@ where
     }
 
     #[cfg_attr(creusot, requires(self.arena.contains(target_idx)))]
+    #[cfg_attr(
+        creusot,
+        ensures(match (^self).arena.get_logic(target_idx).kind {
+            NodeKind::Pointer { initialized: state, .. } => state == initialized,
+            _ => true,
+        })
+    )]
     fn set_pointer_initialized(&mut self, target_idx: NodeIdx<R>, initialized: bool) {
         let node = self.arena.get_mut(target_idx);
         if let NodeKind::Pointer {
@@ -331,6 +345,13 @@ where
     }
 
     #[cfg_attr(creusot, requires(self.arena.contains(target_idx)))]
+    #[cfg_attr(
+        creusot,
+        ensures(match (^self).arena.get_logic(target_idx).kind {
+            NodeKind::Pointer { child, .. } => child == None,
+            _ => true,
+        })
+    )]
     fn clear_pointer_child(&mut self, target_idx: NodeIdx<R>) {
         if let NodeKind::Pointer { child, .. } = &mut self.arena.get_mut(target_idx).kind {
             *child = None;
@@ -342,6 +363,17 @@ where
         creusot,
         requires(match self.arena.get_logic(target_idx).kind {
             NodeKind::Struct { fields } => field_idx@ < fields.len_logic(),
+            _ => true,
+        })
+    )]
+    #[cfg_attr(
+        creusot,
+        ensures(match (^self).arena.get_logic(target_idx).kind {
+            NodeKind::Struct { fields } => match fields.slots@[field_idx@] {
+                FieldSlot::Complete => false,
+                _ => true,
+            },
+            NodeKind::Pointer { initialized, .. } => !initialized,
             _ => true,
         })
     )]
@@ -358,6 +390,17 @@ where
         creusot,
         requires(match self.arena.get_logic(target_idx).kind {
             NodeKind::Struct { fields } => field_idx@ < fields.len_logic(),
+            _ => true,
+        })
+    )]
+    #[cfg_attr(
+        creusot,
+        ensures(match (^self).arena.get_logic(target_idx).kind {
+            NodeKind::Struct { fields } => match fields.slots@[field_idx@] {
+                FieldSlot::Complete => true,
+                _ => false,
+            },
+            NodeKind::Pointer { initialized, .. } => initialized,
             _ => true,
         })
     )]

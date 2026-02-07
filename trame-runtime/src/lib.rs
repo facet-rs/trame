@@ -83,6 +83,10 @@ pub trait IShapeStore: Clone {
 pub trait IShapeExtra: DeepModel {
     #[logic]
     fn size_logic(self) -> usize;
+
+    #[logic(law)]
+    #[ensures(self.deep_model() == other.deep_model() ==> self == other)]
+    fn injective_deep_model(self, other: Self);
 }
 
 #[cfg(creusot)]
@@ -91,6 +95,11 @@ impl<T: DeepModel> IShapeExtra for T {
     fn size_logic(self) -> usize {
         dead
     }
+
+    #[trusted]
+    #[logic(law)]
+    #[ensures(self.deep_model() == other.deep_model() ==> self == other)]
+    fn injective_deep_model(self, other: Self) {}
 }
 
 #[cfg(not(creusot))]
@@ -222,10 +231,24 @@ pub enum CopyDesc<S> {
 }
 
 impl<S> CopyDesc<S> {
+    #[cfg(creusot)]
+    #[ensures(result == Self::Value(shape))]
+    pub fn value(shape: S) -> Self {
+        Self::Value(shape)
+    }
+
+    #[cfg(not(creusot))]
     pub const fn value(shape: S) -> Self {
         Self::Value(shape)
     }
 
+    #[cfg(creusot)]
+    #[ensures(result == Self::Repeat { elem, count })]
+    pub fn repeat(elem: S, count: usize) -> Self {
+        Self::Repeat { elem, count }
+    }
+
+    #[cfg(not(creusot))]
     pub const fn repeat(elem: S, count: usize) -> Self {
         Self::Repeat { elem, count }
     }
@@ -376,21 +399,21 @@ pub trait IHeap<S: IShape> {
 
     /// Creusot predicate for allocated but uninitialized memory. Produced by `alloc`.
     #[cfg(creusot)]
-    #[logic(inline)]
+    #[logic(open, inline, sealed)]
     fn is_uninit(&self, ptr: Self::Ptr, shape: S) -> bool {
         pearlite! { self.is(MemState::Uninit, ptr, shape) }
     }
 
     /// Creusot predicate for initialized memory. Produced by `memcpy` and `default_in_place`.
     #[cfg(creusot)]
-    #[logic(inline)]
+    #[logic(open, inline, sealed)]
     fn is_init(&self, ptr: Self::Ptr, shape: S) -> bool {
         pearlite! { self.is(MemState::Init, ptr, shape) }
     }
 
     /// Extension of `is` for `CopyDesc<S>`.
     #[cfg(creusot)]
-    #[logic]
+    #[logic(open, sealed)]
     fn is_copy(&self, state: MemState, ptr: Self::Ptr, shape: CopyDesc<S>) -> bool {
         pearlite! {
             match shape {
@@ -403,7 +426,7 @@ pub trait IHeap<S: IShape> {
 
     /// Extension of `is_uninit` for `CopyDesc<S>`.
     #[cfg(creusot)]
-    #[logic]
+    #[logic(open, sealed)]
     fn is_uninit_copy(&self, ptr: Self::Ptr, shape: CopyDesc<S>) -> bool {
         pearlite! {
             self.is_copy(MemState::Uninit, ptr, shape)
@@ -412,7 +435,7 @@ pub trait IHeap<S: IShape> {
 
     /// Extension of `is_init` for `CopyDesc<S>`.
     #[cfg(creusot)]
-    #[logic]
+    #[logic(open, sealed)]
     fn is_init_copy(&self, ptr: Self::Ptr, shape: CopyDesc<S>) -> bool {
         pearlite! {
             self.is_copy(MemState::Init, ptr, shape)

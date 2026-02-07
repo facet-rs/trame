@@ -297,140 +297,6 @@ where
         Ok(self.current)
     }
 
-    // todo(creusot): specification inference should work on standard functions
-    // so that we can drop all these specs here. this is absurd
-    #[cfg_attr(creusot,
-        requires(self.arena.contains(target_idx)),
-        requires(
-            match self.arena.get_logic(target_idx).kind {
-                NodeKind::Scalar { .. } => {
-                    let node = self.arena.get_logic(target_idx);
-                    if initialized { self.heap.is_init(node.data, node.shape) }
-                    else { self.heap.is_uninit(node.data, node.shape) }
-                },
-                _ => true,
-            }
-        ),
-        ensures(
-            match (^self).arena.get_logic(target_idx).kind {
-                NodeKind::Scalar { initialized: state } => state == initialized,
-                _ => true,
-            }
-        )
-    )]
-    fn set_scalar_initialized(&mut self, target_idx: NodeIdx<R>, initialized: bool) {
-        let node = self.arena.get_mut(target_idx);
-        if let NodeKind::Scalar {
-            initialized: state, ..
-        } = &mut node.kind
-        {
-            *state = initialized;
-        }
-    }
-
-    #[cfg_attr(creusot,
-        requires(self.arena.contains(target_idx)),
-        requires(
-            match self.arena.get_logic(target_idx).kind {
-                NodeKind::Pointer { .. } => {
-                    let node = self.arena.get_logic(target_idx);
-                    if initialized { self.heap.is_init(node.data, node.shape) }
-                    else { self.heap.is_uninit(node.data, node.shape) }
-                },
-                _ => true,
-            }
-        ),
-        ensures(
-            match (^self).arena.get_logic(target_idx).kind {
-                NodeKind::Pointer { initialized: state, .. } => state == initialized,
-                _ => true,
-            }
-        )
-    )]
-    fn set_pointer_initialized(&mut self, target_idx: NodeIdx<R>, initialized: bool) {
-        let node = self.arena.get_mut(target_idx);
-        if let NodeKind::Pointer {
-            initialized: state, ..
-        } = &mut node.kind
-        {
-            *state = initialized;
-        }
-    }
-
-    #[cfg_attr(creusot,
-        requires(self.arena.contains(target_idx)),
-        ensures(
-            match (^self).arena.get_logic(target_idx).kind {
-                NodeKind::Pointer { child, .. } => child == None,
-                _ => true,
-            }
-        )
-    )]
-    fn clear_pointer_child(&mut self, target_idx: NodeIdx<R>) {
-        if let NodeKind::Pointer { child, .. } = &mut self.arena.get_mut(target_idx).kind {
-            *child = None;
-        }
-    }
-
-    #[cfg_attr(creusot,
-        requires(self.arena.contains(target_idx)),
-        requires(match self.arena.get_logic(target_idx).kind {
-            NodeKind::Struct { fields } => field_idx@ < fields.len_logic(),
-            _ => true,
-        }),
-        requires(match self.arena.get_logic(target_idx).kind {
-            NodeKind::Pointer { .. } => self.heap.is_uninit(
-                    self.arena.get_logic(target_idx).data,
-                    self.arena.get_logic(target_idx).shape),
-            _ => true,
-        }),
-        ensures(match (^self).arena.get_logic(target_idx).kind {
-            NodeKind::Struct { fields } => match fields.slots@[field_idx@] {
-                FieldSlot::Complete => false,
-                _ => true,
-            },
-            NodeKind::Pointer { initialized, .. } => !initialized,
-            _ => true,
-        })
-    )]
-    fn mark_field_not_started(&mut self, target_idx: NodeIdx<R>, field_idx: usize) {
-        match &mut self.arena.get_mut(target_idx).kind {
-            NodeKind::Struct { fields } => fields.mark_not_started(field_idx),
-            NodeKind::Pointer { initialized, .. } => *initialized = false,
-            _ => {}
-        }
-    }
-
-    #[cfg_attr(creusot,
-        requires(self.arena.contains(target_idx)),
-        requires(match self.arena.get_logic(target_idx).kind {
-            NodeKind::Struct { fields } => field_idx@ < fields.len_logic(),
-            _ => true,
-        }),
-        requires(match self.arena.get_logic(target_idx).kind {
-            NodeKind::Pointer { .. } =>
-                self.heap.is_init(
-                    self.arena.get_logic(target_idx).data,
-                    self.arena.get_logic(target_idx).shape),
-            _ => true,
-        }),
-        ensures(match (^self).arena.get_logic(target_idx).kind {
-            NodeKind::Struct { fields } => match fields.slots@[field_idx@] {
-                FieldSlot::Complete => true,
-                _ => false,
-            },
-            NodeKind::Pointer { initialized, .. } => initialized,
-            _ => true,
-        })
-    )]
-    fn mark_field_complete(&mut self, target_idx: NodeIdx<R>, field_idx: usize) {
-        match &mut self.arena.get_mut(target_idx).kind {
-            NodeKind::Struct { fields } => fields.mark_complete(field_idx),
-            NodeKind::Pointer { initialized, .. } => *initialized = true,
-            _ => {}
-        }
-    }
-
     #[cfg_attr(creusot,
         requires(self.arena.contains(target_idx)),
         ensures(match result {
@@ -494,6 +360,44 @@ where
         }
     }
 
+    #[cfg(creusot)]
+    #[logic]
+    fn valid_src(self, src: Source<Ptr<R>, Shape<R>>) -> bool {
+        pearlite! {
+            match src.kind {
+                SourceKind::Imm(imm) => self.heap.is_init(imm.ptr, imm.shape) && forall<i> self.arena.contains(i) ==>
+                    imm.ptr != self.arena.get_logic(i).data,
+                SourceKind::Default => true,
+                _ => false,
+            }
+        }
+    }
+
+    #[cfg_attr(creusot,
+        requires(self.arena.contains(target_idx)),
+        requires(self.arena.get_logic(target_idx).kind == NodeKind::Scalar { initialized: already_init }),
+        requires(self.arena.get_logic(target_idx).shape == shape),
+        requires(self.arena.get_logic(target_idx).data == dst),
+        requires(if already_init { self.heap.is_init(dst, shape) } else { self.heap.is_uninit(dst, shape) }),
+        requires(self.valid_src(src)),
+        ensures(match result {
+            Ok(()) => {
+                let node = self.arena.get_logic(target_idx);
+                {
+                    match node.kind {
+                        NodeKind::Scalar { .. } => match src.kind {
+                            SourceKind::Stage(_) => false,
+                            _ => true,
+                        },
+                        _ => false,
+                    }
+                }
+            },
+            Err(_) => true,
+        }),
+        ensures(forall<z, p, s> p != self.arena.get_logic(target_idx).data && self.heap.is(z, p, s) ==> (^self).heap.is(z, p, s)),
+        ensures(forall<i> i != target_idx && self.arena.contains(i) ==> (^self).arena.contains(i) && (*self).arena.get_logic(i) == (^self).arena.get_logic(i))
+    )]
     fn apply_set_direct_scalar(
         &mut self,
         target_idx: NodeIdx<R>,
@@ -505,17 +409,9 @@ where
     where
         Shape<R>: IShape + PartialEq,
     {
-        #[cfg(creusot)]
-        let size = layout_size(vlayout_from_layout(layout_expect(shape.layout())));
-        #[cfg(creusot)]
-        assume(snapshot! { size == shape.size_logic() });
-
-        #[cfg(creusot)]
-        assume(snapshot! { false });
-
         if already_init {
             unsafe { self.heap.drop_in_place(dst, shape) };
-            self.set_scalar_initialized(target_idx, false);
+            self.arena.get_mut(target_idx).set_scalar_initialized(false);
         }
 
         match src.kind {
@@ -525,8 +421,6 @@ where
                 if src_shape != shape {
                     return Err(TrameError::ShapeMismatch);
                 }
-                #[cfg(creusot)]
-                assume(snapshot! { self.heap.is_init(src_ptr, src_shape) });
                 unsafe { self.heap.memcpy(dst, src_ptr, CopyDesc::value(shape)) };
             }
             SourceKind::Default => {
@@ -538,7 +432,7 @@ where
             SourceKind::Stage(_) => return Err(TrameError::UnsupportedSource),
         }
 
-        self.set_scalar_initialized(target_idx, true);
+        self.arena.get_mut(target_idx).set_scalar_initialized(true);
         Ok(())
     }
 
@@ -557,22 +451,19 @@ where
         #[cfg(creusot)]
         assume(snapshot! { false });
 
-        #[cfg(creusot)]
-        let size = layout_size(vlayout_from_layout(layout_expect(shape.layout())));
-        #[cfg(creusot)]
-        assume(snapshot! { size == shape.size_logic() });
-
         if let Some(child) = existing_child {
             self.cleanup_node(child);
             if self.current_in_subtree(child) {
                 self.current = target_idx;
             }
-            self.clear_pointer_child(target_idx);
+            self.arena.get_mut(target_idx).clear_pointer_child();
         }
 
         if already_init {
             unsafe { self.heap.drop_in_place(dst, shape) };
-            self.set_pointer_initialized(target_idx, false);
+            self.arena
+                .get_mut(target_idx)
+                .set_pointer_initialized(false);
         }
 
         match src.kind {
@@ -595,7 +486,7 @@ where
             SourceKind::Stage(_) => return Err(TrameError::UnsupportedSource),
         }
 
-        self.set_pointer_initialized(target_idx, true);
+        self.arena.get_mut(target_idx).set_pointer_initialized(true);
         Ok(())
     }
 
@@ -682,8 +573,10 @@ where
                 if self.current_in_subtree(child) {
                     self.current = target_idx;
                 }
-                self.mark_field_not_started(target_idx, field_idx);
-                self.clear_pointer_child(target_idx);
+                self.arena
+                    .get_mut(target_idx)
+                    .mark_field_not_started(field_idx);
+                self.arena.get_mut(target_idx).clear_pointer_child();
                 child_idx = None;
                 already_init = false;
             }
@@ -695,7 +588,9 @@ where
             } else {
                 unsafe { self.heap.drop_in_place(dst, field_shape) };
             }
-            self.mark_field_not_started(target_idx, field_idx);
+            self.arena
+                .get_mut(target_idx)
+                .mark_field_not_started(field_idx);
         }
 
         match src.kind {
@@ -706,7 +601,9 @@ where
                     return Err(TrameError::ShapeMismatch);
                 }
                 unsafe { self.heap.memcpy(dst, src_ptr, CopyDesc::value(field_shape)) };
-                self.mark_field_complete(target_idx, field_idx);
+                self.arena
+                    .get_mut(target_idx)
+                    .mark_field_complete(field_idx);
                 Ok(())
             }
             SourceKind::Default => {
@@ -714,7 +611,9 @@ where
                 if !ok {
                     return Err(TrameError::DefaultUnavailable);
                 }
-                self.mark_field_complete(target_idx, field_idx);
+                self.arena
+                    .get_mut(target_idx)
+                    .mark_field_complete(field_idx);
                 Ok(())
             }
             SourceKind::Stage(_cap) => {

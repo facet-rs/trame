@@ -30,6 +30,99 @@ pub struct Node<H: IHeap<S>, S: IShape> {
     pub(crate) flags: NodeFlags,
 }
 
+impl<H: IHeap<S>, S: IShape> Node<H, S> {
+    #[cfg_attr(creusot,
+        requires(match self.kind {
+            NodeKind::Scalar { .. } => true,
+            _ => false,
+        }),
+        ensures((^self) == Self { kind: NodeKind::Scalar { initialized: new }, .. *self })
+    )]
+    pub(crate) fn set_scalar_initialized(&mut self, new: bool) {
+        if let NodeKind::Scalar { initialized } = &mut self.kind {
+            *initialized = new
+        }
+    }
+
+    #[cfg_attr(creusot,
+        requires(
+            match self.kind {
+                NodeKind::Pointer { .. } => true,
+                _ => false,
+            }
+        ),
+        ensures({
+            match self.kind {
+                NodeKind::Pointer { child, initialized: _ } =>
+                    (^self) == Self { kind: NodeKind::Pointer { initialized, child }, .. *self },
+                _ => false
+            }
+        })
+    )]
+    pub(crate) fn set_pointer_initialized(&mut self, initialized: bool) {
+        if let NodeKind::Pointer {
+            initialized: state, ..
+        } = &mut self.kind
+        {
+            *state = initialized;
+        }
+    }
+
+    #[cfg_attr(creusot,
+        ensures(
+            match (^self).kind {
+                NodeKind::Pointer { child, .. } => child == None, // TODO: other fields are unchanged
+                _ => true,
+            }
+        )
+    )]
+    pub(crate) fn clear_pointer_child(&mut self) {
+        if let NodeKind::Pointer { child, .. } = &mut self.kind {
+            *child = None;
+        }
+    }
+
+    #[cfg_attr(creusot,
+        requires(match self.kind {
+            NodeKind::Struct { fields } => field_idx@ < fields.len_logic(),
+            NodeKind::Pointer { .. } => true,
+            _ => false,
+        }),
+        ensures(match (^self).kind {
+            NodeKind::Struct { fields } => fields.slots@[field_idx@] == FieldSlot::Untracked, // TODO: other fields are unchanged
+            NodeKind::Pointer { initialized, .. } => !initialized,
+            _ => true,
+        })
+    )]
+    pub(crate) fn mark_field_not_started(&mut self, field_idx: usize) {
+        match &mut self.kind {
+            NodeKind::Struct { fields } => fields.mark_not_started(field_idx),
+            NodeKind::Pointer { initialized, .. } => *initialized = false,
+            _ => {}
+        }
+    }
+
+    #[cfg_attr(creusot,
+        requires(match self.kind {
+            NodeKind::Struct { fields } => field_idx@ < fields.len_logic(),
+            NodeKind::Pointer { .. } => true,
+            _ => false,
+        }),
+        ensures(match (^self).kind {
+            NodeKind::Struct { fields } => fields.slots@[field_idx@] == FieldSlot::Complete, // TODO: other fields are unchanged
+            NodeKind::Pointer { initialized, .. } => initialized,
+            _ => true,
+        })
+    )]
+    pub(crate) fn mark_field_complete(&mut self, field_idx: usize) {
+        match &mut self.kind {
+            NodeKind::Struct { fields } => fields.mark_complete(field_idx),
+            NodeKind::Pointer { initialized, .. } => *initialized = true,
+            _ => {}
+        }
+    }
+}
+
 /// Node-level bit flags.
 #[derive(Debug, Clone, Copy, Eq)]
 pub(crate) struct NodeFlags(pub(crate) u8);

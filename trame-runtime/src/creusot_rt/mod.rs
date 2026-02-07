@@ -10,7 +10,7 @@ use creusot_std::prelude::{Int, View, check, extern_spec, logic, trusted};
 
 use crate::{
     CopyDesc, IArena, IField, IHeap, IPointerType, IPtr, IRuntime, IShape, IShapeExtra,
-    IShapeStore, IStructType, Idx,
+    IShapeStore, IStructType, Idx, MemState,
 };
 
 /// Logical layout for creusot builds.
@@ -408,6 +408,11 @@ impl IPtr for CPtr {
     unsafe fn byte_add(self, n: usize) -> Self {
         CPtr::offset(self, n)
     }
+
+    #[logic(opaque)]
+    fn byte_add_logic(self, n: usize) -> Self {
+        dead
+    }
 }
 
 impl CPtr {
@@ -551,6 +556,8 @@ impl IHeap<CShapeView<'_>> for CHeap {
     type Ptr = CPtr;
 
     #[trusted]
+    #[ensures((^self).is_uninit(result, shape))]
+    #[ensures(forall<p, s, z> self.is(z, p, s) ==> (^self).is(z, p, s) && p != result)]
     unsafe fn alloc(&mut self, shape: CShapeView<'_>) -> CPtr {
         let layout = shape.layout().expect("IShape requires sized types");
         let id = self.next_id;
@@ -559,7 +566,9 @@ impl IHeap<CShapeView<'_>> for CHeap {
     }
 
     #[trusted]
-    unsafe fn dealloc(&mut self, ptr: CPtr, _shape: CShapeView<'_>) {
+    #[requires(self.is_uninit(ptr, shape))]
+    #[ensures(forall<p, s, z> p != ptr && self.is(z, p, s) ==> (^self).is(z, p, s))]
+    unsafe fn dealloc(&mut self, ptr: CPtr, shape: CShapeView<'_>) {
         let _ = ptr;
     }
 
@@ -568,60 +577,38 @@ impl IHeap<CShapeView<'_>> for CHeap {
     }
 
     #[trusted]
-    #[cfg_attr(creusot, requires(self.range_init(src, desc.byte_len_logic())))]
-    #[cfg_attr(creusot, ensures(self.range_init(dst, desc.byte_len_logic())))]
-    #[cfg_attr(creusot, ensures(forall<ptr2, shape2> ptr2 != dst ==> (^self).can_drop(ptr2, shape2) == (*self).can_drop(ptr2, shape2)))]
-    #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != dst ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
+    #[requires(self.is_init_copy(src, desc))]
+    #[requires(self.is_uninit_copy(dst, desc))]
+    #[ensures((^self).is_init_copy(dst, desc))]
+    #[ensures(forall<p, s, z> p != dst && (*self).is(z, p, s) ==> (^self).is(z, p, s))]
     unsafe fn memcpy(&mut self, dst: CPtr, src: CPtr, desc: CopyDesc<CShapeView<'_>>) {
         let _ = desc;
         let _ = (dst, src);
     }
 
     #[trusted]
-    #[cfg_attr(
-        creusot,
-        requires(shape_is_scalar(shape) ==> self.range_init(ptr, shape_size(shape)))
-    )]
-    #[cfg_attr(creusot, ensures(!self.can_drop(ptr, shape)))]
-    #[cfg_attr(
-        creusot,
-        ensures(shape_is_scalar(shape) ==> !self.range_init(ptr, shape_size(shape)))
-    )]
-    unsafe fn drop_in_place(&mut self, ptr: CPtr, shape: CShapeView<'_>) {
-        let _ = (ptr, shape);
-    }
-
-    #[trusted]
-    #[cfg_attr(creusot, ensures(result ==> self.can_drop(ptr, shape)))]
-    #[cfg_attr(creusot, ensures(result ==> self.range_init(ptr, shape.size_logic())))]
-    #[cfg_attr(creusot, ensures(!result ==> (^self).can_drop(ptr, shape) == (*self).can_drop(ptr, shape)))]
-    #[cfg_attr(creusot, ensures(!result ==> (^self).range_init(ptr, shape.size_logic()) == (*self).range_init(ptr, shape.size_logic())))]
-    #[cfg_attr(creusot, ensures(forall<ptr2, shape2> ptr2 != ptr ==> (^self).can_drop(ptr2, shape2) == (*self).can_drop(ptr2, shape2)))]
-    #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != ptr ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
+    #[requires(self.is_uninit(ptr, shape))]
+    #[ensures(if result { (^self).is_init(ptr, shape) } else { (^self).is_uninit(ptr, shape) })]
+    #[ensures(forall<p, s, z> p != ptr && (*self).is(z, p, s) ==> (^self).is(z, p, s))]
     unsafe fn default_in_place(&mut self, ptr: CPtr, shape: CShapeView<'_>) -> bool {
         let _ = (ptr, shape);
         true
     }
 
     #[trusted]
-    #[cfg_attr(
-        creusot,
-        ensures(result && pointer_requires_tracked_pointee(pointer_shape) ==> (^self)@.pointer_edges.contains(pointer_edge(
-            dst.alloc_id,
-            dst.offset as usize,
-            pointer_shape.handle,
-            src.alloc_id,
-            src.offset as usize,
-            pointee_shape.handle
-        )))
-    )]
-    #[cfg_attr(creusot, requires(self.can_drop(src, pointee_shape)))]
-    #[cfg_attr(creusot, ensures(result ==> self.can_drop(dst, pointer_shape)))]
-    #[cfg_attr(creusot, ensures(result ==> self.range_init(dst, pointer_shape.size_logic())))]
-    #[cfg_attr(creusot, ensures(!result ==> (^self).can_drop(dst, pointer_shape) == (*self).can_drop(dst, pointer_shape)))]
-    #[cfg_attr(creusot, ensures(!result ==> (^self).range_init(dst, pointer_shape.size_logic()) == (*self).range_init(dst, pointer_shape.size_logic())))]
-    #[cfg_attr(creusot, ensures(forall<ptr2, shape2> ptr2 != dst ==> (^self).can_drop(ptr2, shape2) == (*self).can_drop(ptr2, shape2)))]
-    #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != dst ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
+    #[requires(self.is_init(ptr, shape))]
+    #[ensures((^self).is_uninit(ptr, shape))]
+    #[ensures(forall<p, s, z> p != ptr && (*self).is(z, p, s) ==> (^self).is(z, p, s))]
+    unsafe fn drop_in_place(&mut self, ptr: CPtr, shape: CShapeView<'_>) {
+        let _ = (ptr, shape);
+    }
+
+    #[trusted]
+    #[requires(self.is_init(src, pointee_shape))]
+    #[requires(self.is_uninit(dst, pointee_shape))]
+    #[ensures(result ==> (^self).is_init(dst, pointer_shape))]
+    #[ensures(!result ==> (^self).is_uninit(dst, pointer_shape) && (^self).is_init(src, pointee_shape))]
+    #[ensures(forall<p, s, z> p != src && p != dst && (*self).is(z, p, s) ==> (^self).is(z, p, s))]
     unsafe fn pointer_from_pointee(
         &mut self,
         dst: CPtr,
@@ -635,36 +622,9 @@ impl IHeap<CShapeView<'_>> for CHeap {
             .is_some_and(|p| p.constructible_from_pointee())
     }
 
-    #[logic(open, inline)]
-    fn can_drop(&self, ptr: CPtr, shape: CShapeView<'_>) -> bool {
-        pearlite! {
-            if shape_is_scalar(shape) {
-                self.range_init(ptr, shape_size(shape))
-            } else if shape_is_pointer(shape) {
-                self@.init.contains(init_fact(
-                    ptr.alloc_id,
-                    ptr.offset as usize,
-                    shape.handle
-                ))
-            } else {
-                self@.init.contains(init_fact(
-                    ptr.alloc_id,
-                    ptr.offset as usize,
-                    shape.handle
-                ))
-            }
-        }
-    }
-
-    #[logic(open, inline)]
-    fn range_init(&self, ptr: CPtr, len: usize) -> bool {
-        pearlite! {
-            self@.init_ranges.contains(init_range(
-                ptr.alloc_id,
-                ptr.offset as usize,
-                len
-            ))
-        }
+    #[logic(opaque)]
+    fn is(&self, state: MemState, ptr: Self::Ptr, shape: CShapeView<'_>) -> bool {
+        dead
     }
 }
 
@@ -753,7 +713,7 @@ impl<T> IArena<T> for CArena<T> {
     }
 
     #[trusted]
-    #[cfg_attr(creusot, ensures(*result == self.get_logic(id)))]
+    #[ensures(*result == self.get_logic(id))]
     fn get(&self, id: Idx<T>) -> &T {
         assert!(id.is_valid(), "cannot get sentinel index");
         let idx = id.index();
@@ -769,11 +729,11 @@ impl<T> IArena<T> for CArena<T> {
     }
 
     #[trusted]
-    #[cfg_attr(creusot, ensures(*result == (*self).get_logic(id)))]
-    #[cfg_attr(creusot, ensures(^result == (^self).get_logic(id)))]
-    #[cfg_attr(creusot, ensures((^self).contains(id)))]
-    #[cfg_attr(creusot, ensures(forall<j> j != id ==> (*self).contains(j) == (^self).contains(j)))]
-    #[cfg_attr(creusot, ensures(forall<j> j != id ==> (*self).get_logic(j) == (^self).get_logic(j)))]
+    #[ensures(*result == (*self).get_logic(id))]
+    #[ensures(^result == (^self).get_logic(id))]
+    #[ensures((^self).contains(id))]
+    #[ensures(forall<j> j != id ==> (*self).contains(j) == (^self).contains(j))]
+    #[ensures(forall<j> j != id ==> (*self).get_logic(j) == (^self).get_logic(j))]
     fn get_mut(&mut self, id: Idx<T>) -> &mut T {
         assert!(id.is_valid(), "cannot get sentinel index");
         let idx = id.index();

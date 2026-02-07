@@ -261,6 +261,15 @@ impl<S: IShape> CopyDesc<S> {
     }
 }
 
+#[cfg(creusot)]
+/// State of an allocation
+pub enum MemState {
+    /// Allocated but uninitialized
+    Uninit,
+    /// Initialized
+    Init,
+}
+
 /// Heap for memory operations, generic over shape type.
 pub trait IHeap<S: IShape> {
     /// Pointer type used by this heap.
@@ -271,6 +280,10 @@ pub trait IHeap<S: IShape> {
     /// # Safety
     /// The caller must ensure `shape` is valid for allocation and that any
     /// constraints required by the heap implementation are satisfied.
+    #[cfg_attr(creusot,
+        ensures((^self).is_uninit(result, shape)),
+        ensures(forall<p, s, z> self.is(z, p, s) ==> (^self).is(z, p, s) && p != result)
+    )]
     unsafe fn alloc(&mut self, shape: S) -> Self::Ptr;
 
     /// Deallocate a region.
@@ -279,6 +292,10 @@ pub trait IHeap<S: IShape> {
     /// The caller must ensure `ptr` points to the start of a live allocation
     /// previously returned by `alloc`, that the allocation corresponds to
     /// `shape`, and that no bytes in the region are still initialized.
+    #[cfg_attr(creusot,
+        requires(self.is_uninit(ptr, shape)),
+        ensures(forall<p, s, z> p != ptr && self.is(z, p, s) ==> (^self).is(z, p, s))
+    )]
     unsafe fn dealloc(&mut self, ptr: Self::Ptr, shape: S);
 
     /// Deallocate storage that was moved out without running drop.
@@ -296,34 +313,13 @@ pub trait IHeap<S: IShape> {
     /// The caller must ensure both ranges are in-bounds for their allocations,
     /// that `src` is fully initialized for the descriptor span, `dst` is fully
     /// uninitialized for that same span, and the ranges do not overlap.
-    #[cfg_attr(creusot, requires(self.range_init(src, desc.byte_len_logic())))]
-    #[cfg_attr(creusot, ensures(self.range_init(dst, desc.byte_len_logic())))]
-    #[cfg_attr(creusot, ensures(forall<ptr2, shape2> ptr2 != dst ==> (^self).can_drop(ptr2, shape2) == (*self).can_drop(ptr2, shape2)))]
-    #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != dst ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
+    #[cfg_attr(creusot,
+        requires(self.is_init_copy(src, desc)),
+        requires(self.is_uninit_copy(dst, desc)),
+        ensures((^self).is_init_copy(dst, desc)),
+        ensures(forall<p, s, z> p != dst && (*self).is(z, p, s) ==> (^self).is(z, p, s))
+    )]
     unsafe fn memcpy(&mut self, dst: Self::Ptr, src: Self::Ptr, desc: CopyDesc<S>);
-
-    /// Drop the value at `ptr` and mark the range as uninitialized.
-    ///
-    /// # Safety
-    /// The caller must ensure `ptr` points to a value of type `shape`, the
-    /// value is fully initialized, and the allocation is still live.
-    #[cfg_attr(creusot, requires(self.can_drop(ptr, shape)))]
-    #[cfg_attr(creusot, ensures(!(^self).can_drop(ptr, shape) && !(^self).range_init(ptr, shape.size_logic())))]
-    #[cfg_attr(creusot, ensures(forall<ptr2, shape2> ptr2 != ptr ==> (^self).can_drop(ptr2, shape2) == (*self).can_drop(ptr2, shape2)))]
-    #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != ptr ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
-    unsafe fn drop_in_place(&mut self, ptr: Self::Ptr, shape: S);
-
-    /// Creusot-only predicate describing when a drop is permitted.
-    #[cfg(creusot)]
-    #[logic]
-    fn can_drop(&self, ptr: Self::Ptr, shape: S) -> bool;
-
-    /// Creusot-only predicate describing when a byte range is initialized.
-    ///
-    /// The range is interpreted as the `len` bytes starting at `ptr`.
-    #[cfg(creusot)]
-    #[logic]
-    fn range_init(&self, ptr: Self::Ptr, len: usize) -> bool;
 
     /// Default-initialize the value at `ptr` and mark the range as initialized.
     ///
@@ -332,12 +328,24 @@ pub trait IHeap<S: IShape> {
     /// # Safety
     /// The caller must ensure the destination range is uninitialized, in-bounds,
     /// and corresponds to `shape`.
-    #[cfg_attr(creusot, ensures(result ==> self.can_drop(ptr, shape) && self.range_init(ptr, shape.size_logic())))]
-    #[cfg_attr(creusot, ensures(!result ==> (^self).can_drop(ptr, shape) == (*self).can_drop(ptr, shape)))]
-    #[cfg_attr(creusot, ensures(!result ==> (^self).range_init(ptr, shape.size_logic()) == (*self).range_init(ptr, shape.size_logic())))]
-    #[cfg_attr(creusot, ensures(forall<ptr2, shape2> ptr2 != ptr ==> (^self).can_drop(ptr2, shape2) == (*self).can_drop(ptr2, shape2)))]
-    #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != ptr ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
+    #[cfg_attr(creusot,
+        requires(self.is_uninit(ptr, shape)),
+        ensures(if result { (^self).is_init(ptr, shape) } else { (^self).is_uninit(ptr, shape) }),
+        ensures(forall<p, s, z> p != ptr && (*self).is(z, p, s) ==> (^self).is(z, p, s))
+    )]
     unsafe fn default_in_place(&mut self, ptr: Self::Ptr, shape: S) -> bool;
+
+    /// Drop the value at `ptr` and mark the range as uninitialized.
+    ///
+    /// # Safety
+    /// The caller must ensure `ptr` points to a value of type `shape`, the
+    /// value is fully initialized, and the allocation is still live.
+    #[cfg_attr(creusot,
+        requires(self.is_init(ptr, shape)),
+        ensures((^self).is_uninit(ptr, shape)),
+        ensures(forall<p, s, z> p != ptr && (*self).is(z, p, s) ==> (^self).is(z, p, s))
+    )]
+    unsafe fn drop_in_place(&mut self, ptr: Self::Ptr, shape: S);
 
     /// Construct a pointer value at `dst` from a pointee value at `src`.
     ///
@@ -346,13 +354,13 @@ pub trait IHeap<S: IShape> {
     /// # Safety
     /// The caller must ensure `dst` points to uninitialized storage for `pointer_shape`
     /// and `src` points to an initialized value of `pointee_shape`.
-    #[cfg_attr(creusot, requires(self.can_drop(src, pointee_shape)))]
-    #[cfg_attr(creusot, ensures(result ==> self.can_drop(dst, pointer_shape)))]
-    #[cfg_attr(creusot, ensures(result ==> self.range_init(dst, pointer_shape.size_logic())))]
-    #[cfg_attr(creusot, ensures(!result ==> (^self).can_drop(dst, pointer_shape) == (*self).can_drop(dst, pointer_shape)))]
-    #[cfg_attr(creusot, ensures(!result ==> (^self).range_init(dst, pointer_shape.size_logic()) == (*self).range_init(dst, pointer_shape.size_logic())))]
-    #[cfg_attr(creusot, ensures(forall<ptr2, shape2> ptr2 != dst ==> (^self).can_drop(ptr2, shape2) == (*self).can_drop(ptr2, shape2)))]
-    #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != dst ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
+    #[cfg_attr(creusot,
+        requires(self.is_init(src, pointee_shape)),
+        requires(self.is_uninit(dst, pointee_shape)),
+        ensures(result ==> (^self).is_init(dst, pointer_shape)),
+        ensures(!result ==> (^self).is_uninit(dst, pointer_shape) && (^self).is_init(src, pointee_shape)),
+        ensures(forall<p, s, z> p != src && p != dst && (*self).is(z, p, s) ==> (^self).is(z, p, s))
+    )]
     unsafe fn pointer_from_pointee(
         &mut self,
         dst: Self::Ptr,
@@ -360,6 +368,56 @@ pub trait IHeap<S: IShape> {
         src: Self::Ptr,
         pointee_shape: S,
     ) -> bool;
+
+    /// Creusot predicate for the state of an allocation.
+    #[cfg(creusot)]
+    #[logic]
+    fn is(&self, state: MemState, ptr: Self::Ptr, shape: S) -> bool;
+
+    /// Creusot predicate for allocated but uninitialized memory. Produced by `alloc`.
+    #[cfg(creusot)]
+    #[logic(inline)]
+    fn is_uninit(&self, ptr: Self::Ptr, shape: S) -> bool {
+        pearlite! { self.is(MemState::Uninit, ptr, shape) }
+    }
+
+    /// Creusot predicate for initialized memory. Produced by `memcpy` and `default_in_place`.
+    #[cfg(creusot)]
+    #[logic(inline)]
+    fn is_init(&self, ptr: Self::Ptr, shape: S) -> bool {
+        pearlite! { self.is(MemState::Init, ptr, shape) }
+    }
+
+    /// Extension of `is` for `CopyDesc<S>`.
+    #[cfg(creusot)]
+    #[logic]
+    fn is_copy(&self, state: MemState, ptr: Self::Ptr, shape: CopyDesc<S>) -> bool {
+        pearlite! {
+            match shape {
+                CopyDesc::Value(shape) => self.is(state, ptr, shape),
+                CopyDesc::Repeat { elem, count } => forall<i> 0usize <= i && i < count ==>
+                    self.is(state, ptr.byte_add_logic(i * elem.size_logic()), elem),
+            }
+        }
+    }
+
+    /// Extension of `is_uninit` for `CopyDesc<S>`.
+    #[cfg(creusot)]
+    #[logic]
+    fn is_uninit_copy(&self, ptr: Self::Ptr, shape: CopyDesc<S>) -> bool {
+        pearlite! {
+            self.is_copy(MemState::Uninit, ptr, shape)
+        }
+    }
+
+    /// Extension of `is_init` for `CopyDesc<S>`.
+    #[cfg(creusot)]
+    #[logic]
+    fn is_init_copy(&self, ptr: Self::Ptr, shape: CopyDesc<S>) -> bool {
+        pearlite! {
+            self.is_copy(MemState::Init, ptr, shape)
+        }
+    }
 }
 
 /// Pointer type
@@ -369,6 +427,10 @@ pub trait IPtr: Copy {
     /// # Safety
     /// The caller must ensure the resulting pointer is in-bounds.
     unsafe fn byte_add(self, n: usize) -> Self;
+
+    #[cfg(creusot)]
+    #[logic]
+    fn byte_add_logic(self, n: usize) -> Self;
 }
 
 #[cfg(not(creusot))]
@@ -399,20 +461,24 @@ pub trait IArena<T> {
     ///
     /// # Panics
     /// Panics if the index is invalid or freed.
-    #[cfg_attr(creusot, requires(self.contains(id)))]
-    #[cfg_attr(creusot, ensures(*result == self.get_logic(id)))]
+    #[cfg_attr(creusot,
+        requires(self.contains(id)),
+        ensures(*result == self.get_logic(id))
+    )]
     fn get(&self, id: Idx<T>) -> &T;
 
     /// Get a mutable reference to an item.
     ///
     /// # Panics
     /// Panics if the index is invalid or freed.
-    #[cfg_attr(creusot, requires(self.contains(id)))]
-    #[cfg_attr(creusot, ensures(*result == (*self).get_logic(id)))]
-    #[cfg_attr(creusot, ensures(^result == (^self).get_logic(id)))]
-    #[cfg_attr(creusot, ensures((^self).contains(id)))]
-    #[cfg_attr(creusot, ensures(forall<j> j != id ==> (*self).contains(j) == (^self).contains(j)))]
-    #[cfg_attr(creusot, ensures(forall<j> j != id ==> (*self).get_logic(j) == (^self).get_logic(j)))]
+    #[cfg_attr(creusot,
+        requires(self.contains(id)),
+        ensures(*result == (*self).get_logic(id)),
+        ensures(^result == (^self).get_logic(id)),
+        ensures((^self).contains(id)),
+        ensures(forall<j> j != id ==> (*self).contains(j) == (^self).contains(j)),
+        ensures(forall<j> j != id ==> (*self).get_logic(j) == (^self).get_logic(j))
+    )]
     fn get_mut(&mut self, id: Idx<T>) -> &mut T;
 
     #[cfg(creusot)]

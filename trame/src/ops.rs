@@ -256,6 +256,7 @@ impl<'facet> Source<'facet, *mut u8, &'static facet_core::Shape> {
     ///
     /// The caller must ensure that `ptr` points to valid, initialized memory
     /// that matches the given `shape`.
+    #[cfg_attr(creusot, trusted)]
     pub unsafe fn from_ptr_shape(ptr: *mut u8, shape: &'static facet_core::Shape) -> Self {
         Source {
             kind: SourceKind::Imm(Imm {

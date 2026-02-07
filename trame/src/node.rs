@@ -3,7 +3,7 @@ use crate::runtime::{IHeap, IShape, IStructType, Idx};
 #[cfg(creusot)]
 use creusot_std::logic::Int;
 #[cfg(creusot)]
-use creusot_std::macros::{ensures, logic, pearlite, requires};
+use creusot_std::macros::{ensures, logic, pearlite, requires, trusted};
 #[cfg(creusot)]
 use creusot_std::model::DeepModel;
 
@@ -246,6 +246,7 @@ pub(crate) enum NodeKind<F> {
 }
 
 impl<F> Clone for NodeKind<F> {
+    #[cfg_attr(creusot, ensures(result == *self))]
     fn clone(&self) -> Self {
         match self {
             Self::Scalar { initialized } => Self::Scalar {
@@ -279,6 +280,7 @@ pub(crate) enum FieldSlot<F> {
 }
 
 impl<F> Clone for FieldSlot<F> {
+    #[cfg_attr(creusot, ensures(result == *self))]
     fn clone(&self) -> Self {
         *self
     }
@@ -294,6 +296,10 @@ pub(crate) struct FieldStates<F> {
 }
 
 impl<F> Clone for FieldStates<F> {
+    #[cfg_attr(creusot,
+        trusted,
+        ensures(result == *self)
+    )] // TODO: not quite, because of Vec
     fn clone(&self) -> Self {
         Self {
             slots: self.slots.clone(),

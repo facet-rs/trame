@@ -299,6 +299,7 @@ where
 
     #[cfg_attr(creusot,
         requires(self.arena.contains(target_idx)),
+        requires(self.valid_src(src)),
         ensures(match result {
             Ok(()) => {
                 let node = self.arena.get_logic(target_idx);
@@ -327,9 +328,6 @@ where
             (node.kind.clone(), node.shape, node.data)
         };
 
-        #[cfg(creusot)]
-        assume(snapshot! { false });
-
         match field_idx {
             None => match &target_kind {
                 NodeKind::Scalar { initialized } => self.apply_set_direct_scalar(
@@ -339,24 +337,32 @@ where
                     *initialized,
                     src,
                 ),
-                NodeKind::Pointer { initialized, child } => self.apply_set_direct_pointer(
-                    target_idx,
-                    target_shape,
-                    target_data,
-                    *initialized,
-                    *child,
-                    src,
-                ),
+                NodeKind::Pointer { initialized, child } => {
+                    #[cfg(creusot)]
+                    assume(snapshot! { false });
+                    self.apply_set_direct_pointer(
+                        target_idx,
+                        target_shape,
+                        target_data,
+                        *initialized,
+                        *child,
+                        src,
+                    )
+                }
                 NodeKind::Struct { .. } => Err(TrameError::NotAStruct),
             },
-            Some(field_idx) => self.apply_set_field(
-                target_idx,
-                target_kind,
-                target_shape,
-                target_data,
-                field_idx,
-                src,
-            ),
+            Some(field_idx) => {
+                #[cfg(creusot)]
+                assume(snapshot! { false });
+                self.apply_set_field(
+                    target_idx,
+                    target_kind,
+                    target_shape,
+                    target_data,
+                    field_idx,
+                    src,
+                )
+            }
         }
     }
 
@@ -733,6 +739,8 @@ where
             Op::End => self.end_current_node(),
             Op::Set { dst, src } => {
                 let (target, field_idx) = self.resolve_path(dst.segments())?;
+                #[cfg(creusot)]
+                assume(snapshot! { false });
                 self.apply_set(target, field_idx, src)
             }
         }

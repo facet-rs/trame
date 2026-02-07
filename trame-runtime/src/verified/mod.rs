@@ -12,7 +12,7 @@ mod byte_range;
 use byte_range::{ByteRangeError, ByteRangeTracker, Range};
 
 use crate::{
-    CopyDesc, IArena, IField, IHeap, IPointerType, IPtr, IRuntime, IShape, IShapeStore,
+    CopyDesc, IArena, IExecShape, IField, IHeap, IPointerType, IPtr, IRuntime, IShape, IShapeStore,
     IStructType, Idx,
 };
 
@@ -99,6 +99,90 @@ pub const MAX_SHAPES_PER_STORE: usize = 8;
 /// Maximum number of fields in a struct (for bounded verification).
 pub const MAX_FIELDS_PER_STRUCT: usize = 8;
 
+/// Drop hook used by executable shapes.
+pub type VDropInPlaceFn = unsafe fn(*mut u8);
+
+/// Default hook used by executable shapes.
+pub type VDefaultInPlaceFn = unsafe fn(*mut u8) -> bool;
+
+/// Pointer-construction hook used by executable pointer shapes.
+pub type VPointerNewIntoFn = unsafe fn(dst: *mut u8, src: *mut u8);
+
+unsafe fn vdrop_noop(_ptr: *mut u8) {}
+
+/// Executable per-shape operations used by `LHeap + VShapeView`.
+#[cfg_attr(creusot, derive(DeepModel))]
+#[derive(Debug, Clone, Copy)]
+pub struct VTypeOps {
+    /// Whether dropping values of this shape can have observable effects.
+    pub needs_drop: bool,
+    /// Drop operation for this shape.
+    pub drop_in_place: VDropInPlaceFn,
+    /// Default operation for this shape, if available.
+    pub default_in_place: Option<VDefaultInPlaceFn>,
+}
+
+impl PartialEq for VTypeOps {
+    fn eq(&self, other: &Self) -> bool {
+        self.needs_drop == other.needs_drop
+            && core::ptr::fn_addr_eq(self.drop_in_place, other.drop_in_place)
+            && match (self.default_in_place, other.default_in_place) {
+                (Some(a), Some(b)) => core::ptr::fn_addr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+
+impl Eq for VTypeOps {}
+
+impl VTypeOps {
+    /// Construct a `VTypeOps` value.
+    pub const fn new(
+        needs_drop: bool,
+        drop_in_place: VDropInPlaceFn,
+        default_in_place: Option<VDefaultInPlaceFn>,
+    ) -> Self {
+        Self {
+            needs_drop,
+            drop_in_place,
+            default_in_place,
+        }
+    }
+
+    /// Operations for POD-like shapes that don't need drop/default hooks.
+    pub const fn pod() -> Self {
+        Self::new(false, vdrop_noop, None)
+    }
+}
+
+/// Pointer-specific executable hooks.
+#[cfg_attr(creusot, derive(DeepModel))]
+#[derive(Debug, Clone, Copy)]
+pub struct VPointerVTable {
+    /// Construct pointer value at destination from pointee source.
+    pub new_into_fn: Option<VPointerNewIntoFn>,
+}
+
+impl PartialEq for VPointerVTable {
+    fn eq(&self, other: &Self) -> bool {
+        match (self.new_into_fn, other.new_into_fn) {
+            (Some(a), Some(b)) => core::ptr::fn_addr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for VPointerVTable {}
+
+impl VPointerVTable {
+    /// Create pointer hooks with optional construction function.
+    pub const fn new(new_into_fn: Option<VPointerNewIntoFn>) -> Self {
+        Self { new_into_fn }
+    }
+}
+
 /// A handle to a shape in a DynShapeStore.
 ///
 /// This is just an index into the store's shape array.
@@ -142,6 +226,8 @@ pub struct VStructDef {
 pub struct VShapeDef {
     /// Layout of this type.
     pub layout: VLayout,
+    /// Executable operations for this shape.
+    pub type_ops: VTypeOps,
     ///
     /// Type-specific information.
     pub def: VDef,
@@ -170,6 +256,8 @@ pub struct VPointerDef {
     pub constructible_from_pointee: bool,
     /// Whether pointer is known to be `Box<T>`.
     pub known_box: bool,
+    /// Pointer-construction hooks.
+    pub vtable: VPointerVTable,
 }
 
 /// A store of DynShape definitions.
@@ -203,6 +291,7 @@ impl VShapeStore {
             shape_count: 0,
             shapes: [VShapeDef {
                 layout: VLayout::new::<()>(),
+                type_ops: VTypeOps::pod(),
                 def: VDef::Scalar,
             }; MAX_SHAPES_PER_STORE],
         }
@@ -352,6 +441,54 @@ impl<'a> IShape for VShapeView<'a, VShapeStore> {
     }
 }
 
+impl<'a> IExecShape<*mut u8> for VShapeView<'a, VShapeStore> {
+    #[inline]
+    fn needs_drop(&self) -> bool {
+        self.store.get_def(self.handle).type_ops.needs_drop
+    }
+
+    #[inline]
+    unsafe fn drop_in_place(&self, ptr: *mut u8) {
+        let ops = self.store.get_def(self.handle).type_ops;
+        unsafe {
+            (ops.drop_in_place)(ptr);
+        }
+    }
+
+    #[inline]
+    unsafe fn default_in_place(&self, ptr: *mut u8) -> bool {
+        let ops = self.store.get_def(self.handle).type_ops;
+        let Some(default_in_place) = ops.default_in_place else {
+            return false;
+        };
+        unsafe { default_in_place(ptr) }
+    }
+
+    #[inline]
+    unsafe fn pointer_from_pointee(&self, dst: *mut u8, src: *mut u8, pointee_shape: Self) -> bool {
+        if !core::ptr::eq(self.store, pointee_shape.store) {
+            return false;
+        }
+        let def = self.store.get_def(self.handle);
+        let VDef::Pointer(pointer_def) = def.def else {
+            return false;
+        };
+        if !pointer_def.constructible_from_pointee {
+            return false;
+        }
+        if pointer_def.pointee_handle != pointee_shape.handle {
+            return false;
+        }
+        let Some(new_into_fn) = pointer_def.vtable.new_into_fn else {
+            return false;
+        };
+        unsafe {
+            new_into_fn(dst, src);
+        }
+        true
+    }
+}
+
 impl<'a> IPointerType for VPointerView<'a> {
     type Shape = VShapeView<'a, VShapeStore>;
 
@@ -414,8 +551,14 @@ impl<'a> IField for VFieldView<'a> {
 impl VShapeDef {
     /// Create a scalar shape with the given layout.
     pub const fn scalar(layout: VLayout) -> Self {
+        Self::scalar_with_ops(layout, VTypeOps::pod())
+    }
+
+    /// Create a scalar shape with explicit executable operations.
+    pub const fn scalar_with_ops(layout: VLayout, type_ops: VTypeOps) -> Self {
         Self {
             layout,
+            type_ops,
             def: VDef::Scalar,
         }
     }
@@ -425,6 +568,15 @@ impl VShapeDef {
     /// The `field_shapes` parameter provides the shape handle for each field.
     /// Use `store.get_def(handle).layout` to get layouts for size calculation.
     pub fn struct_with_fields(store: &VShapeStore, fields: &[(usize, VShapeHandle)]) -> Self {
+        Self::struct_with_fields_and_ops(store, fields, VTypeOps::pod())
+    }
+
+    /// Create a struct shape with explicit executable operations.
+    pub fn struct_with_fields_and_ops(
+        store: &VShapeStore,
+        fields: &[(usize, VShapeHandle)],
+        type_ops: VTypeOps,
+    ) -> Self {
         assert!(fields.len() <= MAX_FIELDS_PER_STRUCT, "too many fields");
 
         // Calculate overall layout from fields
@@ -456,6 +608,7 @@ impl VShapeDef {
 
         Self {
             layout,
+            type_ops,
             def: VDef::Struct(VStructDef {
                 field_count: fields.len() as u8,
                 fields: field_array,
@@ -465,12 +618,31 @@ impl VShapeDef {
 
     /// Create a smart-pointer shape with a pointee.
     pub fn pointer_to(pointee: VShapeHandle, constructible: bool, known_box: bool) -> Self {
+        Self::pointer_to_with_ops(
+            pointee,
+            constructible,
+            known_box,
+            VTypeOps::pod(),
+            VPointerVTable::new(None),
+        )
+    }
+
+    /// Create a smart-pointer shape with explicit executable operations and hooks.
+    pub fn pointer_to_with_ops(
+        pointee: VShapeHandle,
+        constructible: bool,
+        known_box: bool,
+        type_ops: VTypeOps,
+        vtable: VPointerVTable,
+    ) -> Self {
         Self {
             layout: VLayout::new::<usize>(),
+            type_ops,
             def: VDef::Pointer(VPointerDef {
                 pointee_handle: pointee,
                 constructible_from_pointee: constructible,
                 known_box,
+                vtable,
             }),
         }
     }
@@ -522,6 +694,7 @@ impl kani::Arbitrary for VShapeDef {
 
             VShapeDef {
                 layout,
+                type_ops: VTypeOps::pod(),
                 def: VDef::Struct(VStructDef {
                     field_count,
                     fields,
@@ -586,6 +759,7 @@ impl kani::Arbitrary for VShapeStore {
             let layout = VLayout::from_size_align(offset, 1).unwrap();
             store.add(VShapeDef {
                 layout,
+                type_ops: VTypeOps::pod(),
                 def: VDef::Struct(VStructDef {
                     field_count,
                     fields,

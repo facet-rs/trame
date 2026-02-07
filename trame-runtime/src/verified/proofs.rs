@@ -87,6 +87,7 @@ fn nested_struct_navigation() {
     // Inner struct with 2 scalar fields
     let inner_def = VShapeDef {
         layout: Layout::from_size_align(8, 1).unwrap(),
+        type_ops: VTypeOps::pod(),
         def: VDef::Struct(VStructDef {
             field_count: 2,
             fields: {
@@ -102,6 +103,7 @@ fn nested_struct_navigation() {
     // Outer struct with scalar + inner struct
     let outer_def = VShapeDef {
         layout: Layout::from_size_align(12, 1).unwrap(),
+        type_ops: VTypeOps::pod(),
         def: VDef::Struct(VStructDef {
             field_count: 2,
             fields: {
@@ -166,6 +168,7 @@ fn field_handles_valid() {
 
     let struct_def = VShapeDef {
         layout: Layout::from_size_align((field_count as usize) * 4, 1).unwrap(),
+        type_ops: VTypeOps::pod(),
         def: VDef::Struct(VStructDef {
             field_count,
             fields,

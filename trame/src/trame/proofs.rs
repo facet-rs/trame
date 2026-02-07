@@ -2,7 +2,7 @@ use super::*;
 use crate::Path;
 use crate::runtime::verified::{
     MAX_FIELDS_PER_STRUCT, VDef, VFieldDef, VRuntime, VShapeDef, VShapeHandle, VStructDef,
-    vshape_register, vshape_store, vshape_view,
+    VTypeOps, vshape_register, vshape_store, vshape_view,
 };
 use core::alloc::Layout;
 use trame_runtime::{IField, IShape, IStructType};
@@ -45,6 +45,7 @@ fn struct_all_fields_required() {
 
     let struct_def = VShapeDef {
         layout: Layout::from_size_align((field_count as usize) * 4, 1).unwrap(),
+        type_ops: VTypeOps::pod(),
         def: VDef::Struct(VStructDef {
             field_count,
             fields: fields_arr,
@@ -100,6 +101,7 @@ fn double_init_rejected() {
 
     let inner_def = VShapeDef {
         layout: Layout::from_size_align(4, 1).unwrap(),
+        type_ops: VTypeOps::pod(),
         def: VDef::Struct(VStructDef {
             field_count: 1,
             fields: {
@@ -112,6 +114,7 @@ fn double_init_rejected() {
     let inner_h = vshape_register(inner_def);
     let outer_def = VShapeDef {
         layout: Layout::from_size_align(4, 1).unwrap(),
+        type_ops: VTypeOps::pod(),
         def: VDef::Struct(VStructDef {
             field_count: 1,
             fields: {
@@ -173,6 +176,7 @@ fn incomplete_finish_fails() {
 
     let struct_def = VShapeDef {
         layout: Layout::from_size_align((field_count as usize) * 4, 1).unwrap(),
+        type_ops: VTypeOps::pod(),
         def: VDef::Struct(VStructDef {
             field_count,
             fields: fields_arr,
@@ -222,6 +226,7 @@ fn out_of_bounds_rejected() {
 
     let struct_def = VShapeDef {
         layout: Layout::from_size_align((field_count as usize) * 4, 1).unwrap(),
+        type_ops: VTypeOps::pod(),
         def: VDef::Struct(VStructDef {
             field_count,
             fields: fields_arr,
@@ -262,6 +267,7 @@ fn any_init_order_completes() {
 
     let struct_def = VShapeDef {
         layout: Layout::from_size_align(12, 1).unwrap(),
+        type_ops: VTypeOps::pod(),
         def: VDef::Struct(VStructDef {
             field_count: 3,
             fields: {
@@ -328,6 +334,7 @@ fn nested_struct_field_tracking() {
     let scalar_h = vshape_register(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
     let inner_def = VShapeDef {
         layout: Layout::from_size_align(8, 1).unwrap(),
+        type_ops: VTypeOps::pod(),
         def: VDef::Struct(VStructDef {
             field_count: 2,
             fields: {
@@ -343,6 +350,7 @@ fn nested_struct_field_tracking() {
     // Outer struct: { x: u32, inner: Inner }
     let outer_def = VShapeDef {
         layout: Layout::from_size_align(12, 1).unwrap(),
+        type_ops: VTypeOps::pod(),
         def: VDef::Struct(VStructDef {
             field_count: 2,
             fields: {
@@ -421,6 +429,7 @@ fn stage_end_lifecycle() {
     let scalar_h = vshape_register(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
     let inner_def = VShapeDef {
         layout: Layout::from_size_align(8, 1).unwrap(),
+        type_ops: VTypeOps::pod(),
         def: VDef::Struct(VStructDef {
             field_count: 2,
             fields: {
@@ -436,6 +445,7 @@ fn stage_end_lifecycle() {
     // Outer struct: { x: u32, inner: Inner }
     let outer_def = VShapeDef {
         layout: Layout::from_size_align(12, 1).unwrap(),
+        type_ops: VTypeOps::pod(),
         def: VDef::Struct(VStructDef {
             field_count: 2,
             fields: {
@@ -518,6 +528,7 @@ fn stage_reenter_root_ok() {
     let scalar_h = vshape_register(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
     let inner_def = VShapeDef {
         layout: Layout::from_size_align(4, 1).unwrap(),
+        type_ops: VTypeOps::pod(),
         def: VDef::Struct(VStructDef {
             field_count: 1,
             fields: {
@@ -531,6 +542,7 @@ fn stage_reenter_root_ok() {
 
     let outer_def = VShapeDef {
         layout: Layout::from_size_align(4, 1).unwrap(),
+        type_ops: VTypeOps::pod(),
         def: VDef::Struct(VStructDef {
             field_count: 1,
             fields: {
@@ -583,6 +595,7 @@ fn end_op_at_root_fails() {
     let scalar_h = vshape_register(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
     let struct_def = VShapeDef {
         layout: Layout::from_size_align(4, 1).unwrap(),
+        type_ops: VTypeOps::pod(),
         def: VDef::Struct(VStructDef {
             field_count: 1,
             fields: {
@@ -623,6 +636,7 @@ fn end_op_incomplete_inner_fails() {
     let scalar_h = vshape_register(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
     let inner_def = VShapeDef {
         layout: Layout::from_size_align(8, 1).unwrap(),
+        type_ops: VTypeOps::pod(),
         def: VDef::Struct(VStructDef {
             field_count: 2,
             fields: {
@@ -637,6 +651,7 @@ fn end_op_incomplete_inner_fails() {
 
     let outer_def = VShapeDef {
         layout: Layout::from_size_align(8, 1).unwrap(),
+        type_ops: VTypeOps::pod(),
         def: VDef::Struct(VStructDef {
             field_count: 1,
             fields: {
@@ -687,6 +702,7 @@ fn nested_drop_cleanup() {
     let scalar_h = vshape_register(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
     let inner_def = VShapeDef {
         layout: Layout::from_size_align(4, 1).unwrap(),
+        type_ops: VTypeOps::pod(),
         def: VDef::Struct(VStructDef {
             field_count: 1,
             fields: {
@@ -700,6 +716,7 @@ fn nested_drop_cleanup() {
 
     let outer_def = VShapeDef {
         layout: Layout::from_size_align(4, 1).unwrap(),
+        type_ops: VTypeOps::pod(),
         def: VDef::Struct(VStructDef {
             field_count: 1,
             fields: {
@@ -749,6 +766,7 @@ fn depth_tracking_correct() {
     let scalar_h = vshape_register(VShapeDef::scalar(Layout::from_size_align(4, 1).unwrap()));
     let inner_def = VShapeDef {
         layout: Layout::from_size_align(4, 1).unwrap(),
+        type_ops: VTypeOps::pod(),
         def: VDef::Struct(VStructDef {
             field_count: 1,
             fields: {
@@ -762,6 +780,7 @@ fn depth_tracking_correct() {
 
     let outer_def = VShapeDef {
         layout: Layout::from_size_align(4, 1).unwrap(),
+        type_ops: VTypeOps::pod(),
         def: VDef::Struct(VStructDef {
             field_count: 1,
             fields: {
@@ -852,6 +871,7 @@ fn arbitrary_ops_simple_struct() {
     let scalar_h = vshape_register(VShapeDef::scalar(Layout::from_size_align(4, 4).unwrap()));
     let struct_def = VShapeDef {
         layout: Layout::from_size_align(8, 4).unwrap(),
+        type_ops: VTypeOps::pod(),
         def: VDef::Struct(VStructDef {
             field_count: 2,
             fields: {

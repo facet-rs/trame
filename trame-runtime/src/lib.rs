@@ -130,6 +130,38 @@ pub trait IShape: Copy + PartialEq + IShapeExtra {
     fn as_pointer(&self) -> Option<Self::PointerType>;
 }
 
+/// Shape operations required by executable heaps.
+///
+/// This extends `IShape` with the operations that an actual heap needs at runtime
+/// to initialize, drop, and build pointer values.
+pub trait IExecShape<P>: IShape {
+    /// Whether dropping values of this shape can have observable effects.
+    fn needs_drop(&self) -> bool;
+
+    /// Drop the value at `ptr`.
+    ///
+    /// # Safety
+    /// `ptr` must point to a valid initialized value of this shape.
+    unsafe fn drop_in_place(&self, ptr: P);
+
+    /// Default-initialize the value at `ptr`.
+    ///
+    /// Returns false if this shape has no default operation.
+    ///
+    /// # Safety
+    /// `ptr` must point to uninitialized storage for this shape.
+    unsafe fn default_in_place(&self, ptr: P) -> bool;
+
+    /// Construct a pointer value at `dst` from a pointee value at `src`.
+    ///
+    /// Returns false if this pointer shape cannot be constructed from the given pointee shape.
+    ///
+    /// # Safety
+    /// `dst` must point to uninitialized storage for `self`, and `src` must point to an
+    /// initialized value of `pointee_shape`.
+    unsafe fn pointer_from_pointee(&self, dst: P, src: P, pointee_shape: Self) -> bool;
+}
+
 /// Interface for smart pointer type information.
 pub trait IPointerType: Copy {
     /// The shape type.

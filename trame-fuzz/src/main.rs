@@ -4,7 +4,7 @@ use arbitrary::Arbitrary;
 use facet::Facet;
 use facet_core::Shape;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use trame::{IRuntime, LRuntime, Op, Path, PathSegment, Source, Trame};
+use trame::{LRuntime, Op, Path, PathSegment, Source, Trame};
 
 // ============================================================================
 // Compound types for fuzzing

@@ -2,17 +2,36 @@
 //! allocations, etc.
 
 use crate::{
-    CopyDesc, IArena, IField, IHeap, IPointerType, IRuntime, IShape, IShapeStore, IStructType, Idx,
+    CopyDesc, IArena, IExecShape, IField, IHeap, IPointerType, IRuntime, IShape, IShapeStore,
+    IStructType, Idx,
 };
+use core::marker::PhantomData;
 use facet_core::{
     Def, Field, KnownPointer, PointerDef, PtrMut, PtrUninit, Shape, StructType, Type, UserType,
 };
 
 /// A "live" runtime that just peforms raw unsafe Rust operations
-pub struct LRuntime;
+pub struct LRuntime<S = &'static Shape> {
+    _shape: PhantomData<fn() -> S>,
+}
 
-impl IRuntime for LRuntime {
-    type Shape = &'static Shape;
+impl LRuntime<&'static Shape> {
+    /// Build the default live heap over facet's static shapes.
+    pub fn heap() -> LHeap {
+        LHeap::new()
+    }
+
+    /// Build the default live arena over facet's static shapes.
+    pub fn arena<T>() -> LArena<T> {
+        LArena::new()
+    }
+}
+
+impl<S> IRuntime for LRuntime<S>
+where
+    S: IExecShape<*mut u8>,
+{
+    type Shape = S;
     type Heap = LHeap;
     type Arena<T> = LArena<T>;
 
@@ -129,6 +148,45 @@ impl IField for &'static Field {
     }
 }
 
+impl IExecShape<*mut u8> for &'static Shape {
+    #[inline]
+    fn needs_drop(&self) -> bool {
+        true
+    }
+
+    #[inline]
+    unsafe fn drop_in_place(&self, ptr: *mut u8) {
+        unsafe {
+            self.call_drop_in_place(PtrMut::new(ptr));
+        }
+    }
+
+    #[inline]
+    unsafe fn default_in_place(&self, ptr: *mut u8) -> bool {
+        unsafe {
+            self.call_default_in_place(PtrMut::new(ptr).into())
+                .is_some()
+        }
+    }
+
+    #[inline]
+    unsafe fn pointer_from_pointee(&self, dst: *mut u8, src: *mut u8, pointee_shape: Self) -> bool {
+        let Def::Pointer(pointer_def) = self.def else {
+            return false;
+        };
+        if pointer_def.pointee() != Some(pointee_shape) {
+            return false;
+        }
+        let Some(new_into_fn) = pointer_def.vtable.new_into_fn else {
+            return false;
+        };
+        unsafe {
+            new_into_fn(PtrUninit::new(dst), PtrMut::new(src));
+        }
+        true
+    }
+}
+
 // ==================================================================
 // Heap
 // ==================================================================
@@ -150,10 +208,10 @@ impl Default for LHeap {
     }
 }
 
-impl IHeap<&'static Shape> for LHeap {
+impl<S: IExecShape<*mut u8>> IHeap<S> for LHeap {
     type Ptr = *mut u8;
 
-    unsafe fn alloc(&mut self, shape: &'static Shape) -> *mut u8 {
+    unsafe fn alloc(&mut self, shape: S) -> *mut u8 {
         let layout = shape.layout();
         if let Some(layout) = layout {
             if layout.size() == 0 {
@@ -179,7 +237,7 @@ impl IHeap<&'static Shape> for LHeap {
         }
     }
 
-    unsafe fn dealloc(&mut self, ptr: *mut u8, shape: &'static Shape) {
+    unsafe fn dealloc(&mut self, ptr: *mut u8, shape: S) {
         if let Some(layout) = shape.layout() {
             if layout.size() > 0 {
                 // SAFETY: caller guarantees this is a live allocation
@@ -188,11 +246,11 @@ impl IHeap<&'static Shape> for LHeap {
         }
     }
 
-    unsafe fn dealloc_moved(&mut self, ptr: *mut u8, shape: &'static Shape) {
+    unsafe fn dealloc_moved(&mut self, ptr: *mut u8, shape: S) {
         unsafe { self.dealloc(ptr, shape) };
     }
 
-    unsafe fn memcpy(&mut self, dst: *mut u8, src: *mut u8, desc: CopyDesc<&'static Shape>) {
+    unsafe fn memcpy(&mut self, dst: *mut u8, src: *mut u8, desc: CopyDesc<S>) {
         let len = desc.byte_len();
         if len > 0 {
             // SAFETY: caller guarantees non-overlapping, valid pointers
@@ -202,38 +260,24 @@ impl IHeap<&'static Shape> for LHeap {
         }
     }
 
-    unsafe fn drop_in_place(&mut self, ptr: *mut u8, shape: &'static Shape) {
-        unsafe { shape.call_drop_in_place(facet_core::PtrMut::new(ptr)) };
+    unsafe fn drop_in_place(&mut self, ptr: *mut u8, shape: S) {
+        if shape.needs_drop() {
+            unsafe { shape.drop_in_place(ptr) };
+        }
     }
 
-    unsafe fn default_in_place(&mut self, ptr: *mut u8, shape: &'static Shape) -> bool {
-        unsafe {
-            shape
-                .call_default_in_place(facet_core::PtrMut::new(ptr).into())
-                .is_some()
-        }
+    unsafe fn default_in_place(&mut self, ptr: *mut u8, shape: S) -> bool {
+        unsafe { shape.default_in_place(ptr) }
     }
 
     unsafe fn pointer_from_pointee(
         &mut self,
         dst: *mut u8,
-        pointer_shape: &'static Shape,
+        pointer_shape: S,
         src: *mut u8,
-        pointee_shape: &'static Shape,
+        pointee_shape: S,
     ) -> bool {
-        let Def::Pointer(pointer_def) = pointer_shape.def else {
-            return false;
-        };
-        if pointer_def.pointee() != Some(pointee_shape) {
-            return false;
-        }
-        let Some(new_into_fn) = pointer_def.vtable.new_into_fn else {
-            return false;
-        };
-        unsafe {
-            new_into_fn(PtrUninit::new(dst), PtrMut::new(src));
-        }
-        true
+        unsafe { pointer_shape.pointer_from_pointee(dst, src, pointee_shape) }
     }
 }
 

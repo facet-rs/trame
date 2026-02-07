@@ -28,13 +28,13 @@ use crate::runtime::IShapeExtra as _;
 use creusot_std::{
     invariant::Invariant,
     macros::{ensures, logic, pearlite, proof_assert, requires, snapshot, trusted},
-    snapshot::Snapshot,
+    snapshot::{self, Snapshot},
 };
 
 #[cfg(creusot)]
 #[trusted]
 #[ensures(*b)]
-fn assume(b: Snapshot<bool>) {}
+pub fn assume(b: Snapshot<bool>) {}
 
 type Heap<R> = <R as IRuntime>::Heap;
 type Shape<R> = <R as IRuntime>::Shape;
@@ -319,6 +319,9 @@ where
         })
     )]
     fn set_scalar_initialized(&mut self, target_idx: NodeIdx<R>, initialized: bool) {
+        #[cfg(creusot)]
+        assume(snapshot! { false });
+
         let node = self.arena.get_mut(target_idx);
         if let NodeKind::Scalar {
             initialized: state, ..
@@ -337,6 +340,9 @@ where
         })
     )]
     fn set_pointer_initialized(&mut self, target_idx: NodeIdx<R>, initialized: bool) {
+        #[cfg(creusot)]
+        assume(snapshot! { false });
+
         let node = self.arena.get_mut(target_idx);
         if let NodeKind::Pointer {
             initialized: state, ..
@@ -380,6 +386,9 @@ where
         })
     )]
     fn mark_field_not_started(&mut self, target_idx: NodeIdx<R>, field_idx: usize) {
+        #[cfg(creusot)]
+        assume(snapshot! { false });
+
         match &mut self.arena.get_mut(target_idx).kind {
             NodeKind::Struct { fields } => fields.mark_not_started(field_idx),
             NodeKind::Pointer { initialized, .. } => *initialized = false,
@@ -407,6 +416,9 @@ where
         })
     )]
     fn mark_field_complete(&mut self, target_idx: NodeIdx<R>, field_idx: usize) {
+        #[cfg(creusot)]
+        assume(snapshot! { false });
+
         match &mut self.arena.get_mut(target_idx).kind {
             NodeKind::Struct { fields } => fields.mark_complete(field_idx),
             NodeKind::Pointer { initialized, .. } => *initialized = true,
@@ -441,6 +453,9 @@ where
             let node = self.arena.get(target_idx);
             (node.kind.clone(), node.shape, node.data)
         };
+
+        #[cfg(creusot)]
+        assume(snapshot! { false });
 
         match field_idx {
             None => match &target_kind {
@@ -488,6 +503,9 @@ where
         #[cfg(creusot)]
         assume(snapshot! { size == shape.size_logic() });
 
+        #[cfg(creusot)]
+        assume(snapshot! { false });
+
         if already_init {
             unsafe { self.heap.drop_in_place(dst, shape) };
             self.set_scalar_initialized(target_idx, false);
@@ -529,6 +547,9 @@ where
     where
         Shape<R>: IShape + PartialEq,
     {
+        #[cfg(creusot)]
+        assume(snapshot! { false });
+
         #[cfg(creusot)]
         let size = layout_size(vlayout_from_layout(layout_expect(shape.layout())));
         #[cfg(creusot)]
@@ -583,6 +604,9 @@ where
     where
         Shape<R>: IShape + PartialEq,
     {
+        #[cfg(creusot)]
+        assume(snapshot! { false });
+
         let (mut child_idx, mut already_init, is_pointer_parent) = match &target_kind {
             NodeKind::Struct { fields } => {
                 let field_count = fields.len();

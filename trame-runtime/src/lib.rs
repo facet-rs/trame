@@ -194,6 +194,7 @@ impl<S> CopyDesc<S> {
 
 impl<S: IShape> CopyDesc<S> {
     /// Compute the byte length described by this descriptor.
+    #[cfg_attr(creusot, trusted)]
     pub fn byte_len(self) -> usize {
         match self {
             Self::Value(shape) => shape

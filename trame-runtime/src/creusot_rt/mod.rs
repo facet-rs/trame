@@ -609,6 +609,13 @@ impl IHeap<CShapeView<'_>> for CHeap {
             pointee_shape.handle
         )))
     )]
+    #[cfg_attr(creusot, requires(self.can_drop(src, pointee_shape)))]
+    #[cfg_attr(creusot, ensures(result ==> self.can_drop(dst, pointer_shape)))]
+    #[cfg_attr(creusot, ensures(result ==> self.range_init(dst, pointer_shape.size_logic())))]
+    #[cfg_attr(creusot, ensures(!result ==> (^self).can_drop(dst, pointer_shape) == (*self).can_drop(dst, pointer_shape)))]
+    #[cfg_attr(creusot, ensures(!result ==> (^self).range_init(dst, pointer_shape.size_logic()) == (*self).range_init(dst, pointer_shape.size_logic())))]
+    #[cfg_attr(creusot, ensures(forall<ptr2, shape2> ptr2 != dst ==> (^self).can_drop(ptr2, shape2) == (*self).can_drop(ptr2, shape2)))]
+    #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != dst ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
     unsafe fn pointer_from_pointee(
         &mut self,
         dst: CPtr,

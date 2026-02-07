@@ -310,7 +310,19 @@ where
         Ok(self.current)
     }
 
+    // todo(creusot): specification inference should work on standard functions
+    // so that we can drop all these specs here. this is absurd
     #[cfg_attr(creusot, requires(self.arena.contains(target_idx)))]
+    #[cfg_attr(creusot, requires(
+        initialized == self.heap.range_init(
+            self.arena.get_logic(target_idx).data,
+            self.arena.get_logic(target_idx).shape.size_logic()))
+    )]
+    #[cfg_attr(creusot, requires(
+        initialized == self.heap.can_drop(
+            self.arena.get_logic(target_idx).data,
+            self.arena.get_logic(target_idx).shape))
+    )]
     #[cfg_attr(
         creusot,
         ensures(match (^self).arena.get_logic(target_idx).kind {
@@ -318,10 +330,8 @@ where
             _ => true,
         })
     )]
+    #[cfg_attr(creusot, ensures(forall<i : _> i != target_idx ==> (^self).arena.get_logic(target_idx) == (*self).arena.get_logic(target_idx)))]
     fn set_scalar_initialized(&mut self, target_idx: NodeIdx<R>, initialized: bool) {
-        #[cfg(creusot)]
-        assume(snapshot! { false });
-
         let node = self.arena.get_mut(target_idx);
         if let NodeKind::Scalar {
             initialized: state, ..

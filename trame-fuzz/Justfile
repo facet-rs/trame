@@ -2,13 +2,22 @@ list:
     just --list
 
 afl_target := "target-afl"
+main_bin := afl_target + "/debug/trame-fuzz"
+vshape_bin := afl_target + "/debug/vshape"
 
 # Build and run the fuzzer with SAND (decoupled sanitizers)
 fuzz: build
     cargo afl fuzz -i in -o out \
-        -w {{ afl_target }}/debug/trame-fuzz-asan \
-        -w {{ afl_target }}/debug/trame-fuzz-msan \
-        -- {{ afl_target }}/debug/trame-fuzz
+        -w {{ main_bin }}-asan \
+        -w {{ main_bin }}-msan \
+        -- {{ main_bin }}
+
+# Build and run the VShape fuzzer (LRuntime + VShapeView)
+fuzz-vshape: build-vshape
+    cargo afl fuzz -i in-vshape -o out-vshape \
+        -w {{ vshape_bin }}-asan \
+        -w {{ vshape_bin }}-msan \
+        -- {{ vshape_bin }}
 
 # Build all binaries: native + sanitizer variants
 build: build-native build-asan build-msan
@@ -20,19 +29,43 @@ build-native:
 # Build with AddressSanitizer + UBSan
 build-asan:
     CARGO_TARGET_DIR={{ afl_target }} AFL_LLVM_ONLY_FSRV=1 AFL_USE_ASAN=1 AFL_USE_UBSAN=1 cargo afl build
-    cp {{ afl_target }}/debug/trame-fuzz {{ afl_target }}/debug/trame-fuzz-asan
+    cp {{ main_bin }} {{ main_bin }}-asan
 
 # Build with MemorySanitizer
 build-msan:
     CARGO_TARGET_DIR={{ afl_target }} AFL_LLVM_ONLY_FSRV=1 AFL_USE_MSAN=1 cargo afl build
-    cp {{ afl_target }}/debug/trame-fuzz {{ afl_target }}/debug/trame-fuzz-msan
+    cp {{ main_bin }} {{ main_bin }}-msan
+
+# Build all VShape binaries: native + sanitizer variants
+build-vshape: build-vshape-native build-vshape-asan build-vshape-msan
+
+# Build VShape native binary (no sanitizers, full speed)
+build-vshape-native:
+    CARGO_TARGET_DIR={{ afl_target }} cargo afl build --bin vshape
+
+# Build VShape with AddressSanitizer + UBSan
+build-vshape-asan:
+    CARGO_TARGET_DIR={{ afl_target }} AFL_LLVM_ONLY_FSRV=1 AFL_USE_ASAN=1 AFL_USE_UBSAN=1 cargo afl build --bin vshape
+    cp {{ vshape_bin }} {{ vshape_bin }}-asan
+
+# Build VShape with MemorySanitizer
+build-vshape-msan:
+    CARGO_TARGET_DIR={{ afl_target }} AFL_LLVM_ONLY_FSRV=1 AFL_USE_MSAN=1 cargo afl build --bin vshape
+    cp {{ vshape_bin }} {{ vshape_bin }}-msan
 
 # Resume fuzzing from previous state
 resume: build
     cargo afl fuzz -i- -o out \
-        -w {{ afl_target }}/debug/trame-fuzz-asan \
-        -w {{ afl_target }}/debug/trame-fuzz-msan \
-        -- {{ afl_target }}/debug/trame-fuzz
+        -w {{ main_bin }}-asan \
+        -w {{ main_bin }}-msan \
+        -- {{ main_bin }}
+
+# Resume VShape fuzzing from previous state
+resume-vshape: build-vshape
+    cargo afl fuzz -i- -o out-vshape \
+        -w {{ vshape_bin }}-asan \
+        -w {{ vshape_bin }}-msan \
+        -- {{ vshape_bin }}
 
 # Build standalone binary (for reproducing crashes, running under Miri, etc.)
 build-standalone:
@@ -46,14 +79,29 @@ run file: build-standalone
 run-bt file: build-standalone
     RUST_BACKTRACE=1 target-standalone/debug/trame-fuzz < {{ file }}
 
+# Run VShape target from a single input file (standalone mode)
+run-vshape file:
+    cargo build --features standalone --bin vshape --target-dir target-standalone
+    target-standalone/debug/vshape < {{ file }}
+
+# Run VShape with backtrace
+run-vshape-bt file:
+    cargo build --features standalone --bin vshape --target-dir target-standalone
+    RUST_BACKTRACE=1 target-standalone/debug/vshape < {{ file }}
+
 # Run under Miri
 run-miri file:
     MIRIFLAGS="-Zmiri-disable-isolation" cargo +nightly miri run --features standalone --target-dir target-miri < {{ file }}
 
 # Minimize a crash input
 minimize file:
-    cargo afl tmin -i {{ file }} -o minimized.bin -- {{ afl_target }}/debug/trame-fuzz
+    cargo afl tmin -i {{ file }} -o minimized.bin -- {{ main_bin }}
     @echo "Minimized input saved to minimized.bin"
+
+# Minimize a VShape crash input
+minimize-vshape file:
+    cargo afl tmin -i {{ file }} -o minimized-vshape.bin -- {{ vshape_bin }}
+    @echo "Minimized input saved to minimized-vshape.bin"
 
 # List all crashes
 crashes:
@@ -114,4 +162,4 @@ cov format="report": build-cov
 
 # Clean build artifacts and output
 clean:
-    rm -rf target target-afl target-standalone target-cov target-miri out minimized.bin coverage
+    rm -rf target target-afl target-standalone target-cov target-miri out out-vshape minimized.bin minimized-vshape.bin coverage

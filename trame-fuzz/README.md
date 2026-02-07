@@ -11,7 +11,15 @@ Supports three modes:
 - **Standalone mode** (`--features standalone`) - For reproducing crashes and running under Miri
 - **Coverage mode** - LLVM source coverage via `cargo-llvm-cov`
 
-Run with `just fuzz` from the workspace root.
+Fuzz entry points:
+
+- `trame-fuzz` (existing): `LRuntime<&'static Shape>`
+- `vshape` (new): `LRuntime<VShapeView<'static, VShapeStore>>`
+
+Run with:
+
+- `just fuzz` for the existing target
+- `just fuzz-vshape` for the new VShape target
 
 
 ## Sponsors

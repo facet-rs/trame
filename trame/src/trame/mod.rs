@@ -28,13 +28,13 @@ use crate::runtime::IShapeExtra as _;
 use creusot_std::{
     invariant::Invariant,
     macros::{ensures, logic, pearlite, proof_assert, requires, snapshot, trusted},
-    snapshot::Snapshot,
+    snapshot::{self, Snapshot},
 };
 
 #[cfg(creusot)]
 #[trusted]
 #[ensures(*b)]
-fn assume(b: Snapshot<bool>) {}
+pub fn assume(b: Snapshot<bool>) {}
 
 type Heap<R> = <R as IRuntime>::Heap;
 type Shape<R> = <R as IRuntime>::Shape;
@@ -310,7 +310,19 @@ where
         Ok(self.current)
     }
 
+    // todo(creusot): specification inference should work on standard functions
+    // so that we can drop all these specs here. this is absurd
     #[cfg_attr(creusot, requires(self.arena.contains(target_idx)))]
+    #[cfg_attr(creusot, requires(
+        match self.arena.get_logic(target_idx).kind {
+            NodeKind::Scalar { .. } => {
+                let node = self.arena.get_logic(target_idx);
+                initialized == self.heap.range_init(node.data, node.shape.size_logic())
+                && initialized == self.heap.can_drop(node.data, node.shape)
+            },
+            _ => true,
+        }
+    ))]
     #[cfg_attr(
         creusot,
         ensures(match (^self).arena.get_logic(target_idx).kind {
@@ -329,6 +341,16 @@ where
     }
 
     #[cfg_attr(creusot, requires(self.arena.contains(target_idx)))]
+    #[cfg_attr(creusot, requires(
+      match self.arena.get_logic(target_idx).kind {
+          NodeKind::Pointer { .. } => {
+              let node = self.arena.get_logic(target_idx);
+              initialized == self.heap.range_init(node.data, node.shape.size_logic())
+              && initialized == self.heap.can_drop(node.data, node.shape)
+          },
+          _ => true,
+      }
+    ))]
     #[cfg_attr(
         creusot,
         ensures(match (^self).arena.get_logic(target_idx).kind {
@@ -370,6 +392,19 @@ where
     )]
     #[cfg_attr(
         creusot,
+        requires(match self.arena.get_logic(target_idx).kind {
+            NodeKind::Pointer { .. } =>
+                !self.heap.range_init(
+                    self.arena.get_logic(target_idx).data,
+                    self.arena.get_logic(target_idx).shape.size_logic())
+                && !self.heap.can_drop(
+                    self.arena.get_logic(target_idx).data,
+                    self.arena.get_logic(target_idx).shape),
+            _ => true,
+        })
+    )]
+    #[cfg_attr(
+        creusot,
         ensures(match (^self).arena.get_logic(target_idx).kind {
             NodeKind::Struct { fields } => match fields.slots@[field_idx@] {
                 FieldSlot::Complete => false,
@@ -392,6 +427,19 @@ where
         creusot,
         requires(match self.arena.get_logic(target_idx).kind {
             NodeKind::Struct { fields } => field_idx@ < fields.len_logic(),
+            _ => true,
+        })
+    )]
+    #[cfg_attr(
+        creusot,
+        requires(match self.arena.get_logic(target_idx).kind {
+            NodeKind::Pointer { .. } =>
+                self.heap.range_init(
+                    self.arena.get_logic(target_idx).data,
+                    self.arena.get_logic(target_idx).shape.size_logic())
+                && self.heap.can_drop(
+                    self.arena.get_logic(target_idx).data,
+                    self.arena.get_logic(target_idx).shape),
             _ => true,
         })
     )]
@@ -442,6 +490,9 @@ where
             (node.kind.clone(), node.shape, node.data)
         };
 
+        #[cfg(creusot)]
+        assume(snapshot! { false });
+
         match field_idx {
             None => match &target_kind {
                 NodeKind::Scalar { initialized } => self.apply_set_direct_scalar(
@@ -488,6 +539,9 @@ where
         #[cfg(creusot)]
         assume(snapshot! { size == shape.size_logic() });
 
+        #[cfg(creusot)]
+        assume(snapshot! { false });
+
         if already_init {
             unsafe { self.heap.drop_in_place(dst, shape) };
             self.set_scalar_initialized(target_idx, false);
@@ -529,6 +583,9 @@ where
     where
         Shape<R>: IShape + PartialEq,
     {
+        #[cfg(creusot)]
+        assume(snapshot! { false });
+
         #[cfg(creusot)]
         let size = layout_size(vlayout_from_layout(layout_expect(shape.layout())));
         #[cfg(creusot)]
@@ -583,6 +640,9 @@ where
     where
         Shape<R>: IShape + PartialEq,
     {
+        #[cfg(creusot)]
+        assume(snapshot! { false });
+
         let (mut child_idx, mut already_init, is_pointer_parent) = match &target_kind {
             NodeKind::Struct { fields } => {
                 let field_count = fields.len();

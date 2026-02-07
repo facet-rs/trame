@@ -238,6 +238,7 @@ impl<F> FieldStates<F> {
     /// Mark a field as complete (initialized).
     #[cfg_attr(creusot, requires(idx@ < self.len_logic()))]
     #[cfg_attr(creusot, ensures(self.len_logic() == (^self).len_logic()))]
+    #[cfg_attr(creusot, ensures((^self).slots@[idx@] == FieldSlot::Complete))]
     pub(crate) fn mark_complete(&mut self, idx: usize) {
         debug_assert!(idx < self.slots.len());
         self.slots[idx] = FieldSlot::Complete;
@@ -246,6 +247,7 @@ impl<F> FieldStates<F> {
     /// Mark a field as not started.
     #[cfg_attr(creusot, requires(idx@ < self.len_logic()))]
     #[cfg_attr(creusot, ensures(self.len_logic() == (^self).len_logic()))]
+    #[cfg_attr(creusot, ensures((^self).slots@[idx@] == FieldSlot::Untracked))]
     pub(crate) fn mark_not_started(&mut self, idx: usize) {
         debug_assert!(idx < self.slots.len());
         self.slots[idx] = FieldSlot::Untracked;

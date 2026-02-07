@@ -410,7 +410,7 @@ impl IPtr for CPtr {
     }
 
     #[logic(opaque)]
-    fn byte_add_logic(self, n: usize) -> Self {
+    fn byte_add_logic(self, _n: usize) -> Self {
         dead
     }
 }
@@ -623,7 +623,7 @@ impl IHeap<CShapeView<'_>> for CHeap {
     }
 
     #[logic(opaque)]
-    fn is(&self, state: MemState, ptr: Self::Ptr, shape: CShapeView<'_>) -> bool {
+    fn is(&self, _state: MemState, _ptr: Self::Ptr, _shape: CShapeView<'_>) -> bool {
         dead
     }
 }
@@ -749,18 +749,18 @@ impl<T> IArena<T> for CArena<T> {
     }
 
     #[logic(opaque)]
-    fn contains(self, id: Idx<T>) -> bool {
+    fn contains(self, _id: Idx<T>) -> bool {
         dead
     }
 
     #[logic(opaque)]
-    fn get_logic(self, id: Idx<T>) -> T {
+    fn get_logic(self, _id: Idx<T>) -> T {
         dead
     }
 }
 
 #[logic(opaque)]
-pub fn layout_size_logic(layout: std::alloc::Layout) -> Int {
+pub fn layout_size_logic(_layout: std::alloc::Layout) -> Int {
     dead
 }
 

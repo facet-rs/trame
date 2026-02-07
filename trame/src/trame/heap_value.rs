@@ -7,9 +7,7 @@ use crate::runtime::{IHeap, IRuntime};
 use crate::trame::assume;
 use core::marker::PhantomData;
 #[cfg(creusot)]
-use creusot_std::macros::{ensures, snapshot};
-#[cfg(creusot)]
-use creusot_std::prelude::trusted;
+use creusot_std::macros::snapshot;
 
 type Heap<R> = <R as IRuntime>::Heap;
 type Shape<R> = <R as IRuntime>::Shape;

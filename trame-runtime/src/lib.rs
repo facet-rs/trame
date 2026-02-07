@@ -21,7 +21,7 @@ use creusot_rt::layout_size_logic;
 use creusot_std::model::DeepModel;
 
 #[cfg(creusot)]
-use creusot_std::macros::{ensures, logic, pearlite, requires};
+use creusot_std::macros::{ensures, logic, requires};
 
 #[cfg(creusot)]
 use creusot_std::prelude::trusted;

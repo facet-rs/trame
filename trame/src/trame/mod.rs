@@ -27,8 +27,8 @@ use crate::runtime::IShapeExtra as _;
 #[cfg(creusot)]
 use creusot_std::{
     invariant::Invariant,
-    macros::{ensures, logic, pearlite, proof_assert, requires, snapshot, trusted},
-    snapshot::{self, Snapshot},
+    macros::{ensures, logic, requires, snapshot, trusted},
+    snapshot::Snapshot,
 };
 
 #[cfg(creusot)]

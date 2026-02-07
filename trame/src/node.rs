@@ -3,7 +3,7 @@ use crate::runtime::{IHeap, IShape, IStructType, Idx};
 #[cfg(creusot)]
 use creusot_std::logic::Int;
 #[cfg(creusot)]
-use creusot_std::macros::{ensures, logic, pearlite, requires, trusted};
+use creusot_std::macros::{ensures, logic, requires, trusted};
 #[cfg(creusot)]
 use creusot_std::model::DeepModel;
 

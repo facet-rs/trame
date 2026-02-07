@@ -4,6 +4,7 @@ use crate::runtime::live::*;
 use crate::runtime::verified::*;
 use crate::vshape_store_reset;
 use core::alloc::Layout;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use facet_core::Facet;
 
 /// Guard that resets the global shape store on creation and drop.
@@ -24,6 +25,28 @@ impl Drop for FreshStore {
         }
     }
 }
+
+static TRAME_LIVE_VSHAPE_DEFAULT_CALLS: AtomicUsize = AtomicUsize::new(0);
+static TRAME_LIVE_VSHAPE_POINTER_NEW_INTO_CALLS: AtomicUsize = AtomicUsize::new(0);
+const TRAME_LIVE_VSHAPE_MAGIC: usize = 0xA11C_E555;
+
+unsafe fn trame_live_vshape_default_magic(ptr: *mut u8) -> bool {
+    TRAME_LIVE_VSHAPE_DEFAULT_CALLS.fetch_add(1, Ordering::SeqCst);
+    unsafe {
+        ptr.cast::<usize>().write(TRAME_LIVE_VSHAPE_MAGIC);
+    }
+    true
+}
+
+unsafe fn trame_live_vshape_copy_new_into(dst: *mut u8, src: *mut u8) {
+    TRAME_LIVE_VSHAPE_POINTER_NEW_INTO_CALLS.fetch_add(1, Ordering::SeqCst);
+    let v = unsafe { src.cast::<usize>().read() };
+    unsafe {
+        dst.cast::<usize>().write(v);
+    }
+}
+
+unsafe fn trame_live_vshape_drop_noop(_ptr: *mut u8) {}
 
 #[test]
 fn scalar_lifecycle_verified() {
@@ -694,4 +717,71 @@ fn box_verified_stage_end_builds() {
     assert!(trame.is_complete());
 
     let _ = trame.build().unwrap();
+}
+
+#[test]
+fn box_live_vshape_stage_end_builds() {
+    let _g = FreshStore::new();
+    TRAME_LIVE_VSHAPE_DEFAULT_CALLS.store(0, Ordering::SeqCst);
+    TRAME_LIVE_VSHAPE_POINTER_NEW_INTO_CALLS.store(0, Ordering::SeqCst);
+
+    let pointee_h = vshape_register(VShapeDef::scalar_with_ops(
+        Layout::new::<usize>(),
+        VTypeOps::new(
+            false,
+            trame_live_vshape_drop_noop,
+            Some(trame_live_vshape_default_magic),
+        ),
+    ));
+    let pointer_h = vshape_register(VShapeDef::pointer_to_with_ops(
+        pointee_h,
+        true,
+        true,
+        VTypeOps::pod(),
+        VPointerVTable::new(Some(trame_live_vshape_copy_new_into)),
+    ));
+    let root_h = vshape_register(VShapeDef::struct_with_fields(
+        vshape_store(),
+        &[(0, pointer_h)],
+    ));
+    let root_shape = vshape_view(root_h);
+
+    type LiveVShapeRuntime = LRuntime<VShapeView<'static, VShapeStore>>;
+    let heap = LiveVShapeRuntime::heap();
+    let mut trame = unsafe { Trame::<LiveVShapeRuntime>::new(heap, root_shape) };
+
+    trame
+        .apply(Op::Set {
+            dst: Path::from_segments(&[PathSegment::Field(0)]),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::from_segments(&[PathSegment::Field(0)]),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::empty(),
+            src: Source::default_value(),
+        })
+        .unwrap();
+
+    trame.apply(Op::End).unwrap();
+    trame.apply(Op::End).unwrap();
+
+    assert!(trame.is_complete());
+    let hv = trame.build().unwrap();
+    let root_ptr = hv.data_ptr();
+    assert_eq!(
+        unsafe { root_ptr.cast::<usize>().read() },
+        TRAME_LIVE_VSHAPE_MAGIC
+    );
+    assert_eq!(TRAME_LIVE_VSHAPE_DEFAULT_CALLS.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        TRAME_LIVE_VSHAPE_POINTER_NEW_INTO_CALLS.load(Ordering::SeqCst),
+        1
+    );
 }

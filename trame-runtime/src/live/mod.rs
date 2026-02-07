@@ -5,15 +5,33 @@ use crate::{
     CopyDesc, IArena, IExecShape, IField, IHeap, IPointerType, IRuntime, IShape, IShapeStore,
     IStructType, Idx,
 };
+use core::marker::PhantomData;
 use facet_core::{
     Def, Field, KnownPointer, PointerDef, PtrMut, PtrUninit, Shape, StructType, Type, UserType,
 };
 
 /// A "live" runtime that just peforms raw unsafe Rust operations
-pub struct LRuntime;
+pub struct LRuntime<S = &'static Shape> {
+    _shape: PhantomData<fn() -> S>,
+}
 
-impl IRuntime for LRuntime {
-    type Shape = &'static Shape;
+impl LRuntime<&'static Shape> {
+    /// Build the default live heap over facet's static shapes.
+    pub fn heap() -> LHeap {
+        LHeap::new()
+    }
+
+    /// Build the default live arena over facet's static shapes.
+    pub fn arena<T>() -> LArena<T> {
+        LArena::new()
+    }
+}
+
+impl<S> IRuntime for LRuntime<S>
+where
+    S: IExecShape<*mut u8>,
+{
+    type Shape = S;
     type Heap = LHeap;
     type Arena<T> = LArena<T>;
 

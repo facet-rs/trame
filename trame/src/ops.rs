@@ -234,8 +234,8 @@ impl<'facet, P, S> Source<'facet, P, S> {
 // Live runtime constructors (facet shapes, raw pointers)
 // ============================================================================
 
-#[cfg(not(creusot))]
 impl<'facet> Source<'facet, *mut u8, &'static facet_core::Shape> {
+    #[cfg_attr(creusot, trusted)]
     /// Build an immediate source from a typed reference.
     ///
     /// This is the only safe way to create an immediate source for live runtimes.

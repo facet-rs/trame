@@ -29,8 +29,10 @@ Without this feature, the binary expects to run inside AFL's fork server.
 
 ```bash
 just fuzz           # Start fuzzing
+just fuzz-vshape    # Start VShape fuzzing (LRuntime + VShapeView)
 just resume         # Resume previous session
 just run <file>     # Reproduce a crash
+just run-vshape <file> # Reproduce a VShape crash
 just run-miri <file> # Run crash under Miri
 just cov html       # Generate coverage report
 just clean          # Remove all build artifacts

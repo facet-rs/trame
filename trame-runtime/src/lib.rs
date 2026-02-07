@@ -215,10 +215,12 @@ pub enum CopyDesc<S> {
 }
 
 impl<S> CopyDesc<S> {
+    #[cfg_attr(creusot, ensures(result == CopyDesc::Value(shape)))]
     pub const fn value(shape: S) -> Self {
         Self::Value(shape)
     }
 
+    #[cfg_attr(creusot, ensures(result == CopyDesc::Repeat { elem, count }))]
     pub const fn repeat(elem: S, count: usize) -> Self {
         Self::Repeat { elem, count }
     }
@@ -291,6 +293,7 @@ pub trait IHeap<S: IShape> {
     /// uninitialized for that same span, and the ranges do not overlap.
     #[cfg_attr(creusot, requires(self.range_init(src, desc.byte_len_logic())))]
     #[cfg_attr(creusot, ensures(self.range_init(dst, desc.byte_len_logic())))]
+    #[cfg_attr(creusot, ensures(match desc { CopyDesc::Value(shape) => (^self).can_drop(dst, shape), _ => true }))]
     #[cfg_attr(creusot, ensures(forall<ptr2, shape2> ptr2 != dst ==> (^self).can_drop(ptr2, shape2) == (*self).can_drop(ptr2, shape2)))]
     #[cfg_attr(creusot, ensures(forall<ptr2, range2> ptr2 != dst ==> (^self).range_init(ptr2, range2) == (*self).range_init(ptr2, range2)))]
     unsafe fn memcpy(&mut self, dst: Self::Ptr, src: Self::Ptr, desc: CopyDesc<S>);

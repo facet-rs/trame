@@ -523,6 +523,15 @@ where
         }
     }
 
+    #[cfg_attr(creusot, requires(self.arena.contains(target_idx)))]
+    #[cfg_attr(creusot, requires(self.arena.get_logic(target_idx).data == dst))]
+    #[cfg_attr(creusot, requires(self.arena.get_logic(target_idx).shape == shape))]
+    #[cfg_attr(creusot, requires(
+        match self.arena.get_logic(target_idx).kind {
+            NodeKind::Scalar { initialized } => initialized == already_init,
+            _ => false,
+        }
+    ))]
     fn apply_set_direct_scalar(
         &mut self,
         target_idx: NodeIdx<R>,
@@ -539,12 +548,16 @@ where
         #[cfg(creusot)]
         assume(snapshot! { size == shape.size_logic() });
 
-        #[cfg(creusot)]
-        assume(snapshot! { false });
-
         if already_init {
             unsafe { self.heap.drop_in_place(dst, shape) };
-            self.set_scalar_initialized(target_idx, false);
+            // Inline update: avoid calling set_scalar_initialized to prevent
+            // type invariant check while heap and arena are temporarily inconsistent.
+            if let NodeKind::Scalar {
+                initialized: state, ..
+            } = &mut self.arena.get_mut(target_idx).kind
+            {
+                *state = false;
+            }
         }
 
         match src.kind {
@@ -567,7 +580,13 @@ where
             SourceKind::Stage(_) => return Err(TrameError::UnsupportedSource),
         }
 
-        self.set_scalar_initialized(target_idx, true);
+        // Inline update: set initialized = true after the value is written.
+        if let NodeKind::Scalar {
+            initialized: state, ..
+        } = &mut self.arena.get_mut(target_idx).kind
+        {
+            *state = true;
+        }
         Ok(())
     }
 

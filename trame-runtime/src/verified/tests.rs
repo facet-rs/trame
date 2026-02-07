@@ -1,8 +1,31 @@
 use super::*;
+use crate::IHeap;
+use crate::live::LHeap;
 use core::alloc::Layout;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use facet_core::{Facet, Shape};
 
 type S<'a> = VShapeView<'a, VShapeStore>;
+
+static DROP_HOOK_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+unsafe fn count_drop_hook(_ptr: *mut u8) {
+    DROP_HOOK_CALLS.fetch_add(1, Ordering::SeqCst);
+}
+
+unsafe fn write_magic_u32_default(ptr: *mut u8) -> bool {
+    unsafe {
+        ptr.cast::<u32>().write(0xA11C_E555);
+    }
+    true
+}
+
+unsafe fn copy_usize_new_into(dst: *mut u8, src: *mut u8) {
+    let value = unsafe { core::ptr::read(src.cast::<usize>()) };
+    unsafe {
+        core::ptr::write(dst.cast::<usize>(), value);
+    }
+}
 
 #[test]
 fn verified_alloc_dealloc() {
@@ -18,6 +41,82 @@ fn verified_alloc_dealloc() {
 
     unsafe { heap.dealloc(ptr, shape) };
     heap.assert_no_leaks();
+}
+
+#[test]
+fn lheap_vshape_exec_hooks_run() {
+    DROP_HOOK_CALLS.store(0, Ordering::SeqCst);
+
+    let mut store = VShapeStore::new();
+    let shape_h = store.add(VShapeDef::scalar_with_ops(
+        Layout::new::<u32>(),
+        VTypeOps::new(true, count_drop_hook, Some(write_magic_u32_default)),
+    ));
+    let shape = store.view(shape_h);
+
+    let mut heap = LHeap::new();
+    let ptr = unsafe { heap.alloc(shape) };
+    let did_default = unsafe { heap.default_in_place(ptr, shape) };
+    assert!(did_default);
+    assert_eq!(unsafe { ptr.cast::<u32>().read() }, 0xA11C_E555);
+
+    unsafe {
+        heap.drop_in_place(ptr, shape);
+        heap.dealloc(ptr, shape);
+    }
+    assert_eq!(DROP_HOOK_CALLS.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn lheap_vshape_needs_drop_false_skips_drop_hook() {
+    DROP_HOOK_CALLS.store(0, Ordering::SeqCst);
+
+    let mut store = VShapeStore::new();
+    let shape_h = store.add(VShapeDef::scalar_with_ops(
+        Layout::new::<u32>(),
+        VTypeOps::new(false, count_drop_hook, None),
+    ));
+    let shape = store.view(shape_h);
+
+    let mut heap = LHeap::new();
+    let ptr = unsafe { heap.alloc(shape) };
+    unsafe {
+        heap.drop_in_place(ptr, shape);
+        heap.dealloc(ptr, shape);
+    }
+    assert_eq!(DROP_HOOK_CALLS.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn lheap_vshape_pointer_new_into_hook_runs() {
+    let mut store = VShapeStore::new();
+    let pointee_h = store.add(VShapeDef::scalar(Layout::new::<usize>()));
+    let pointer_h = store.add(VShapeDef::pointer_to_with_ops(
+        pointee_h,
+        true,
+        false,
+        VTypeOps::pod(),
+        VPointerVTable::new(Some(copy_usize_new_into)),
+    ));
+
+    let pointee_shape = store.view(pointee_h);
+    let pointer_shape = store.view(pointer_h);
+
+    let mut heap = LHeap::new();
+    let src = unsafe { heap.alloc(pointee_shape) };
+    unsafe {
+        src.cast::<usize>().write(0xDEAD_BEEF_usize);
+    }
+    let dst = unsafe { heap.alloc(pointer_shape) };
+
+    let ok = unsafe { heap.pointer_from_pointee(dst, pointer_shape, src, pointee_shape) };
+    assert!(ok);
+    assert_eq!(unsafe { dst.cast::<usize>().read() }, 0xDEAD_BEEF_usize);
+
+    unsafe {
+        heap.dealloc_moved(src, pointee_shape);
+        heap.dealloc(dst, pointer_shape);
+    }
 }
 
 #[test]

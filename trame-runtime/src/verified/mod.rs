@@ -12,8 +12,7 @@ mod byte_range;
 use byte_range::{ByteRangeError, ByteRangeTracker, Range};
 
 use crate::{
-    CopyDesc, IArena, IExecShape, IField, IHeap, IPointerType, IPtr, IRuntime, IShape,
-    IShapeStore,
+    CopyDesc, IArena, IExecShape, IField, IHeap, IPointerType, IPtr, IRuntime, IShape, IShapeStore,
     IStructType, Idx,
 };
 

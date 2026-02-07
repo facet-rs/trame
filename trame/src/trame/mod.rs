@@ -314,15 +314,15 @@ where
     // so that we can drop all these specs here. this is absurd
     #[cfg_attr(creusot, requires(self.arena.contains(target_idx)))]
     #[cfg_attr(creusot, requires(
-        initialized == self.heap.range_init(
-            self.arena.get_logic(target_idx).data,
-            self.arena.get_logic(target_idx).shape.size_logic()))
-    )]
-    #[cfg_attr(creusot, requires(
-        initialized == self.heap.can_drop(
-            self.arena.get_logic(target_idx).data,
-            self.arena.get_logic(target_idx).shape))
-    )]
+        match self.arena.get_logic(target_idx).kind {
+            NodeKind::Scalar { .. } => {
+                let node = self.arena.get_logic(target_idx);
+                initialized == self.heap.range_init(node.data, node.shape.size_logic())
+                && initialized == self.heap.can_drop(node.data, node.shape)
+            },
+            _ => true,
+        }
+    ))]
     #[cfg_attr(
         creusot,
         ensures(match (^self).arena.get_logic(target_idx).kind {
@@ -330,7 +330,6 @@ where
             _ => true,
         })
     )]
-    #[cfg_attr(creusot, ensures(forall<i : _> i != target_idx ==> (^self).arena.get_logic(target_idx) == (*self).arena.get_logic(target_idx)))]
     fn set_scalar_initialized(&mut self, target_idx: NodeIdx<R>, initialized: bool) {
         let node = self.arena.get_mut(target_idx);
         if let NodeKind::Scalar {
@@ -342,6 +341,16 @@ where
     }
 
     #[cfg_attr(creusot, requires(self.arena.contains(target_idx)))]
+    #[cfg_attr(creusot, requires(
+      match self.arena.get_logic(target_idx).kind {
+          NodeKind::Pointer { .. } => {
+              let node = self.arena.get_logic(target_idx);
+              initialized == self.heap.range_init(node.data, node.shape.size_logic())
+              && initialized == self.heap.can_drop(node.data, node.shape)
+          },
+          _ => true,
+      }
+    ))]
     #[cfg_attr(
         creusot,
         ensures(match (^self).arena.get_logic(target_idx).kind {
@@ -350,9 +359,6 @@ where
         })
     )]
     fn set_pointer_initialized(&mut self, target_idx: NodeIdx<R>, initialized: bool) {
-        #[cfg(creusot)]
-        assume(snapshot! { false });
-
         let node = self.arena.get_mut(target_idx);
         if let NodeKind::Pointer {
             initialized: state, ..
@@ -386,6 +392,19 @@ where
     )]
     #[cfg_attr(
         creusot,
+        requires(match self.arena.get_logic(target_idx).kind {
+            NodeKind::Pointer { .. } =>
+                !self.heap.range_init(
+                    self.arena.get_logic(target_idx).data,
+                    self.arena.get_logic(target_idx).shape.size_logic())
+                && !self.heap.can_drop(
+                    self.arena.get_logic(target_idx).data,
+                    self.arena.get_logic(target_idx).shape),
+            _ => true,
+        })
+    )]
+    #[cfg_attr(
+        creusot,
         ensures(match (^self).arena.get_logic(target_idx).kind {
             NodeKind::Struct { fields } => match fields.slots@[field_idx@] {
                 FieldSlot::Complete => false,
@@ -396,9 +415,6 @@ where
         })
     )]
     fn mark_field_not_started(&mut self, target_idx: NodeIdx<R>, field_idx: usize) {
-        #[cfg(creusot)]
-        assume(snapshot! { false });
-
         match &mut self.arena.get_mut(target_idx).kind {
             NodeKind::Struct { fields } => fields.mark_not_started(field_idx),
             NodeKind::Pointer { initialized, .. } => *initialized = false,
@@ -416,6 +432,19 @@ where
     )]
     #[cfg_attr(
         creusot,
+        requires(match self.arena.get_logic(target_idx).kind {
+            NodeKind::Pointer { .. } =>
+                self.heap.range_init(
+                    self.arena.get_logic(target_idx).data,
+                    self.arena.get_logic(target_idx).shape.size_logic())
+                && self.heap.can_drop(
+                    self.arena.get_logic(target_idx).data,
+                    self.arena.get_logic(target_idx).shape),
+            _ => true,
+        })
+    )]
+    #[cfg_attr(
+        creusot,
         ensures(match (^self).arena.get_logic(target_idx).kind {
             NodeKind::Struct { fields } => match fields.slots@[field_idx@] {
                 FieldSlot::Complete => true,
@@ -426,9 +455,6 @@ where
         })
     )]
     fn mark_field_complete(&mut self, target_idx: NodeIdx<R>, field_idx: usize) {
-        #[cfg(creusot)]
-        assume(snapshot! { false });
-
         match &mut self.arena.get_mut(target_idx).kind {
             NodeKind::Struct { fields } => fields.mark_complete(field_idx),
             NodeKind::Pointer { initialized, .. } => *initialized = true,

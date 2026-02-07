@@ -369,10 +369,25 @@ where
     }
 
     #[cfg_attr(creusot, requires(self.arena.contains(target_idx)))]
+    #[cfg_attr(creusot, ensures((^self).arena.contains(target_idx)))]
+    #[cfg_attr(creusot, ensures(
+        (^self).arena.get_logic(target_idx).data == (*self).arena.get_logic(target_idx).data
+    ))]
+    #[cfg_attr(creusot, ensures(
+        (^self).arena.get_logic(target_idx).shape == (*self).arena.get_logic(target_idx).shape
+    ))]
     #[cfg_attr(
         creusot,
         ensures(match (^self).arena.get_logic(target_idx).kind {
             NodeKind::Pointer { child, .. } => child == None,
+            _ => true,
+        })
+    )]
+    #[cfg_attr(
+        creusot,
+        ensures(match ((*self).arena.get_logic(target_idx).kind, (^self).arena.get_logic(target_idx).kind) {
+            (NodeKind::Pointer { initialized: old_init, .. }, NodeKind::Pointer { initialized: new_init, .. }) =>
+                new_init == old_init,
             _ => true,
         })
     )]
@@ -590,6 +605,52 @@ where
         Ok(())
     }
 
+    /// Clean up an existing child node before overwriting a pointer's value.
+    #[cfg_attr(creusot, trusted)]
+    #[cfg_attr(creusot, requires(self.arena.contains(target_idx)))]
+    #[cfg_attr(creusot, requires(
+        match self.arena.get_logic(target_idx).kind {
+            NodeKind::Pointer { .. } => true,
+            _ => false,
+        }
+    ))]
+    #[cfg_attr(creusot, ensures((^self).arena.contains(target_idx)))]
+    #[cfg_attr(creusot, ensures(
+        (^self).arena.get_logic(target_idx).data == (*self).arena.get_logic(target_idx).data
+    ))]
+    #[cfg_attr(creusot, ensures(
+        (^self).arena.get_logic(target_idx).shape == (*self).arena.get_logic(target_idx).shape
+    ))]
+    #[cfg_attr(creusot, ensures(
+        match ((*self).arena.get_logic(target_idx).kind, (^self).arena.get_logic(target_idx).kind) {
+            (NodeKind::Pointer { initialized: old_init, .. }, NodeKind::Pointer { initialized: new_init, .. }) =>
+                new_init == old_init,
+            _ => false,
+        }
+    ))]
+    fn cleanup_existing_child(
+        &mut self,
+        target_idx: NodeIdx<R>,
+        existing_child: Option<NodeIdx<R>>,
+    ) {
+        if let Some(child) = existing_child {
+            self.cleanup_node(child);
+            if self.current_in_subtree(child) {
+                self.current = target_idx;
+            }
+            self.clear_pointer_child(target_idx);
+        }
+    }
+
+    #[cfg_attr(creusot, requires(self.arena.contains(target_idx)))]
+    #[cfg_attr(creusot, requires(self.arena.get_logic(target_idx).data == dst))]
+    #[cfg_attr(creusot, requires(self.arena.get_logic(target_idx).shape == shape))]
+    #[cfg_attr(creusot, requires(
+        match self.arena.get_logic(target_idx).kind {
+            NodeKind::Pointer { initialized, .. } => initialized == already_init,
+            _ => false,
+        }
+    ))]
     fn apply_set_direct_pointer(
         &mut self,
         target_idx: NodeIdx<R>,
@@ -603,24 +664,22 @@ where
         Shape<R>: IShape + PartialEq,
     {
         #[cfg(creusot)]
-        assume(snapshot! { false });
-
-        #[cfg(creusot)]
         let size = layout_size(vlayout_from_layout(layout_expect(shape.layout())));
         #[cfg(creusot)]
         assume(snapshot! { size == shape.size_logic() });
 
-        if let Some(child) = existing_child {
-            self.cleanup_node(child);
-            if self.current_in_subtree(child) {
-                self.current = target_idx;
-            }
-            self.clear_pointer_child(target_idx);
-        }
+        self.cleanup_existing_child(target_idx, existing_child);
 
         if already_init {
             unsafe { self.heap.drop_in_place(dst, shape) };
-            self.set_pointer_initialized(target_idx, false);
+            // Inline update: avoid calling set_pointer_initialized to prevent
+            // type invariant check while heap and arena are temporarily inconsistent.
+            if let NodeKind::Pointer {
+                initialized: state, ..
+            } = &mut self.arena.get_mut(target_idx).kind
+            {
+                *state = false;
+            }
         }
 
         match src.kind {
@@ -643,7 +702,13 @@ where
             SourceKind::Stage(_) => return Err(TrameError::UnsupportedSource),
         }
 
-        self.set_pointer_initialized(target_idx, true);
+        // Inline update: set initialized = true after the value is written.
+        if let NodeKind::Pointer {
+            initialized: state, ..
+        } = &mut self.arena.get_mut(target_idx).kind
+        {
+            *state = true;
+        }
         Ok(())
     }
 
@@ -1021,6 +1086,13 @@ where
 
     /// Recursively clean up a Node and all its children (depth-first).
     #[cfg_attr(creusot, trusted)]
+    #[cfg_attr(creusot, ensures(
+        forall<id> (*self).arena.contains(id) ==> (^self).arena.contains(id)
+    ))]
+    #[cfg_attr(creusot, ensures(
+        forall<id> id != idx && (*self).arena.contains(id) ==>
+            (^self).arena.get_logic(id) == (*self).arena.get_logic(id)
+    ))]
     fn cleanup_node(&mut self, idx: NodeIdx<R>) {
         if !idx.is_valid() {
             return;

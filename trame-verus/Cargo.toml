@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-vstd = "=0.0.0-2026-01-25-0057"
+vstd = "=0.0.0-2026-02-15-0106"
 
 [package.metadata.verus]
 verify = true

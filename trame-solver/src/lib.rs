@@ -7,10 +7,12 @@ use trame_runtime::{EnumReprKind, IEnumType, IField, IShape, IStructType, IVaria
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathSegment {
-    Field(&'static str),
+    Field {
+        index: u32,
+    },
     Variant {
-        field: &'static str,
-        variant: &'static str,
+        field_index: u32,
+        variant_index: u32,
     },
 }
 
@@ -18,20 +20,19 @@ pub enum PathSegment {
 pub struct FieldRoute {
     pub serialized_name: &'static str,
     pub path: Vec<PathSegment>,
+    pub path_display: String,
+    pub top_level_field_index: Option<u32>,
     pub required: bool,
     pub defined_in: &'static str,
 }
 
 impl FieldRoute {
-    pub fn top_level_field_name(&self) -> Option<&'static str> {
-        self.path.iter().find_map(|segment| match segment {
-            PathSegment::Field(name) => Some(*name),
-            PathSegment::Variant { .. } => None,
-        })
+    pub fn top_level_field_index(&self) -> Option<u32> {
+        self.top_level_field_index
     }
 
-    fn path_string(&self) -> String {
-        path_to_string(&self.path)
+    fn path_string(&self) -> &str {
+        self.path_display.as_str()
     }
 }
 
@@ -96,8 +97,8 @@ impl Resolution {
             if existing.path != route.path {
                 return Err(SchemaError::DuplicateField {
                     field_name: route.serialized_name,
-                    first_path: existing.path_string(),
-                    second_path: route.path_string(),
+                    first_path: existing.path_string().to_owned(),
+                    second_path: route.path_string().to_owned(),
                 });
             }
             existing.required |= route.required;
@@ -154,7 +155,7 @@ pub struct Schema<S: IShape> {
 impl<S: IShape> Schema<S> {
     pub fn build_auto(shape: S) -> Result<Self, SchemaError> {
         let resolutions = match shape.as_struct() {
-            Some(st) => analyze_struct::<S>(st, Vec::new())?,
+            Some(st) => analyze_struct::<S>(st, Vec::new(), Vec::new())?,
             None => vec![Resolution::new()],
         };
 
@@ -253,7 +254,7 @@ impl<S: IShape> Schema<S> {
                     .filter_map(|name| self.resolutions[best_idx].fields_by_name.get(name))
                     .map(|route| MissingFieldInfo {
                         name: route.serialized_name,
-                        path: route.path_string(),
+                        path: route.path_string().to_owned(),
                         defined_in: route.defined_in.to_owned(),
                     })
                     .collect::<Vec<_>>();
@@ -322,6 +323,22 @@ struct VariantSelection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DisplayPathSegment {
+    Field(&'static str),
+    Variant {
+        field: &'static str,
+        variant: &'static str,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RoutePathContext {
+    path: Vec<PathSegment>,
+    display_path: Vec<DisplayPathSegment>,
+    top_level_field_index: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SolverEnumRepr {
     Flattened,
     ExternallyTagged,
@@ -337,32 +354,51 @@ enum SolverEnumRepr {
 fn analyze_struct<S: IShape>(
     st: S::StructType,
     parent_path: Vec<PathSegment>,
+    parent_display_path: Vec<DisplayPathSegment>,
 ) -> Result<Vec<Resolution>, SchemaError> {
     let mut configs = vec![Resolution::new()];
     for idx in 0..st.field_count() {
         let Some(field) = st.field(idx) else {
             continue;
         };
-        configs = analyze_field::<S>(field, &parent_path, configs)?;
+        configs = analyze_field::<S>(
+            field,
+            idx as u32,
+            &parent_path,
+            &parent_display_path,
+            configs,
+        )?;
     }
     Ok(configs)
 }
 
 fn analyze_field<S: IShape>(
     field: S::Field,
+    field_index: u32,
     parent_path: &[PathSegment],
+    parent_display_path: &[DisplayPathSegment],
     configs: Vec<Resolution>,
 ) -> Result<Vec<Resolution>, SchemaError> {
     if field.is_flattened() {
-        return analyze_flattened_field::<S>(field, parent_path, configs);
+        return analyze_flattened_field::<S>(
+            field,
+            field_index,
+            parent_path,
+            parent_display_path,
+            configs,
+        );
     }
 
     let mut path = parent_path.to_vec();
-    path.push(PathSegment::Field(field.name()));
+    path.push(PathSegment::Field { index: field_index });
+    let mut display_path = parent_display_path.to_vec();
+    display_path.push(DisplayPathSegment::Field(field.name()));
 
     let route = FieldRoute {
         serialized_name: field.effective_name(),
+        top_level_field_index: top_level_field_index(&path),
         path,
+        path_display: display_path_to_string(&display_path),
         required: !field.has_default() && !field.shape().is_option(),
         defined_in: field.shape().type_identifier(),
     };
@@ -376,11 +412,15 @@ fn analyze_field<S: IShape>(
 
 fn analyze_flattened_field<S: IShape>(
     field: S::Field,
+    field_index: u32,
     parent_path: &[PathSegment],
+    parent_display_path: &[DisplayPathSegment],
     configs: Vec<Resolution>,
 ) -> Result<Vec<Resolution>, SchemaError> {
     let mut field_path = parent_path.to_vec();
-    field_path.push(PathSegment::Field(field.name()));
+    field_path.push(PathSegment::Field { index: field_index });
+    let mut field_display_path = parent_display_path.to_vec();
+    field_display_path.push(DisplayPathSegment::Field(field.name()));
 
     let original_shape = field.shape();
     let (shape, is_optional_flatten) = match original_shape.option_payload() {
@@ -389,7 +429,7 @@ fn analyze_flattened_field<S: IShape>(
     };
 
     if let Some(st) = shape.as_struct() {
-        let mut inner = analyze_struct::<S>(st, field_path)?;
+        let mut inner = analyze_struct::<S>(st, field_path, field_display_path)?;
         if is_optional_flatten {
             for config in &mut inner {
                 config.mark_all_optional();
@@ -399,11 +439,16 @@ fn analyze_flattened_field<S: IShape>(
     }
 
     if let Some(enum_type) = shape.as_enum() {
+        let context = RoutePathContext {
+            path: field_path,
+            display_path: field_display_path,
+            top_level_field_index: field_index,
+        };
         return analyze_flattened_enum::<S>(
             field,
             shape,
             enum_type,
-            field_path,
+            context,
             configs,
             is_optional_flatten,
         );
@@ -412,7 +457,9 @@ fn analyze_flattened_field<S: IShape>(
     let required = !field.has_default() && !shape.is_option() && !is_optional_flatten;
     let route = FieldRoute {
         serialized_name: field.effective_name(),
+        top_level_field_index: top_level_field_index(&field_path),
         path: field_path,
+        path_display: display_path_to_string(&field_display_path),
         required,
         defined_in: shape.type_identifier(),
     };
@@ -427,7 +474,7 @@ fn analyze_flattened_enum<S: IShape>(
     field: S::Field,
     enum_shape: S,
     enum_type: S::EnumType,
-    field_path: Vec<PathSegment>,
+    context: RoutePathContext,
     configs: Vec<Resolution>,
     is_optional_flatten: bool,
 ) -> Result<Vec<Resolution>, SchemaError> {
@@ -444,8 +491,13 @@ fn analyze_flattened_enum<S: IShape>(
             let mut forked = base.clone();
             forked.add_variant_selection(enum_name, variant.name());
 
-            let mut variant_path = field_path.clone();
+            let mut variant_path = context.path.clone();
             variant_path.push(PathSegment::Variant {
+                field_index: context.top_level_field_index,
+                variant_index: idx as u32,
+            });
+            let mut variant_display_path = context.display_path.clone();
+            variant_display_path.push(DisplayPathSegment::Variant {
                 field: field.name(),
                 variant: variant.name(),
             });
@@ -454,7 +506,9 @@ fn analyze_flattened_enum<S: IShape>(
                 SolverEnumRepr::ExternallyTagged => {
                     let route = FieldRoute {
                         serialized_name: variant.effective_name(),
+                        top_level_field_index: Some(context.top_level_field_index),
                         path: variant_path,
+                        path_display: display_path_to_string(&variant_display_path),
                         required: !is_optional_flatten,
                         defined_in: enum_shape.type_identifier(),
                     };
@@ -462,7 +516,11 @@ fn analyze_flattened_enum<S: IShape>(
                     result.push(forked);
                 }
                 SolverEnumRepr::Flattened => {
-                    let mut variant_configs = analyze_variant_content::<S>(variant, &variant_path)?;
+                    let mut variant_configs = analyze_variant_content::<S>(
+                        variant,
+                        &variant_path,
+                        &variant_display_path,
+                    )?;
                     if is_optional_flatten {
                         for config in &mut variant_configs {
                             config.mark_all_optional();
@@ -477,13 +535,19 @@ fn analyze_flattened_enum<S: IShape>(
                 SolverEnumRepr::InternallyTagged { tag } => {
                     let tag_route = FieldRoute {
                         serialized_name: tag,
+                        top_level_field_index: Some(context.top_level_field_index),
                         path: variant_path.clone(),
+                        path_display: display_path_to_string(&variant_display_path),
                         required: !is_optional_flatten,
                         defined_in: enum_shape.type_identifier(),
                     };
                     forked.add_field(tag_route)?;
 
-                    let mut variant_configs = analyze_variant_content::<S>(variant, &variant_path)?;
+                    let mut variant_configs = analyze_variant_content::<S>(
+                        variant,
+                        &variant_path,
+                        &variant_display_path,
+                    )?;
                     if is_optional_flatten {
                         for config in &mut variant_configs {
                             config.mark_all_optional();
@@ -498,7 +562,9 @@ fn analyze_flattened_enum<S: IShape>(
                 SolverEnumRepr::AdjacentlyTagged { tag, content } => {
                     let tag_route = FieldRoute {
                         serialized_name: tag,
+                        top_level_field_index: Some(context.top_level_field_index),
                         path: variant_path.clone(),
+                        path_display: display_path_to_string(&variant_display_path),
                         required: !is_optional_flatten,
                         defined_in: enum_shape.type_identifier(),
                     };
@@ -506,7 +572,9 @@ fn analyze_flattened_enum<S: IShape>(
 
                     let content_route = FieldRoute {
                         serialized_name: content,
+                        top_level_field_index: Some(context.top_level_field_index),
                         path: variant_path,
+                        path_display: display_path_to_string(&variant_display_path),
                         required: !is_optional_flatten,
                         defined_in: enum_shape.type_identifier(),
                     };
@@ -523,6 +591,7 @@ fn analyze_flattened_enum<S: IShape>(
 fn analyze_variant_content<S: IShape>(
     variant: <S::EnumType as IEnumType>::Variant,
     variant_path: &[PathSegment],
+    variant_display_path: &[DisplayPathSegment],
 ) -> Result<Vec<Resolution>, SchemaError> {
     let data = variant.data();
     if data.field_count() == 1
@@ -533,8 +602,10 @@ fn analyze_variant_content<S: IShape>(
         let field = data.field(0).expect("checked above");
         let inner_struct = field.shape().as_struct().expect("checked above");
         let mut inner_path = variant_path.to_vec();
-        inner_path.push(PathSegment::Field("0"));
-        return analyze_struct::<S>(inner_struct, inner_path);
+        inner_path.push(PathSegment::Field { index: 0 });
+        let mut inner_display_path = variant_display_path.to_vec();
+        inner_display_path.push(DisplayPathSegment::Field("0"));
+        return analyze_struct::<S>(inner_struct, inner_path, inner_display_path);
     }
 
     let mut configs = vec![Resolution::new()];
@@ -542,7 +613,13 @@ fn analyze_variant_content<S: IShape>(
         let Some(field) = data.field(idx) else {
             continue;
         };
-        configs = analyze_field::<S>(field, variant_path, configs)?;
+        configs = analyze_field::<S>(
+            field,
+            idx as u32,
+            variant_path,
+            variant_display_path,
+            configs,
+        )?;
     }
     Ok(configs)
 }
@@ -601,15 +678,15 @@ fn enum_repr_from_shape<S: IShape>(shape: S) -> SolverEnumRepr {
     }
 }
 
-fn path_to_string(path: &[PathSegment]) -> String {
+fn display_path_to_string(path: &[DisplayPathSegment]) -> String {
     let mut out = String::new();
     for (idx, seg) in path.iter().enumerate() {
         if idx > 0 {
             out.push('.');
         }
         match seg {
-            PathSegment::Field(name) => out.push_str(name),
-            PathSegment::Variant { field, variant } => {
+            DisplayPathSegment::Field(name) => out.push_str(name),
+            DisplayPathSegment::Variant { field, variant } => {
                 out.push_str(field);
                 out.push_str("::");
                 out.push_str(variant);
@@ -617,6 +694,13 @@ fn path_to_string(path: &[PathSegment]) -> String {
         }
     }
     out
+}
+
+fn top_level_field_index(path: &[PathSegment]) -> Option<u32> {
+    path.iter().find_map(|segment| match segment {
+        PathSegment::Field { index } => Some(*index),
+        PathSegment::Variant { .. } => None,
+    })
 }
 
 #[cfg(test)]
@@ -649,10 +733,14 @@ mod tests {
             .resolution()
             .field_by_name("a")
             .expect("field should exist");
-        assert_eq!(route.top_level_field_name(), Some("inner"));
+        assert_eq!(route.top_level_field_index(), Some(1));
         assert!(matches!(
             route.path.as_slice(),
-            [PathSegment::Field("inner"), PathSegment::Field("a")]
+            [
+                PathSegment::Field { index: 1 },
+                PathSegment::Field { index: 0 }
+            ]
         ));
+        assert_eq!(route.path_display, "inner.a");
     }
 }

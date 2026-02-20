@@ -4,9 +4,7 @@ use std::mem::ManuallyDrop;
 
 use facet_core::{Def, Facet, PtrMut, PtrUninit, Shape, Type, UserType};
 use trame::{LRuntime, Op, Path, Source, Trame, TrameError};
-use trame_solver::{
-    FieldRoute, PathSegment as SolverPathSegment, Schema as SolverSchema, SolveError,
-};
+use trame_solver::{Schema as SolverSchema, SolveError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
@@ -465,8 +463,7 @@ fn apply_value(
                     .map_err(|e| map_solver_error(e, shape.type_identifier, offset))?;
                 let resolution = resolved.resolution();
 
-                let mut grouped_by_top: BTreeMap<&'static str, Vec<(String, JsonValue)>> =
-                    BTreeMap::new();
+                let mut grouped_by_top: BTreeMap<u32, Vec<(String, JsonValue)>> = BTreeMap::new();
                 for (key, child_value) in entries {
                     let Some(info) = resolution.field_by_name(key.as_str()) else {
                         return Err(Error::UnknownField {
@@ -474,20 +471,20 @@ fn apply_value(
                             offset,
                         });
                     };
-                    let Some(top_name) = top_level_field_name(info) else {
+                    let Some(top_field_index) = info.top_level_field_index() else {
                         return Err(Error::UnsupportedShape {
                             type_name: shape.type_identifier,
                             offset,
                         });
                     };
                     grouped_by_top
-                        .entry(top_name)
+                        .entry(top_field_index)
                         .or_default()
                         .push((key.clone(), child_value.clone()));
                 }
 
                 for (idx, field) in st.fields.iter().enumerate() {
-                    if let Some(child_entries) = grouped_by_top.remove(field.name) {
+                    if let Some(child_entries) = grouped_by_top.remove(&(idx as u32)) {
                         if field.is_flattened() {
                             let child_object = JsonValue::Object(child_entries);
                             apply_value(
@@ -576,16 +573,6 @@ fn map_solver_error(err: SolveError, type_name: &'static str, offset: usize) -> 
             disambiguating_fields: _,
         } => Error::UnsupportedShape { type_name, offset },
     }
-}
-
-fn top_level_field_name(info: &FieldRoute) -> Option<&'static str> {
-    info.path.iter().find_map(|segment| match segment {
-        SolverPathSegment::Field(name) => Some(*name),
-        SolverPathSegment::Variant {
-            field: _,
-            variant: _,
-        } => None,
-    })
 }
 
 fn build_raw_from_json(

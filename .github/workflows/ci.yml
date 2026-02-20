@@ -112,6 +112,17 @@ jobs:
         run: |
           timeout 120 cargo afl fuzz -i in -o out ./target-afl/debug/trame-fuzz || test $? -eq 124
 
+      - name: Fail if AFL found crashes
+        working-directory: trame-fuzz
+        run: |
+          crash_count=$(find out -type f -path '*/crashes/id:*' | wc -l)
+          echo "AFL crash files: ${crash_count}"
+          if [ "${crash_count}" -gt 0 ]; then
+            echo "::error::AFL found ${crash_count} crash file(s)."
+            find out -type f -path '*/crashes/id:*' -print
+            exit 1
+          fi
+
   creusot-migration:
     name: Creusot Migration (Non-blocking)
     runs-on: depot-ubuntu-24.04-32

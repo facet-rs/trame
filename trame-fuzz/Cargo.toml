@@ -23,6 +23,7 @@ arbitrary.workspace = true
 facet.workspace = true
 facet-core.workspace = true
 trame.workspace = true
+trame-solver.workspace = true
 
 [lints]
 workspace = true

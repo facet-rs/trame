@@ -4,20 +4,35 @@ list:
 afl_target := "target-afl"
 main_bin := afl_target + "/debug/trame-fuzz"
 vshape_bin := afl_target + "/debug/vshape"
+solver_bin := afl_target + "/debug/solver"
+solver_in := env_var_or_default("TRAME_SOLVER_IN", "in-solver")
+solver_out := env_var_or_default("TRAME_SOLVER_OUT", "out-solver")
 
 # Build and run the fuzzer with SAND (decoupled sanitizers)
 fuzz: build
-    cargo afl fuzz -i in -o out \
+    cargo afl fuzz -m none -i in -o out \
         -w {{ main_bin }}-asan \
         -w {{ main_bin }}-msan \
         -- {{ main_bin }}
 
 # Build and run the VShape fuzzer (LRuntime + VShapeView)
 fuzz-vshape: build-vshape
-    cargo afl fuzz -i in-vshape -o out-vshape \
+    cargo afl fuzz -m none -i in-vshape -o out-vshape \
         -w {{ vshape_bin }}-asan \
         -w {{ vshape_bin }}-msan \
         -- {{ vshape_bin }}
+
+# Build and run the solver fuzzer (flatten key routing and schema solving)
+fuzz-solver: build-solver
+    AFL_FORKSRV_INIT_TMOUT=10000 cargo afl fuzz -m none -i {{ solver_in }} -o {{ solver_out }} \
+        -- {{ solver_bin }}
+
+# Build and run the solver fuzzer with both ASAN and MSAN workers
+fuzz-solver-sand: build-solver
+    AFL_FORKSRV_INIT_TMOUT=10000 cargo afl fuzz -m none -i {{ solver_in }} -o {{ solver_out }} \
+        -w {{ solver_bin }}-asan \
+        -w {{ solver_bin }}-msan \
+        -- {{ solver_bin }}
 
 # Build all binaries: native + sanitizer variants
 build: build-native build-asan build-msan
@@ -39,6 +54,9 @@ build-msan:
 # Build all VShape binaries: native + sanitizer variants
 build-vshape: build-vshape-native build-vshape-asan build-vshape-msan
 
+# Build all solver binaries: native + sanitizer variants
+build-solver: build-solver-native build-solver-asan build-solver-msan
+
 # Build VShape native binary (no sanitizers, full speed)
 build-vshape-native:
     CARGO_TARGET_DIR={{ afl_target }} cargo afl build --bin vshape
@@ -53,19 +71,45 @@ build-vshape-msan:
     CARGO_TARGET_DIR={{ afl_target }} AFL_LLVM_ONLY_FSRV=1 AFL_USE_MSAN=1 cargo afl build --bin vshape
     cp {{ vshape_bin }} {{ vshape_bin }}-msan
 
+# Build solver native binary (no sanitizers, full speed)
+build-solver-native:
+    CARGO_TARGET_DIR={{ afl_target }} cargo afl build --bin solver
+
+# Build solver with AddressSanitizer + UBSan
+build-solver-asan:
+    CARGO_TARGET_DIR={{ afl_target }} AFL_LLVM_ONLY_FSRV=1 AFL_USE_ASAN=1 AFL_USE_UBSAN=1 cargo afl build --bin solver
+    cp {{ solver_bin }} {{ solver_bin }}-asan
+
+# Build solver with MemorySanitizer
+build-solver-msan:
+    CARGO_TARGET_DIR={{ afl_target }} AFL_LLVM_ONLY_FSRV=1 AFL_USE_MSAN=1 cargo afl build --bin solver
+    cp {{ solver_bin }} {{ solver_bin }}-msan
+
 # Resume fuzzing from previous state
 resume: build
-    cargo afl fuzz -i- -o out \
+    cargo afl fuzz -m none -i- -o out \
         -w {{ main_bin }}-asan \
         -w {{ main_bin }}-msan \
         -- {{ main_bin }}
 
 # Resume VShape fuzzing from previous state
 resume-vshape: build-vshape
-    cargo afl fuzz -i- -o out-vshape \
+    cargo afl fuzz -m none -i- -o out-vshape \
         -w {{ vshape_bin }}-asan \
         -w {{ vshape_bin }}-msan \
         -- {{ vshape_bin }}
+
+# Resume solver fuzzing from previous state
+resume-solver: build-solver
+    AFL_FORKSRV_INIT_TMOUT=10000 cargo afl fuzz -m none -i- -o {{ solver_out }} \
+        -- {{ solver_bin }}
+
+# Resume solver fuzzing with both ASAN and MSAN workers
+resume-solver-sand: build-solver
+    AFL_FORKSRV_INIT_TMOUT=10000 cargo afl fuzz -m none -i- -o {{ solver_out }} \
+        -w {{ solver_bin }}-asan \
+        -w {{ solver_bin }}-msan \
+        -- {{ solver_bin }}
 
 # Build standalone binary (for reproducing crashes, running under Miri, etc.)
 build-standalone:
@@ -89,6 +133,16 @@ run-vshape-bt file:
     cargo build --features standalone --bin vshape --target-dir target-standalone
     RUST_BACKTRACE=1 target-standalone/debug/vshape < {{ file }}
 
+# Run solver target from a single input file (standalone mode)
+run-solver file:
+    cargo build --features standalone --bin solver --target-dir target-standalone
+    target-standalone/debug/solver < {{ file }}
+
+# Run solver target with backtrace
+run-solver-bt file:
+    cargo build --features standalone --bin solver --target-dir target-standalone
+    RUST_BACKTRACE=1 target-standalone/debug/solver < {{ file }}
+
 # Run under Miri
 run-miri file:
     MIRIFLAGS="-Zmiri-disable-isolation" cargo +nightly miri run --features standalone --target-dir target-miri < {{ file }}
@@ -103,6 +157,11 @@ minimize-vshape file:
     cargo afl tmin -i {{ file }} -o minimized-vshape.bin -- {{ vshape_bin }}
     @echo "Minimized input saved to minimized-vshape.bin"
 
+# Minimize a solver crash input
+minimize-solver file:
+    cargo afl tmin -i {{ file }} -o minimized-solver.bin -- {{ solver_bin }}
+    @echo "Minimized input saved to minimized-solver.bin"
+
 # List all crashes
 crashes:
     @ls -la out/default/crashes/ 2>/dev/null || echo "No crashes yet"
@@ -116,6 +175,10 @@ reproduce-all:
 # Show AFL edge coverage from the corpus
 edges: build-native
     cargo afl showmap -C -i out/default/queue -o /dev/stdout -- {{ afl_target }}/debug/trame-fuzz
+
+# Show AFL edge coverage from the solver corpus
+edges-solver: build-solver-native
+    cargo afl showmap -C -i {{ solver_out }}/default/queue -o /dev/stdout -- {{ afl_target }}/debug/solver
 
 # Build with LLVM source coverage (standalone binary with instrumentation)
 build-cov:
@@ -162,4 +225,4 @@ cov format="report": build-cov
 
 # Clean build artifacts and output
 clean:
-    rm -rf target target-afl target-standalone target-cov target-miri out out-vshape minimized.bin minimized-vshape.bin coverage
+    rm -rf target target-afl target-standalone target-cov target-miri out out-vshape out-solver out-solver2 minimized.bin minimized-vshape.bin minimized-solver.bin coverage

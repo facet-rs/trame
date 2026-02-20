@@ -229,7 +229,7 @@ impl PartialEq for NodeState {
 
 impl<H: IHeap<S>, S: IShape> Node<H, S> {
     pub(crate) fn kind_for_shape(shape: S) -> NodeKind<Self> {
-        if shape.as_enum().is_some() {
+        if shape.as_enum().is_some() && shape.supports_partial_enum_paths() {
             NodeKind::Enum {
                 selected_variant: None,
                 variant_child: None,

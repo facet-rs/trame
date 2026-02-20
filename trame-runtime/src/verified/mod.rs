@@ -503,6 +503,11 @@ impl<'a> IShape for VShapeView<'a, VShapeStore> {
     }
 
     #[inline]
+    fn supports_partial_enum_paths(&self) -> bool {
+        matches!(self.store.get_def(self.handle).def, VDef::Enum(_))
+    }
+
+    #[inline]
     fn type_identifier(&self) -> &'static str {
         "<verified-shape>"
     }

@@ -185,6 +185,14 @@ pub trait IShape: Copy + PartialEq + IShapeExtra {
         None
     }
 
+    /// Whether this shape supports partial enum-path construction.
+    ///
+    /// Live facet-core enums currently use safe whole-value initialization only.
+    /// Verified shapes can opt into path-based enum staging.
+    fn supports_partial_enum_paths(&self) -> bool {
+        false
+    }
+
     /// Type identifier (without generic params), when available.
     fn type_identifier(&self) -> &'static str {
         "<unknown>"

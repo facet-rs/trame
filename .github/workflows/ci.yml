@@ -113,8 +113,40 @@ jobs:
         env:
           AFL_SKIP_CPUFREQ: 1
           AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES: 1
+          AFL_NO_UI: 1
         run: |
-          timeout 120 cargo afl fuzz -i in -o out ./target-afl/debug/trame-fuzz || test $? -eq 124
+          set -euo pipefail
+
+          timeout 120 cargo afl fuzz -i in -o out ./target-afl/debug/trame-fuzz > afl.log 2>&1 &
+          fuzz_pid=$!
+
+          started="$(date +%s)"
+          while kill -0 "${fuzz_pid}" 2>/dev/null; do
+            now="$(date +%s)"
+            elapsed="$((now - started))"
+
+            if [ -f out/default/fuzzer_stats ]; then
+              execs="$(awk -F': *' '$1=="execs_done"{print $2}' out/default/fuzzer_stats)"
+              queue="$(awk -F': *' '$1=="corpus_count"{print $2}' out/default/fuzzer_stats)"
+              crashes="$(awk -F': *' '$1=="saved_crashes"{print $2}' out/default/fuzzer_stats)"
+              cycles="$(awk -F': *' '$1=="cycles_done"{print $2}' out/default/fuzzer_stats)"
+              echo "[afl] t=${elapsed}s execs=${execs:-0} queue=${queue:-0} crashes=${crashes:-0} cycles=${cycles:-0}"
+            else
+              echo "[afl] t=${elapsed}s waiting for fuzzer_stats..."
+            fi
+
+            sleep 15
+          done
+
+          status=0
+          wait "${fuzz_pid}" || status=$?
+
+          echo "[afl] last log lines:"
+          tail -n 25 afl.log || true
+
+          if [ "${status}" -ne 0 ] && [ "${status}" -ne 124 ]; then
+            exit "${status}"
+          fi
 
       - name: Fail if AFL found crashes
         working-directory: trame-fuzz

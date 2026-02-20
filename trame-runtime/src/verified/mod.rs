@@ -12,8 +12,8 @@ mod byte_range;
 use byte_range::{ByteRangeError, ByteRangeTracker, Range};
 
 use crate::{
-    CopyDesc, IArena, IExecShape, IField, IHeap, IPointerType, IPtr, IRuntime, IShape, IShapeStore,
-    IStructType, Idx,
+    CopyDesc, EnumReprKind, IArena, IEnumType, IExecShape, IField, IHeap, IPointerType, IPtr,
+    IRuntime, IShape, IShapeStore, IStructType, IVariantType, Idx,
 };
 
 /// A runtime that verifies all operations
@@ -395,6 +395,21 @@ pub struct VPointerView<'a> {
     pub def: &'a VPointerDef,
 }
 
+/// Enum type view for verified shapes.
+///
+/// Verified shapes currently do not model enums; this exists to satisfy trait
+/// associated types while enum support is added incrementally.
+#[derive(Clone, Copy)]
+pub struct VEnumView<'a> {
+    pub store: &'a VShapeStore,
+}
+
+/// Enum variant view for verified shapes.
+#[derive(Clone, Copy)]
+pub struct VVariantView<'a> {
+    pub store: &'a VShapeStore,
+}
+
 impl<'a> PartialEq for VShapeView<'a, VShapeStore> {
     fn eq(&self, other: &Self) -> bool {
         // Two views are equal if they point to the same store and handle.
@@ -408,6 +423,7 @@ impl<'a> Eq for VShapeView<'a, VShapeStore> {}
 impl<'a> IShape for VShapeView<'a, VShapeStore> {
     type StructType = VStructView<'a>;
     type Field = VFieldView<'a>;
+    type EnumType = VEnumView<'a>;
     type PointerType = VPointerView<'a>;
 
     #[inline]
@@ -434,6 +450,29 @@ impl<'a> IShape for VShapeView<'a, VShapeStore> {
                 store: self.store,
                 def: s,
             }),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn as_enum(&self) -> Option<Self::EnumType> {
+        None
+    }
+
+    #[inline]
+    fn enum_repr_kind(&self) -> Option<EnumReprKind> {
+        None
+    }
+
+    #[inline]
+    fn type_identifier(&self) -> &'static str {
+        "<verified-shape>"
+    }
+
+    #[inline]
+    fn option_payload(&self) -> Option<Self> {
+        match self.store.get_def(self.handle).def {
+            VDef::Option(opt) => Some(self.store.view(opt.some_handle)),
             _ => None,
         }
     }
@@ -543,6 +582,40 @@ impl<'a> IStructType for VStructView<'a> {
     }
 }
 
+impl<'a> IEnumType for VEnumView<'a> {
+    type StructType = VStructView<'a>;
+    type Variant = VVariantView<'a>;
+
+    #[inline]
+    fn variant_count(&self) -> usize {
+        0
+    }
+
+    #[inline]
+    fn variant(&self, _idx: usize) -> Option<Self::Variant> {
+        None
+    }
+}
+
+impl<'a> IVariantType for VVariantView<'a> {
+    type StructType = VStructView<'a>;
+
+    #[inline]
+    fn name(&self) -> &'static str {
+        ""
+    }
+
+    #[inline]
+    fn effective_name(&self) -> &'static str {
+        ""
+    }
+
+    #[inline]
+    fn data(&self) -> Self::StructType {
+        panic!("VVariantView::data is unreachable until enum support is implemented")
+    }
+}
+
 impl<'a> IField for VFieldView<'a> {
     type Shape = VShapeView<'a, VShapeStore>;
 
@@ -555,6 +628,16 @@ impl<'a> IField for VFieldView<'a> {
     fn shape(&self) -> Self::Shape {
         // Look up the field's shape in the store by handle
         self.store.view(self.def.shape_handle)
+    }
+
+    #[inline]
+    fn name(&self) -> &'static str {
+        ""
+    }
+
+    #[inline]
+    fn effective_name(&self) -> &'static str {
+        ""
     }
 }
 

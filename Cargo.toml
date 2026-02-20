@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["trame", "trame-runtime", "trame-fuzz", "trame-proptest", "trame-toy-json"]
+members = ["trame", "trame-runtime", "trame-fuzz", "trame-proptest", "trame-toy-json", "trame-solver"]
 
 [workspace.package]
 edition = "2024"
@@ -15,8 +15,9 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(creusot)'] }
 # workspace deps
 trame = { path = "trame", version = "0.1.0" }
 trame-runtime = { path = "trame-runtime", version = "0.1.0" }
+trame-solver = { path = "trame-solver", version = "0.1.0" }
 # third-party deps
-creusot-std = { git = "https://github.com/creusot-rs/creusot", package = "creusot-std", version = "0.9.0" }
+creusot-std = { git = "https://github.com/creusot-rs/creusot", package = "creusot-std", version = "0.10.0-dev" }
 facet-core = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43.2" }
 facet = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43.2" }
 smallvec = "2.0.0-alpha.12"

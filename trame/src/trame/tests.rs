@@ -227,7 +227,10 @@ fn struct_any_order() {
 fn stage_field_twice_reenters() {
     let _g = FreshStore::new();
     let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
-    let inner_h = vshape_register(VShapeDef::struct_with_fields(vshape_store(), &[(0, u32_h)]));
+    let inner_h = vshape_register(VShapeDef::struct_with_fields(
+        vshape_store(),
+        &[(0, u32_h), (4, u32_h)],
+    ));
     let outer_h = vshape_register(VShapeDef::struct_with_fields(
         vshape_store(),
         &[(0, inner_h)],
@@ -245,7 +248,7 @@ fn stage_field_twice_reenters() {
     trame
         .apply(Op::Set {
             dst: Path::from_segments(&field0),
-            src: Source::stage(None),
+            src: Source::stage_deferred(None),
         })
         .unwrap();
 
@@ -261,7 +264,7 @@ fn stage_field_twice_reenters() {
     let root_field0 = [PathSegment::Root, PathSegment::Field(0)];
     let result = trame.apply(Op::Set {
         dst: Path::from_segments(&root_field0),
-        src: Source::stage(None),
+        src: Source::stage_deferred(None),
     });
     assert!(result.is_ok());
     assert_eq!(trame.depth(), 1);
@@ -635,6 +638,220 @@ fn apply_stage_and_end() {
     trame.apply(Op::End).unwrap();
     assert!(trame.is_complete());
     let _ = trame.build().unwrap();
+}
+
+#[test]
+fn root_path_can_switch_to_strict_while_deferred_subtree_is_incomplete() {
+    let _g = FreshStore::new();
+    let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
+    let inner_h = vshape_register(VShapeDef::struct_with_fields(
+        vshape_store(),
+        &[(0, u32_h), (4, u32_h)],
+    ));
+    let box_h = vshape_register(VShapeDef::pointer_to(u32_h, true, true));
+    let opt_h = vshape_register(VShapeDef::option_of(
+        u32_h,
+        Layout::new::<Option<u32>>(),
+        VTypeOps::pod(),
+    ));
+    let root_h = vshape_register(VShapeDef::struct_with_fields(
+        vshape_store(),
+        &[(0, u32_h), (4, inner_h), (16, box_h), (24, opt_h)],
+    ));
+    let root_shape = vshape_view(root_h);
+    let u32_shape = vshape_view(u32_h);
+
+    let mut heap = VRuntime::heap();
+    let src_a = unsafe { heap.alloc(u32_shape) };
+    let src_x = unsafe { heap.alloc(u32_shape) };
+    let src_y = unsafe { heap.alloc(u32_shape) };
+    let src_box = unsafe { heap.alloc(u32_shape) };
+    unsafe { heap.default_in_place(src_a, u32_shape) };
+    unsafe { heap.default_in_place(src_x, u32_shape) };
+    unsafe { heap.default_in_place(src_y, u32_shape) };
+    unsafe { heap.default_in_place(src_box, u32_shape) };
+
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, root_shape) };
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: unsafe { Source::from_vptr(src_a, u32_shape) },
+        })
+        .unwrap();
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(1),
+            src: Source::stage_deferred(None),
+        })
+        .unwrap();
+    assert_eq!(trame.depth(), 1);
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: unsafe { Source::from_vptr(src_x, u32_shape) },
+        })
+        .unwrap();
+
+    trame
+        .apply(Op::Set {
+            dst: Path::from_segments(&[PathSegment::Root, PathSegment::Field(3)]),
+            src: Source::default_value(),
+        })
+        .unwrap();
+    assert_eq!(trame.depth(), 0);
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(2),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    assert_eq!(trame.depth(), 1);
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    assert_eq!(trame.depth(), 2);
+
+    trame
+        .apply(Op::Set {
+            dst: Path::empty(),
+            src: unsafe { Source::from_vptr(src_box, u32_shape) },
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+    assert_eq!(trame.depth(), 1);
+    trame.apply(Op::End).unwrap();
+    assert_eq!(trame.depth(), 0);
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(1),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    assert_eq!(trame.depth(), 1);
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(1),
+            src: unsafe { Source::from_vptr(src_y, u32_shape) },
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+
+    assert_eq!(trame.depth(), 0);
+    assert!(trame.is_complete());
+
+    let _ = trame.build().unwrap();
+}
+
+#[test]
+fn root_path_cannot_escape_incomplete_strict_subtree() {
+    let _g = FreshStore::new();
+    let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
+    let inner_h = vshape_register(VShapeDef::struct_with_fields(
+        vshape_store(),
+        &[(0, u32_h), (4, u32_h)],
+    ));
+    let root_h = vshape_register(VShapeDef::struct_with_fields(
+        vshape_store(),
+        &[(0, inner_h), (8, u32_h)],
+    ));
+    let shape = vshape_view(root_h);
+    let u32_shape = vshape_view(u32_h);
+
+    let mut heap = VRuntime::heap();
+    let src = unsafe { heap.alloc(u32_shape) };
+    unsafe { heap.default_in_place(src, u32_shape) };
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, shape) };
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: unsafe { Source::from_vptr(src, u32_shape) },
+        })
+        .unwrap();
+
+    let err = trame.apply(Op::Set {
+        dst: Path::from_segments(&[PathSegment::Root, PathSegment::Field(1)]),
+        src: Source::default_value(),
+    });
+    assert_eq!(err, Err(TrameError::CurrentIncomplete));
+}
+
+#[test]
+fn deferred_incomplete_subtree_fails_at_build() {
+    let _g = FreshStore::new();
+    let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
+    let inner_h = vshape_register(VShapeDef::struct_with_fields(
+        vshape_store(),
+        &[(0, u32_h), (4, u32_h)],
+    ));
+    let root_h = vshape_register(VShapeDef::struct_with_fields(
+        vshape_store(),
+        &[(0, inner_h), (8, u32_h)],
+    ));
+    let shape = vshape_view(root_h);
+    let u32_shape = vshape_view(u32_h);
+
+    let mut heap = VRuntime::heap();
+    let src = unsafe { heap.alloc(u32_shape) };
+    unsafe { heap.default_in_place(src, u32_shape) };
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, shape) };
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::stage_deferred(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: unsafe { Source::from_vptr(src, u32_shape) },
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+
+    let err = trame.build();
+    assert!(matches!(err, Err(TrameError::Incomplete)));
+}
+
+#[test]
+fn deferred_box_finalizes_at_build() {
+    let mut trame = Trame::<LRuntime>::alloc::<Box<u32>>().unwrap();
+    let mut v = 5_u32;
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::stage_deferred(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::empty(),
+            src: Source::from_ref(&mut v),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+
+    let hv = trame.build().unwrap();
+    let value = hv.materialize::<Box<u32>>().unwrap();
+    assert_eq!(*value, 5);
 }
 
 #[test]

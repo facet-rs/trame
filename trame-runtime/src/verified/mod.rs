@@ -12,8 +12,8 @@ mod byte_range;
 use byte_range::{ByteRangeError, ByteRangeTracker, Range};
 
 use crate::{
-    CopyDesc, EnumReprKind, IArena, IEnumType, IExecShape, IField, IHeap, IPointerType, IPtr,
-    IRuntime, IShape, IShapeStore, IStructType, IVariantType, Idx,
+    CopyDesc, EnumDiscriminantRepr, EnumReprKind, IArena, IEnumType, IExecShape, IField, IHeap,
+    IPointerType, IPtr, IRuntime, IShape, IShapeStore, IStructType, IVariantType, Idx,
 };
 
 /// A runtime that verifies all operations
@@ -226,6 +226,8 @@ pub struct VVariantDef {
     pub name: &'static str,
     /// Effective serialized variant name.
     pub effective_name: &'static str,
+    /// In-memory discriminant value for this variant.
+    pub discriminant: Option<i64>,
     /// Struct-like payload layout for this variant.
     pub data: VStructDef,
 }
@@ -238,6 +240,8 @@ pub struct VEnumDef {
     pub variant_count: u8,
     /// Enum representation metadata.
     pub repr_kind: EnumReprKind,
+    /// In-memory discriminant representation.
+    pub discriminant_repr: EnumDiscriminantRepr,
     /// Variant information (only first `variant_count` entries are valid).
     pub variants: [VVariantDef; MAX_VARIANTS_PER_ENUM],
 }
@@ -503,8 +507,22 @@ impl<'a> IShape for VShapeView<'a, VShapeStore> {
     }
 
     #[inline]
-    fn supports_partial_enum_paths(&self) -> bool {
-        matches!(self.store.get_def(self.handle).def, VDef::Enum(_))
+    fn enum_discriminant_repr(&self) -> Option<EnumDiscriminantRepr> {
+        match &self.store.get_def(self.handle).def {
+            VDef::Enum(e) => Some(e.discriminant_repr),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn enum_variant_discriminant(&self, variant_idx: usize) -> Option<i64> {
+        let VDef::Enum(e) = &self.store.get_def(self.handle).def else {
+            return None;
+        };
+        if variant_idx >= e.variant_count as usize {
+            return None;
+        }
+        e.variants[variant_idx].discriminant
     }
 
     #[inline]
@@ -814,7 +832,13 @@ impl VShapeDef {
         repr_kind: EnumReprKind,
         variants: &[VVariantDef],
     ) -> Self {
-        Self::enum_with_variants_and_ops(layout, repr_kind, variants, VTypeOps::pod())
+        Self::enum_with_variants_and_repr(
+            layout,
+            repr_kind,
+            EnumDiscriminantRepr::U8,
+            variants,
+            VTypeOps::pod(),
+        )
     }
 
     /// Create an enum shape with explicit executable operations.
@@ -824,11 +848,31 @@ impl VShapeDef {
         variants: &[VVariantDef],
         type_ops: VTypeOps,
     ) -> Self {
+        Self::enum_with_variants_and_repr(
+            layout,
+            repr_kind,
+            EnumDiscriminantRepr::U8,
+            variants,
+            type_ops,
+        )
+    }
+
+    /// Create an enum shape with explicit discriminant representation.
+    pub fn enum_with_variants_and_repr(
+        layout: VLayout,
+        repr_kind: EnumReprKind,
+        discriminant_repr: EnumDiscriminantRepr,
+        variants: &[VVariantDef],
+        type_ops: VTypeOps,
+    ) -> Self {
         assert!(variants.len() <= MAX_VARIANTS_PER_ENUM, "too many variants");
 
         let mut variant_array = [VVariantDef::unit(""); MAX_VARIANTS_PER_ENUM];
         for (idx, variant) in variants.iter().copied().enumerate() {
-            variant_array[idx] = variant;
+            variant_array[idx] = VVariantDef {
+                discriminant: variant.discriminant.or(Some(idx as i64)),
+                ..variant
+            };
         }
 
         Self {
@@ -837,6 +881,7 @@ impl VShapeDef {
             def: VDef::Enum(VEnumDef {
                 variant_count: variants.len() as u8,
                 repr_kind,
+                discriminant_repr,
                 variants: variant_array,
             }),
         }
@@ -865,17 +910,23 @@ impl VStructDef {
 
 impl VVariantDef {
     /// Create a variant definition with explicit payload fields.
-    pub const fn new(name: &'static str, effective_name: &'static str, data: VStructDef) -> Self {
+    pub const fn new(
+        name: &'static str,
+        effective_name: &'static str,
+        discriminant: Option<i64>,
+        data: VStructDef,
+    ) -> Self {
         Self {
             name,
             effective_name,
+            discriminant,
             data,
         }
     }
 
     /// Create a unit variant definition.
     pub const fn unit(name: &'static str) -> Self {
-        Self::new(name, name, VStructDef::empty())
+        Self::new(name, name, None, VStructDef::empty())
     }
 }
 
@@ -1425,6 +1476,19 @@ impl<S: IShape> VHeap<S> {
     fn matches_subshape(_stored: S, _offset: usize, _target: S) -> bool {
         true
     }
+
+    fn discriminant_size_bytes(repr: EnumDiscriminantRepr) -> Option<u32> {
+        match repr {
+            EnumDiscriminantRepr::RustNpo => None,
+            EnumDiscriminantRepr::U8 | EnumDiscriminantRepr::I8 => Some(1),
+            EnumDiscriminantRepr::U16 | EnumDiscriminantRepr::I16 => Some(2),
+            EnumDiscriminantRepr::U32 | EnumDiscriminantRepr::I32 => Some(4),
+            EnumDiscriminantRepr::U64
+            | EnumDiscriminantRepr::I64
+            | EnumDiscriminantRepr::Usize
+            | EnumDiscriminantRepr::Isize => Some(8),
+        }
+    }
 }
 
 impl<S: IShape> Default for VHeap<S> {
@@ -1696,6 +1760,44 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
             self.print_history(alloc_id);
             panic!(
                 "pointer_from_pointee: destination already initialized: {:?}",
+                e
+            );
+        }
+        true
+    }
+
+    unsafe fn select_enum_variant(&mut self, dst: VPtr, enum_shape: S, variant_idx: usize) -> bool {
+        let Some(discriminant_repr) = enum_shape.enum_discriminant_repr() else {
+            return false;
+        };
+        let Some(_discriminant) = enum_shape.enum_variant_discriminant(variant_idx) else {
+            return false;
+        };
+        let Some(len) = Self::discriminant_size_bytes(discriminant_repr) else {
+            return false;
+        };
+        if len == 0 {
+            return false;
+        }
+
+        let alloc_id = dst.alloc_id();
+        let end = dst.offset.saturating_add(len);
+        if (end as usize) > dst.alloc_size() {
+            self.print_history(alloc_id);
+            panic!("select_enum_variant: out of bounds");
+        }
+
+        self.record_op(
+            alloc_id,
+            HeapOpKind::Memcpy,
+            Some(Range::new(dst.offset, end)),
+        );
+
+        let (tracker, _) = self.get_tracker_mut(alloc_id);
+        if let Err(e) = tracker.mark_init(dst.offset, end) {
+            self.print_history(alloc_id);
+            panic!(
+                "select_enum_variant: discriminant range already initialized: {:?}",
                 e
             );
         }

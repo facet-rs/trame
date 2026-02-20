@@ -4,15 +4,15 @@
 #[cfg(creusot)]
 use crate::MemState;
 use crate::{
-    CopyDesc, EnumReprKind, IArena, IEnumType, IExecShape, IField, IHeap, IPointerType, IRuntime,
-    IShape, IShapeStore, IStructType, IVariantType, Idx,
+    CopyDesc, EnumDiscriminantRepr, EnumReprKind, IArena, IEnumType, IExecShape, IField, IHeap,
+    IPointerType, IRuntime, IShape, IShapeStore, IStructType, IVariantType, Idx,
 };
 use core::marker::PhantomData;
 #[cfg(creusot)]
 use creusot_std::macros::{logic, trusted};
 use facet_core::{
-    Def, EnumType, Field, KnownPointer, PointerDef, PtrMut, PtrUninit, Shape, StructType, Type,
-    UserType, Variant,
+    Def, EnumRepr, EnumType, Field, KnownPointer, PointerDef, PtrMut, PtrUninit, Shape, StructType,
+    Type, UserType, Variant,
 };
 
 #[cfg(creusot)]
@@ -133,6 +133,33 @@ impl IShape for &'static Shape {
             _ => EnumReprKind::ExternallyTagged,
         };
         Some(repr)
+    }
+
+    #[inline]
+    fn enum_discriminant_repr(&self) -> Option<EnumDiscriminantRepr> {
+        let en = self.as_enum()?;
+        let repr = match en.enum_repr {
+            EnumRepr::RustNPO => EnumDiscriminantRepr::RustNpo,
+            EnumRepr::Rust => EnumDiscriminantRepr::RustNpo,
+            EnumRepr::U8 => EnumDiscriminantRepr::U8,
+            EnumRepr::U16 => EnumDiscriminantRepr::U16,
+            EnumRepr::U32 => EnumDiscriminantRepr::U32,
+            EnumRepr::U64 => EnumDiscriminantRepr::U64,
+            EnumRepr::USize => EnumDiscriminantRepr::Usize,
+            EnumRepr::I8 => EnumDiscriminantRepr::I8,
+            EnumRepr::I16 => EnumDiscriminantRepr::I16,
+            EnumRepr::I32 => EnumDiscriminantRepr::I32,
+            EnumRepr::I64 => EnumDiscriminantRepr::I64,
+            EnumRepr::ISize => EnumDiscriminantRepr::Isize,
+        };
+        Some(repr)
+    }
+
+    #[inline]
+    fn enum_variant_discriminant(&self, variant_idx: usize) -> Option<i64> {
+        let en = self.as_enum()?;
+        let variant = en.variant(variant_idx)?;
+        variant.discriminant
     }
 
     #[inline]
@@ -411,6 +438,37 @@ impl<S: IExecShape<*mut u8>> IHeap<S> for LHeap {
         pointee_shape: S,
     ) -> bool {
         unsafe { pointer_shape.pointer_from_pointee(dst, src, pointee_shape) }
+    }
+
+    unsafe fn select_enum_variant(
+        &mut self,
+        dst: *mut u8,
+        enum_shape: S,
+        variant_idx: usize,
+    ) -> bool {
+        let Some(repr) = enum_shape.enum_discriminant_repr() else {
+            return false;
+        };
+        let Some(discriminant) = enum_shape.enum_variant_discriminant(variant_idx) else {
+            return false;
+        };
+
+        unsafe {
+            match repr {
+                EnumDiscriminantRepr::RustNpo => return false,
+                EnumDiscriminantRepr::U8 => *dst.cast::<u8>() = discriminant as u8,
+                EnumDiscriminantRepr::U16 => *dst.cast::<u16>() = discriminant as u16,
+                EnumDiscriminantRepr::U32 => *dst.cast::<u32>() = discriminant as u32,
+                EnumDiscriminantRepr::U64 => *dst.cast::<u64>() = discriminant as u64,
+                EnumDiscriminantRepr::Usize => *dst.cast::<usize>() = discriminant as usize,
+                EnumDiscriminantRepr::I8 => *dst.cast::<i8>() = discriminant as i8,
+                EnumDiscriminantRepr::I16 => *dst.cast::<i16>() = discriminant as i16,
+                EnumDiscriminantRepr::I32 => *dst.cast::<i32>() = discriminant as i32,
+                EnumDiscriminantRepr::I64 => *dst.cast::<i64>() = discriminant,
+                EnumDiscriminantRepr::Isize => *dst.cast::<isize>() = discriminant as isize,
+            }
+        }
+        true
     }
 
     #[cfg(creusot)]

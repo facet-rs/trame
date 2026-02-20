@@ -249,21 +249,23 @@ fn vshape_enum_exposes_variants_and_payload_fields() {
     let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
 
     let mut payload_fields = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
-    payload_fields[0] = VFieldDef::new(0, u32_h);
-    payload_fields[1] = VFieldDef::new(4, u32_h);
+    payload_fields[0] = VFieldDef::new(4, u32_h);
+    payload_fields[1] = VFieldDef::new(8, u32_h);
     let pair_payload = VStructDef {
         field_count: 2,
         fields: payload_fields,
     };
 
     let variants = [
-        VVariantDef::unit("Unit"),
-        VVariantDef::new("Pair", "Pair", pair_payload),
+        VVariantDef::new("Unit", "Unit", Some(0), VStructDef::empty()),
+        VVariantDef::new("Pair", "Pair", Some(1), pair_payload),
     ];
-    let enum_h = store.add(VShapeDef::enum_with_variants(
-        Layout::new::<u64>(),
+    let enum_h = store.add(VShapeDef::enum_with_variants_and_repr(
+        Layout::from_size_align(16, 4).expect("valid enum layout"),
         EnumReprKind::ExternallyTagged,
+        EnumDiscriminantRepr::U32,
         &variants,
+        VTypeOps::pod(),
     ));
 
     let shape = store.view(enum_h);
@@ -284,8 +286,8 @@ fn vshape_enum_exposes_variants_and_payload_fields() {
     assert_eq!(pair.effective_name(), "Pair");
     let payload = pair.data();
     assert_eq!(payload.field_count(), 2);
-    assert_eq!(payload.field(0).unwrap().offset(), 0);
-    assert_eq!(payload.field(1).unwrap().offset(), 4);
+    assert_eq!(payload.field(0).unwrap().offset(), 4);
+    assert_eq!(payload.field(1).unwrap().offset(), 8);
     assert_eq!(
         payload.field(0).unwrap().shape().layout().unwrap().size(),
         4

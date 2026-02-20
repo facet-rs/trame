@@ -945,6 +945,14 @@ where
             }
         }
 
+        let selected_ok = unsafe {
+            self.heap
+                .select_enum_variant(target_data, target_shape, field_idx)
+        };
+        if !selected_ok {
+            return Err(TrameError::UnsupportedSource);
+        }
+
         let existing_variant_child = match &self.arena.get(target_idx).kind {
             NodeKind::Enum { variant_child, .. } => *variant_child,
             _ => None,

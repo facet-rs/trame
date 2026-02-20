@@ -205,6 +205,39 @@ triage-crashes timeout_secs="5":
     echo "Sample signatures:"
     cut -f2 "$tmp" | sort | uniq -c | sort -nr | sed -n '1,20p'
 
+# Deep triage: store per-crash stderr and summarize first failure line.
+# Useful when crashes are hard aborts (e.g. exit 133) with no panic line.
+# Usage: just triage-crashes-deep [timeout_secs]
+triage-crashes-deep timeout_secs="5":
+    #!/usr/bin/env -S bash -euo pipefail
+    cargo build --features standalone --bin trame-fuzz --target-dir target-standalone >/dev/null
+    if ! compgen -G "out/default/crashes/id:*" > /dev/null; then
+        echo "No crashes yet"
+        exit 0
+    fi
+    rm -rf triage-logs
+    mkdir -p triage-logs
+    summary="triage-logs/summary.tsv"
+    : > "$summary"
+    for f in out/default/crashes/id:*; do
+        base="$(basename "$f" | tr ':,/' '_')"
+        log="triage-logs/${base}.log"
+        set +e
+        timeout "{{ timeout_secs }}" env RUST_BACKTRACE=full target-standalone/debug/trame-fuzz < "$f" >"$log" 2>&1
+        code=$?
+        set -e
+        first="$(rg -m1 "panicked at|assertion failed|SIG[A-Z]+|AddressSanitizer|UBSAN|runtime error|memory|segmentation fault|trap|aborted" "$log" || true)"
+        [ -z "$first" ] && first="(no marker line)"
+        printf '%s\t%s\t%s\t%s\n' "$code" "$first" "$f" "$log" >> "$summary"
+    done
+    echo "Exit code histogram:"
+    cut -f1 "$summary" | sort | uniq -c | sed 's/^ *//'
+    echo
+    echo "Top markers:"
+    cut -f2 "$summary" | sort | uniq -c | sort -nr | sed -n '1,20p'
+    echo
+    echo "Wrote per-crash logs to triage-logs/"
+
 # Show AFL edge coverage from the corpus
 edges: build-native
     cargo afl showmap -C -i out/default/queue -o /dev/stdout -- {{ afl_target }}/debug/trame-fuzz

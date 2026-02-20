@@ -386,10 +386,15 @@ fn apply_value(
     match (&shape.ty, value) {
         (Type::User(UserType::Struct(st)), JsonValue::Object(entries)) => {
             let staged = !path.is_empty();
+            let has_flatten = st.fields.iter().any(|field| field.is_flattened());
             if staged {
                 trame.apply(Op::Set {
                     dst: path,
-                    src: Source::stage_deferred(None),
+                    src: if has_flatten {
+                        Source::stage_deferred(None)
+                    } else {
+                        Source::stage(None)
+                    },
                 })?;
             }
 

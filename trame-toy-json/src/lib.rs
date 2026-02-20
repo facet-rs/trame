@@ -1,7 +1,11 @@
 use std::alloc::Layout;
+use std::collections::BTreeMap;
 use std::mem::ManuallyDrop;
 
 use facet_core::{Def, Facet, PtrMut, PtrUninit, Shape, Type, UserType};
+use facet_solver::{
+    FieldInfo, PathSegment as SolverPathSegment, Schema as SolverSchema, Solver, SolverError,
+};
 use trame::{LRuntime, Op, Path, Source, Trame, TrameError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -398,55 +402,148 @@ fn apply_value(
                 })?;
             }
 
-            let mut consumed = vec![false; entries.len()];
+            if !has_flatten {
+                let mut consumed = vec![false; entries.len()];
 
-            for (idx, field) in st.fields.iter().enumerate() {
-                let mut match_idx = None;
-                for (entry_idx, (key, _)) in entries.iter().enumerate() {
-                    if key == field.effective_name()
-                        || field.alias.is_some_and(|alias| key == alias)
-                    {
-                        match_idx = Some(entry_idx);
-                        break;
+                for (idx, field) in st.fields.iter().enumerate() {
+                    let mut match_idx = None;
+                    for (entry_idx, (key, _)) in entries.iter().enumerate() {
+                        if key == field.effective_name()
+                            || field.alias.is_some_and(|alias| key == alias)
+                        {
+                            match_idx = Some(entry_idx);
+                            break;
+                        }
+                    }
+
+                    match match_idx {
+                        Some(entry_idx) => {
+                            consumed[entry_idx] = true;
+                            let (_, child_value) = &entries[entry_idx];
+                            apply_value(
+                                trame,
+                                Path::field(idx as u32),
+                                field.shape.get(),
+                                child_value,
+                                offset,
+                            )?;
+                        }
+                        None if field.should_skip_deserializing()
+                            || field.has_default()
+                            || matches!(field.shape.get().def, Def::Option(_)) =>
+                        {
+                            trame.apply(Op::Set {
+                                dst: Path::field(idx as u32),
+                                src: Source::default_value(),
+                            })?;
+                        }
+                        None => {
+                            return Err(Error::MissingField {
+                                field: field.effective_name(),
+                                offset,
+                            });
+                        }
                     }
                 }
 
-                match match_idx {
-                    Some(entry_idx) => {
-                        consumed[entry_idx] = true;
-                        let (_, child_value) = &entries[entry_idx];
-                        apply_value(
-                            trame,
-                            Path::field(idx as u32),
-                            field.shape.get(),
-                            child_value,
+                for (idx, used) in consumed.into_iter().enumerate() {
+                    if !used {
+                        return Err(Error::UnknownField {
+                            field: entries[idx].0.clone(),
                             offset,
-                        )?;
+                        });
                     }
-                    None if field.should_skip_deserializing()
+                }
+            } else {
+                let schema =
+                    SolverSchema::build_auto(shape).map_err(|_| Error::UnsupportedShape {
+                        type_name: shape.type_identifier,
+                        offset,
+                    })?;
+                let mut solver = Solver::new(&schema);
+                for (key, _) in entries {
+                    let _ = solver.see_key(key.as_str());
+                }
+
+                let resolved = solver
+                    .finish()
+                    .map_err(|e| map_solver_error(e, shape.type_identifier, offset))?;
+                let resolution = resolved.resolution();
+
+                let mut grouped_by_top: BTreeMap<&'static str, Vec<(String, JsonValue)>> =
+                    BTreeMap::new();
+                for (key, child_value) in entries {
+                    let Some(info) = resolution.field_by_name(key.as_str()) else {
+                        return Err(Error::UnknownField {
+                            field: key.clone(),
+                            offset,
+                        });
+                    };
+                    let Some(top_name) = top_level_field_name(info) else {
+                        return Err(Error::UnsupportedShape {
+                            type_name: shape.type_identifier,
+                            offset,
+                        });
+                    };
+                    grouped_by_top
+                        .entry(top_name)
+                        .or_default()
+                        .push((key.clone(), child_value.clone()));
+                }
+
+                for (idx, field) in st.fields.iter().enumerate() {
+                    if let Some(child_entries) = grouped_by_top.remove(field.name) {
+                        if field.is_flattened() {
+                            let child_object = JsonValue::Object(child_entries);
+                            apply_value(
+                                trame,
+                                Path::field(idx as u32),
+                                field.shape.get(),
+                                &child_object,
+                                offset,
+                            )?;
+                        } else {
+                            let (_, child_value) = &child_entries[0];
+                            apply_value(
+                                trame,
+                                Path::field(idx as u32),
+                                field.shape.get(),
+                                child_value,
+                                offset,
+                            )?;
+                        }
+                        continue;
+                    }
+
+                    if field.should_skip_deserializing()
                         || field.has_default()
-                        || matches!(field.shape.get().def, Def::Option(_)) =>
+                        || matches!(field.shape.get().def, Def::Option(_))
                     {
                         trame.apply(Op::Set {
                             dst: Path::field(idx as u32),
                             src: Source::default_value(),
                         })?;
-                    }
-                    None => {
+                    } else if field.is_flattened() {
+                        let empty_object = JsonValue::Object(Vec::new());
+                        apply_value(
+                            trame,
+                            Path::field(idx as u32),
+                            field.shape.get(),
+                            &empty_object,
+                            offset,
+                        )?;
+                    } else {
                         return Err(Error::MissingField {
                             field: field.effective_name(),
                             offset,
                         });
                     }
                 }
-            }
 
-            for (idx, used) in consumed.into_iter().enumerate() {
-                if !used {
-                    return Err(Error::UnknownField {
-                        field: entries[idx].0.clone(),
-                        offset,
-                    });
+                if let Some((_, remaining)) = grouped_by_top.into_iter().next() {
+                    if let Some((field, _)) = remaining.into_iter().next() {
+                        return Err(Error::UnknownField { field, offset });
+                    }
                 }
             }
 
@@ -457,6 +554,38 @@ fn apply_value(
         }
         _ => apply_scalar(trame, path, shape, value, offset),
     }
+}
+
+fn map_solver_error(err: SolverError, type_name: &'static str, offset: usize) -> Error {
+    match err {
+        SolverError::NoMatch {
+            missing_required_detailed,
+            unknown_fields,
+            ..
+        } => {
+            if let Some(field) = unknown_fields.into_iter().next() {
+                Error::UnknownField { field, offset }
+            } else if let Some(missing) = missing_required_detailed.into_iter().next() {
+                Error::MissingField {
+                    field: missing.name,
+                    offset,
+                }
+            } else {
+                Error::UnsupportedShape { type_name, offset }
+            }
+        }
+        SolverError::Ambiguous { .. } => Error::UnsupportedShape { type_name, offset },
+    }
+}
+
+fn top_level_field_name(info: &FieldInfo) -> Option<&'static str> {
+    info.path
+        .segments()
+        .iter()
+        .find_map(|segment| match segment {
+            SolverPathSegment::Field(name) => Some(*name),
+            SolverPathSegment::Variant(_, _) => None,
+        })
 }
 
 fn build_raw_from_json(
@@ -602,6 +731,19 @@ mod tests {
         maybe: Option<u32>,
     }
 
+    #[derive(Debug, PartialEq, facet::Facet)]
+    struct FlatInner {
+        a: u32,
+        b: String,
+    }
+
+    #[derive(Debug, PartialEq, facet::Facet)]
+    struct FlatOuter {
+        id: u32,
+        #[facet(flatten)]
+        inner: FlatInner,
+    }
+
     #[test]
     fn deserializes_nested_struct() {
         let value: Outer = from_str(r#"{"count":42,"name":"hello","inner":{"ok":true}}"#)
@@ -683,6 +825,23 @@ mod tests {
             WithOption {
                 count: 42,
                 maybe: Some(7),
+            }
+        );
+    }
+
+    #[test]
+    fn flatten_keys_route_to_inner_struct() {
+        let value: FlatOuter =
+            from_str(r#"{"id":1,"a":2,"b":"hello"}"#).expect("flattened fields should deserialize");
+
+        assert_eq!(
+            value,
+            FlatOuter {
+                id: 1,
+                inner: FlatInner {
+                    a: 2,
+                    b: "hello".to_owned(),
+                },
             }
         );
     }

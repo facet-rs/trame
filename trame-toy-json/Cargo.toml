@@ -15,6 +15,7 @@ rustdoc-args = ["--html-in-header", "arborium-header.html"]
 [dependencies]
 trame.workspace = true
 facet-core.workspace = true
+facet-solver.workspace = true
 
 [dev-dependencies]
 facet.workspace = true

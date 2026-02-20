@@ -553,7 +553,6 @@ fn apply_value(
 
 fn map_solver_error(err: SolveError, type_name: &'static str, offset: usize) -> Error {
     match err {
-        SolveError::SchemaBuildFailed => Error::UnsupportedShape { type_name, offset },
         SolveError::NoMatch {
             missing_required,
             missing_required_detailed,

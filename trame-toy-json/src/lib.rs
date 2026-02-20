@@ -3,10 +3,10 @@ use std::collections::BTreeMap;
 use std::mem::ManuallyDrop;
 
 use facet_core::{Def, Facet, PtrMut, PtrUninit, Shape, Type, UserType};
-use facet_solver::{
-    FieldInfo, PathSegment as SolverPathSegment, Schema as SolverSchema, Solver, SolverError,
-};
 use trame::{LRuntime, Op, Path, Source, Trame, TrameError};
+use trame_solver::{
+    FieldRoute, PathSegment as SolverPathSegment, Schema as SolverSchema, SolveError,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
@@ -460,13 +460,8 @@ fn apply_value(
                         type_name: shape.type_identifier,
                         offset,
                     })?;
-                let mut solver = Solver::new(&schema);
-                for (key, _) in entries {
-                    let _ = solver.see_key(key.as_str());
-                }
-
-                let resolved = solver
-                    .finish()
+                let resolved = schema
+                    .solve_keys(entries.iter().map(|(key, _)| key.as_str()))
                     .map_err(|e| map_solver_error(e, shape.type_identifier, offset))?;
                 let resolution = resolved.resolution();
 
@@ -556,12 +551,13 @@ fn apply_value(
     }
 }
 
-fn map_solver_error(err: SolverError, type_name: &'static str, offset: usize) -> Error {
+fn map_solver_error(err: SolveError, type_name: &'static str, offset: usize) -> Error {
     match err {
-        SolverError::NoMatch {
+        SolveError::SchemaBuildFailed => Error::UnsupportedShape { type_name, offset },
+        SolveError::NoMatch {
+            missing_required,
             missing_required_detailed,
             unknown_fields,
-            ..
         } => {
             if let Some(field) = unknown_fields.into_iter().next() {
                 Error::UnknownField { field, offset }
@@ -570,22 +566,27 @@ fn map_solver_error(err: SolverError, type_name: &'static str, offset: usize) ->
                     field: missing.name,
                     offset,
                 }
+            } else if let Some(field) = missing_required.into_iter().next() {
+                Error::MissingField { field, offset }
             } else {
                 Error::UnsupportedShape { type_name, offset }
             }
         }
-        SolverError::Ambiguous { .. } => Error::UnsupportedShape { type_name, offset },
+        SolveError::Ambiguous {
+            candidates: _,
+            disambiguating_fields: _,
+        } => Error::UnsupportedShape { type_name, offset },
     }
 }
 
-fn top_level_field_name(info: &FieldInfo) -> Option<&'static str> {
-    info.path
-        .segments()
-        .iter()
-        .find_map(|segment| match segment {
-            SolverPathSegment::Field(name) => Some(*name),
-            SolverPathSegment::Variant(_, _) => None,
-        })
+fn top_level_field_name(info: &FieldRoute) -> Option<&'static str> {
+    info.path.iter().find_map(|segment| match segment {
+        SolverPathSegment::Field(name) => Some(*name),
+        SolverPathSegment::Variant {
+            field: _,
+            variant: _,
+        } => None,
+    })
 }
 
 fn build_raw_from_json(

@@ -1,11 +1,15 @@
 [package]
-name = "trame-toy-json"
+name = "trame-solver"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Toy JSON deserializer built on trame primitives"
+description = "Shape-resolution IR and adapters for trame deserializers"
+keywords = ["reflection", "facet", "flatten", "untagged"]
+categories = ["development-tools", "rust-patterns"]
+homepage = "https://facet.rs"
+readme = "README.md"
 
 [package.metadata]
 
@@ -13,9 +17,8 @@ description = "Toy JSON deserializer built on trame primitives"
 rustdoc-args = ["--html-in-header", "arborium-header.html"]
 
 [dependencies]
-trame.workspace = true
-trame-solver.workspace = true
 facet-core.workspace = true
+facet-solver.workspace = true
 
 [dev-dependencies]
 facet.workspace = true

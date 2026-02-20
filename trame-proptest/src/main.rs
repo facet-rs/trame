@@ -4,14 +4,16 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    use facet::Facet;
     use proptest::prelude::*;
-    use std::alloc::Layout;
     use std::panic::catch_unwind;
+    use std::{alloc::Layout, collections::BTreeSet};
     use trame::{
         IRuntime, Op, Path, Source, Trame, VRuntime, VShapeDef, VShapeHandle,
         runtime::{IHeap, IShape},
         vshape_register, vshape_store, vshape_store_reset, vshape_view,
     };
+    use trame_solver::{Schema as SolverSchema, SolveError};
 
     // ============================================================================
     // Shape store generation
@@ -247,6 +249,224 @@ mod tests {
     }
 
     // ============================================================================
+    // Solver fixtures and oracle
+    // ============================================================================
+
+    #[derive(Debug, Clone, Copy)]
+    enum SolverFixture {
+        Struct,
+        OptionalStruct,
+        EnumCase,
+    }
+
+    #[derive(Debug, Facet)]
+    struct FlatInner {
+        a: u32,
+        b: u32,
+    }
+
+    #[derive(Debug, Facet)]
+    struct FlatOuter {
+        id: u32,
+        #[facet(flatten)]
+        inner: FlatInner,
+    }
+
+    #[derive(Debug, Facet)]
+    struct FlatOuterOptional {
+        id: u32,
+        #[facet(flatten)]
+        inner: Option<FlatInner>,
+    }
+
+    #[derive(Debug, Facet)]
+    #[repr(u8)]
+    enum FlatChoice {
+        Alpha,
+        Beta,
+    }
+
+    #[derive(Debug, Facet)]
+    struct FlatEnumOuter {
+        id: u32,
+        #[facet(flatten)]
+        choice: FlatChoice,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct OracleResolution {
+        fields: &'static [&'static str],
+        required: &'static [&'static str],
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum OracleOutcome {
+        Ok {
+            index: usize,
+        },
+        NoMatch {
+            missing_required: BTreeSet<&'static str>,
+            unknown_fields: Vec<String>,
+        },
+        Ambiguous,
+    }
+
+    const ORACLE_FLAT_STRUCT: [OracleResolution; 1] = [OracleResolution {
+        fields: &["id", "a", "b"],
+        required: &["id", "a", "b"],
+    }];
+    const ORACLE_FLAT_OPTIONAL_STRUCT: [OracleResolution; 1] = [OracleResolution {
+        fields: &["id", "a", "b"],
+        required: &["id"],
+    }];
+    const ORACLE_FLAT_ENUM: [OracleResolution; 2] = [
+        OracleResolution {
+            fields: &["id", "Alpha"],
+            required: &["id", "Alpha"],
+        },
+        OracleResolution {
+            fields: &["id", "Beta"],
+            required: &["id", "Beta"],
+        },
+    ];
+
+    fn solver_resolutions(fixture: SolverFixture) -> &'static [OracleResolution] {
+        match fixture {
+            SolverFixture::Struct => &ORACLE_FLAT_STRUCT,
+            SolverFixture::OptionalStruct => &ORACLE_FLAT_OPTIONAL_STRUCT,
+            SolverFixture::EnumCase => &ORACLE_FLAT_ENUM,
+        }
+    }
+
+    fn fixture_known_fields(fixture: SolverFixture) -> &'static [&'static str] {
+        match fixture {
+            SolverFixture::Struct | SolverFixture::OptionalStruct => &["id", "a", "b"],
+            SolverFixture::EnumCase => &["id", "Alpha", "Beta"],
+        }
+    }
+
+    fn fixture_root_field_count(_fixture: SolverFixture) -> u32 {
+        2
+    }
+
+    fn build_solver_schema(fixture: SolverFixture) -> SolverSchema<&'static facet_core::Shape> {
+        match fixture {
+            SolverFixture::Struct => {
+                SolverSchema::build_auto(FlatOuter::SHAPE).expect("flat struct schema should build")
+            }
+            SolverFixture::OptionalStruct => SolverSchema::build_auto(FlatOuterOptional::SHAPE)
+                .expect("optional flat struct schema should build"),
+            SolverFixture::EnumCase => SolverSchema::build_auto(FlatEnumOuter::SHAPE)
+                .expect("flat enum schema should build"),
+        }
+    }
+
+    fn oracle_solve(fixture: SolverFixture, keys: &[String]) -> OracleOutcome {
+        let resolutions = solver_resolutions(fixture);
+        let all_known_fields = resolutions
+            .iter()
+            .flat_map(|resolution| resolution.fields.iter().copied())
+            .collect::<BTreeSet<_>>();
+
+        let unknown_fields = keys
+            .iter()
+            .filter(|k| !all_known_fields.contains(k.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let mut candidates = (0..resolutions.len()).collect::<Vec<_>>();
+        for key in keys {
+            if !all_known_fields.contains(key.as_str()) {
+                continue;
+            }
+
+            let filtered = candidates
+                .iter()
+                .copied()
+                .filter(|idx| resolutions[*idx].fields.contains(&key.as_str()))
+                .collect::<Vec<_>>();
+            if !filtered.is_empty() {
+                candidates = filtered;
+            }
+        }
+
+        if candidates.is_empty() {
+            return OracleOutcome::NoMatch {
+                missing_required: BTreeSet::new(),
+                unknown_fields,
+            };
+        }
+
+        let seen_key_set = keys.iter().map(String::as_str).collect::<BTreeSet<_>>();
+        let viable = candidates
+            .iter()
+            .copied()
+            .filter(|idx| {
+                resolutions[*idx]
+                    .required
+                    .iter()
+                    .all(|name| seen_key_set.contains(*name))
+            })
+            .collect::<Vec<_>>();
+
+        match viable.len() {
+            0 => {
+                let (_, missing_required) = candidates
+                    .iter()
+                    .copied()
+                    .map(|idx| {
+                        let missing = resolutions[idx]
+                            .required
+                            .iter()
+                            .copied()
+                            .filter(|name| !seen_key_set.contains(*name))
+                            .collect::<BTreeSet<_>>();
+                        (idx, missing)
+                    })
+                    .min_by_key(|(_, missing)| missing.len())
+                    .expect("candidates are known non-empty");
+
+                OracleOutcome::NoMatch {
+                    missing_required,
+                    unknown_fields,
+                }
+            }
+            1 => OracleOutcome::Ok { index: viable[0] },
+            _ => OracleOutcome::Ambiguous,
+        }
+    }
+
+    fn arb_solver_fixture() -> impl Strategy<Value = SolverFixture> {
+        prop_oneof![
+            Just(SolverFixture::Struct),
+            Just(SolverFixture::OptionalStruct),
+            Just(SolverFixture::EnumCase),
+        ]
+    }
+
+    fn arb_keys_from_pool(pool: &'static [&'static str]) -> BoxedStrategy<Vec<String>> {
+        prop::collection::vec(prop::sample::select(pool.to_vec()), 0..8)
+            .prop_map(|keys| keys.into_iter().map(str::to_owned).collect::<Vec<_>>())
+            .boxed()
+    }
+
+    fn arb_solver_fixture_and_keys() -> impl Strategy<Value = (SolverFixture, Vec<String>)> {
+        arb_solver_fixture().prop_flat_map(|fixture| {
+            let key_strategy = match fixture {
+                SolverFixture::Struct | SolverFixture::OptionalStruct => {
+                    arb_keys_from_pool(&["id", "a", "b", "unknown", "extra"])
+                }
+                SolverFixture::EnumCase => prop_oneof![
+                    arb_keys_from_pool(&["id", "Alpha", "unknown", "extra"]),
+                    arb_keys_from_pool(&["id", "Beta", "unknown", "extra"]),
+                ]
+                .boxed(),
+            };
+            key_strategy.prop_map(move |keys| (fixture, keys))
+        })
+    }
+
+    // ============================================================================
     // Proptests
     // ============================================================================
 
@@ -263,6 +483,85 @@ mod tests {
                 run_test(shape_recipes, target_idx, op_recipes);
             }));
             prop_assert!(result.is_ok(), "Test panicked!");
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(1_000))]
+
+        #[test]
+        fn solver_routes_and_errors_match_oracle(
+            (fixture, keys) in arb_solver_fixture_and_keys(),
+        ) {
+            let schema = build_solver_schema(fixture);
+            let oracle = oracle_solve(fixture, &keys);
+            let solve = schema.solve_keys(keys.iter().map(String::as_str));
+
+            match (solve, oracle) {
+                (Ok(resolved), OracleOutcome::Ok { index }) => {
+                    prop_assert_eq!(resolved.index(), index);
+
+                    let stable = schema
+                        .solve_keys(keys.iter().map(String::as_str))
+                        .expect("re-solving should stay successful");
+                    prop_assert_eq!(stable.index(), resolved.index());
+
+                    for key in keys.iter().filter(|k| fixture_known_fields(fixture).contains(&k.as_str())) {
+                        let Some(route) = resolved.resolution().field_by_name(key.as_str()) else {
+                            prop_assert!(false, "known key `{}` had no route in resolved schema", key);
+                            continue;
+                        };
+                        let Some(top_idx) = route.top_level_field_index() else {
+                            prop_assert!(false, "route for key `{}` had no top-level field index", key);
+                            continue;
+                        };
+                        prop_assert!(top_idx < fixture_root_field_count(fixture));
+                        prop_assert!(!route.path_display.is_empty());
+
+                        let stable_route = stable
+                            .resolution()
+                            .field_by_name(key.as_str())
+                            .expect("stable solve must return same route");
+                        prop_assert_eq!(&stable_route.path_display, &route.path_display);
+                    }
+                }
+                (
+                    Err(SolveError::NoMatch {
+                        missing_required,
+                        missing_required_detailed,
+                        unknown_fields,
+                    }),
+                    OracleOutcome::NoMatch {
+                        missing_required: oracle_missing_required,
+                        unknown_fields: oracle_unknown_fields,
+                    },
+                ) => {
+                    let seen_keys = keys.iter().map(String::as_str).collect::<BTreeSet<_>>();
+
+                    for field in &missing_required {
+                        prop_assert!(!seen_keys.contains(field));
+                    }
+                    for info in &missing_required_detailed {
+                        prop_assert!(!seen_keys.contains(info.name));
+                        prop_assert!(!info.path.is_empty());
+                    }
+
+                    let missing_required_set = missing_required.into_iter().collect::<BTreeSet<_>>();
+                    prop_assert_eq!(missing_required_set, oracle_missing_required);
+                    prop_assert_eq!(unknown_fields, oracle_unknown_fields);
+                }
+                (Err(SolveError::Ambiguous { .. }), OracleOutcome::Ambiguous) => {}
+                (actual, expected) => {
+                    prop_assert!(
+                        false,
+                        "solver/oracle mismatch for fixture {:?} and keys {:?}: actual={:?}, expected={:?}",
+                        fixture,
+                        keys,
+                        actual,
+                        expected
+                    );
+                }
+            }
         }
     }
 }

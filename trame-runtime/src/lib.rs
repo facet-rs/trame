@@ -3,20 +3,15 @@
 #![cfg_attr(kani, feature(stmt_expr_attributes))]
 #![cfg_attr(kani, feature(proc_macro_hygiene))]
 
-#[cfg(not(creusot))]
 pub mod live;
 
 #[cfg(not(creusot))]
 pub mod verified;
 
-#[cfg(creusot)]
-pub mod creusot_rt;
-
 use std::{alloc::Layout, marker::PhantomData};
 
 #[cfg(creusot)]
-use creusot_rt::layout_size_logic;
-
+use creusot_std::logic::Int;
 #[cfg(creusot)]
 use creusot_std::model::DeepModel;
 
@@ -24,13 +19,13 @@ use creusot_std::model::DeepModel;
 use creusot_std::macros::{ensures, logic, requires};
 
 #[cfg(creusot)]
-use creusot_std::prelude::trusted;
+use creusot_std::prelude::{check, extern_spec, trusted};
 
 #[cfg(creusot)]
-pub type VLayout = creusot_rt::CLayout;
+pub type VLayout = std::alloc::Layout;
 
 #[cfg(creusot)]
-pub type VLayoutError = creusot_rt::CLayoutError;
+pub type VLayoutError = std::alloc::LayoutError;
 
 #[cfg(not(creusot))]
 pub use verified::{VLayout, VLayoutError};
@@ -80,26 +75,17 @@ pub trait IShapeStore: Clone {
 }
 
 #[cfg(creusot)]
-pub trait IShapeExtra: DeepModel {
+pub trait IShapeExtra {
     #[logic]
     fn size_logic(self) -> usize;
-
-    #[logic(law)]
-    #[ensures(self.deep_model() == other.deep_model() ==> self == other)]
-    fn injective_deep_model(self, other: Self);
 }
 
 #[cfg(creusot)]
-impl<T: DeepModel> IShapeExtra for T {
+impl<T> IShapeExtra for T {
     #[logic(opaque)]
     fn size_logic(self) -> usize {
         dead
     }
-
-    #[trusted]
-    #[logic(law)]
-    #[ensures(self.deep_model() == other.deep_model() ==> self == other)]
-    fn injective_deep_model(self, other: Self) {}
 }
 
 #[cfg(not(creusot))]
@@ -456,12 +442,17 @@ pub trait IPtr: Copy {
     fn byte_add_logic(self, n: usize) -> Self;
 }
 
-#[cfg(not(creusot))]
 impl IPtr for *mut u8 {
     #[inline]
     unsafe fn byte_add(self, n: usize) -> Self {
         // SAFETY: caller ensures the resulting pointer is in-bounds.
         unsafe { self.byte_add(n) }
+    }
+
+    #[cfg(creusot)]
+    #[logic(opaque)]
+    fn byte_add_logic(self, _n: usize) -> Self {
+        dead
     }
 }
 
@@ -611,6 +602,25 @@ impl<T> Idx<T> {
             _ty: PhantomData,
         }
     }
+}
+
+#[cfg(creusot)]
+extern_spec! {
+    mod core {
+        mod alloc {
+            impl Layout {
+                #[check(ghost)]
+                #[ensures(result@ == layout_size_logic(*self))]
+                fn size(&self) -> usize;
+            }
+        }
+    }
+}
+
+#[cfg(creusot)]
+#[logic(opaque)]
+pub fn layout_size_logic(_layout: std::alloc::Layout) -> Int {
+    dead
 }
 
 // ==================================================================

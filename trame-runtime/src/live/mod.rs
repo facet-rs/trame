@@ -1,14 +1,34 @@
 //! Live implementations of all of trame's runtime traits: no verification involved, real memory
 //! allocations, etc.
 
+#[cfg(creusot)]
+use crate::MemState;
 use crate::{
     CopyDesc, IArena, IExecShape, IField, IHeap, IPointerType, IRuntime, IShape, IShapeStore,
     IStructType, Idx,
 };
 use core::marker::PhantomData;
+#[cfg(creusot)]
+use creusot_std::macros::{logic, trusted};
 use facet_core::{
     Def, Field, KnownPointer, PointerDef, PtrMut, PtrUninit, Shape, StructType, Type, UserType,
 };
+
+#[cfg(creusot)]
+#[trusted]
+unsafe fn call_pointer_new_into(
+    f: unsafe fn(PtrUninit, PtrMut) -> PtrMut,
+    dst: *mut u8,
+    src: *mut u8,
+) {
+    let _ = unsafe { f(PtrUninit::new(dst), PtrMut::new(src)) };
+}
+
+#[cfg(creusot)]
+#[trusted]
+fn pointer_pointee_matches(pointer_def: PointerDef, pointee_shape: &'static Shape) -> bool {
+    pointer_def.pointee() == Some(pointee_shape)
+}
 
 /// A "live" runtime that just peforms raw unsafe Rust operations
 pub struct LRuntime<S = &'static Shape> {
@@ -174,6 +194,11 @@ impl IExecShape<*mut u8> for &'static Shape {
         let Def::Pointer(pointer_def) = self.def else {
             return false;
         };
+        #[cfg(creusot)]
+        if !pointer_pointee_matches(pointer_def, pointee_shape) {
+            return false;
+        }
+        #[cfg(not(creusot))]
         if pointer_def.pointee() != Some(pointee_shape) {
             return false;
         }
@@ -181,6 +206,9 @@ impl IExecShape<*mut u8> for &'static Shape {
             return false;
         };
         unsafe {
+            #[cfg(creusot)]
+            call_pointer_new_into(new_into_fn, dst, src);
+            #[cfg(not(creusot))]
             new_into_fn(PtrUninit::new(dst), PtrMut::new(src));
         }
         true
@@ -279,6 +307,12 @@ impl<S: IExecShape<*mut u8>> IHeap<S> for LHeap {
     ) -> bool {
         unsafe { pointer_shape.pointer_from_pointee(dst, src, pointee_shape) }
     }
+
+    #[cfg(creusot)]
+    #[logic(opaque)]
+    fn is(&self, _state: MemState, _ptr: Self::Ptr, _shape: S) -> bool {
+        dead
+    }
 }
 
 // ==================================================================
@@ -294,8 +328,16 @@ pub struct LArena<T> {
 impl<T> LArena<T> {
     /// Create a new live arena.
     pub fn new() -> Self {
+        #[cfg(creusot)]
+        let mut slots = {
+            let mut v = Vec::new();
+            v.push(None);
+            v
+        };
+        #[cfg(not(creusot))]
+        let slots = vec![None];
         Self {
-            slots: vec![None], // Slot 0 reserved for NOT_STARTED
+            slots, // Slot 0 reserved for NOT_STARTED
             free_list: Vec::new(),
         }
     }
@@ -337,6 +379,18 @@ impl<T> IArena<T> for LArena<T> {
     fn get_mut(&mut self, id: Idx<T>) -> &mut T {
         debug_assert!(id.is_valid());
         self.slots[id.index()].as_mut().expect("slot empty")
+    }
+
+    #[cfg(creusot)]
+    #[logic(opaque)]
+    fn contains(self, _id: Idx<T>) -> bool {
+        dead
+    }
+
+    #[cfg(creusot)]
+    #[logic(opaque)]
+    fn get_logic(self, _id: Idx<T>) -> T {
+        dead
     }
 }
 

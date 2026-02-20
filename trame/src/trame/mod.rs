@@ -130,12 +130,6 @@ struct FieldMeta<S: IShape> {
     layout: trame_runtime::VLayout,
 }
 
-#[cfg(creusot)]
-fn layout_size(layout: trame_runtime::VLayout) -> usize {
-    layout.size
-}
-
-#[cfg(not(creusot))]
 fn layout_size(layout: trame_runtime::VLayout) -> usize {
     layout.size()
 }
@@ -165,8 +159,13 @@ fn layout_expect(layout: Option<std::alloc::Layout>) -> std::alloc::Layout {
 
 #[cfg(creusot)]
 #[trusted]
-#[ensures(meta.offset + meta.layout.size <= node_size)]
 fn assume_field_ptr_in_bounds<S: IShape>(meta: &FieldMeta<S>, node_size: usize) {}
+
+#[cfg(creusot)]
+#[trusted]
+fn shape_eq<S: PartialEq>(a: S, b: S) -> bool {
+    a == b
+}
 
 impl<'facet, R> Trame<'facet, R>
 where
@@ -424,7 +423,11 @@ where
             SourceKind::Imm(imm) => {
                 let src_ptr = imm.ptr;
                 let src_shape = imm.shape;
-                if src_shape != shape {
+                #[cfg(creusot)]
+                let same_shape = shape_eq(src_shape, shape);
+                #[cfg(not(creusot))]
+                let same_shape = src_shape == shape;
+                if !same_shape {
                     return Err(TrameError::ShapeMismatch);
                 }
                 unsafe { self.heap.memcpy(dst, src_ptr, CopyDesc::value(shape)) };
@@ -476,7 +479,11 @@ where
             SourceKind::Imm(imm) => {
                 let src_ptr = imm.ptr;
                 let src_shape = imm.shape;
-                if src_shape != shape {
+                #[cfg(creusot)]
+                let same_shape = shape_eq(src_shape, shape);
+                #[cfg(not(creusot))]
+                let same_shape = src_shape == shape;
+                if !same_shape {
                     return Err(TrameError::ShapeMismatch);
                 }
                 #[cfg(creusot)]
@@ -603,7 +610,11 @@ where
             SourceKind::Imm(imm) => {
                 let src_ptr = imm.ptr;
                 let src_shape = imm.shape;
-                if src_shape != field_shape {
+                #[cfg(creusot)]
+                let same_shape = shape_eq(src_shape, field_shape);
+                #[cfg(not(creusot))]
+                let same_shape = src_shape == field_shape;
+                if !same_shape {
                     return Err(TrameError::ShapeMismatch);
                 }
                 unsafe { self.heap.memcpy(dst, src_ptr, CopyDesc::value(field_shape)) };

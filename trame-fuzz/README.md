@@ -15,11 +15,13 @@ Fuzz entry points:
 
 - `trame-fuzz` (existing): `LRuntime<&'static Shape>`
 - `vshape` (new): `LRuntime<VShapeView<'static, VShapeStore>>`
+- `solver` (new): `trame-solver` key-routing/flatten schema resolution invariants
 
 Run with:
 
 - `just fuzz` for the existing target
 - `just fuzz-vshape` for the new VShape target
+- `just fuzz-solver` for solver-only schema/key fuzzing
 
 
 ## Sponsors

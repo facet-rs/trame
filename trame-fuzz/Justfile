@@ -166,11 +166,44 @@ minimize-solver file:
 crashes:
     @ls -la out/default/crashes/ 2>/dev/null || echo "No crashes yet"
 
-# Reproduce all crashes and show unique panic messages
-reproduce-all:
-    @for f in out/default/crashes/id:*; do \
-        {{ afl_target }}/debug/trame-fuzz < "$$f" 2>&1 | grep -E "^thread.*panicked" || true; \
+# Reproduce all crashes with standalone binary and show unique panic lines.
+# Usage: just reproduce-all [timeout_secs]
+reproduce-all timeout_secs="5":
+    #!/usr/bin/env -S bash -euo pipefail
+    cargo build --features standalone --bin trame-fuzz --target-dir target-standalone >/dev/null
+    if ! compgen -G "out/default/crashes/id:*" > /dev/null; then
+        echo "No crashes yet"
+        exit 0
+    fi
+    for f in out/default/crashes/id:*; do
+        out="$(timeout "{{ timeout_secs }}" target-standalone/debug/trame-fuzz < "$f" 2>&1 || true)"
+        printf '%s\n' "$out" | rg -m1 "^thread 'main' panicked at" || true
     done | sort -u
+
+# Triage crash corpus with exit-code buckets and one-line signatures.
+# Usage: just triage-crashes [timeout_secs]
+triage-crashes timeout_secs="5":
+    #!/usr/bin/env -S bash -euo pipefail
+    cargo build --features standalone --bin trame-fuzz --target-dir target-standalone >/dev/null
+    if ! compgen -G "out/default/crashes/id:*" > /dev/null; then
+        echo "No crashes yet"
+        exit 0
+    fi
+    tmp="$(mktemp)"
+    for f in out/default/crashes/id:*; do
+        set +e
+        out="$(timeout "{{ timeout_secs }}" target-standalone/debug/trame-fuzz < "$f" 2>&1)"
+        code=$?
+        set -e
+        sig="$(printf '%s\n' "$out" | rg -m1 "^thread 'main' panicked at" || true)"
+        [ -z "$sig" ] && sig="(no panic line)"
+        printf '%s\t%s\t%s\n' "$code" "$sig" "$f" >> "$tmp"
+    done
+    echo "Exit code histogram:"
+    cut -f1 "$tmp" | sort | uniq -c | sed 's/^ *//'
+    echo
+    echo "Sample signatures:"
+    cut -f2 "$tmp" | sort | uniq -c | sort -nr | sed -n '1,20p'
 
 # Show AFL edge coverage from the corpus
 edges: build-native

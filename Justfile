@@ -37,6 +37,10 @@ fuzz:
 fuzz-vshape:
     cd trame-fuzz && just fuzz-vshape
 
+# Run solver fuzzing target (trame-solver key routing)
+fuzz-solver:
+    cd trame-fuzz && just fuzz-solver
+
 ci-push ident:
     depot build --push --build-platform=linux/amd64 -t ghcr.io/facet-rs/{{ ident }}-ci:latest -f .docker/Dockerfile.{{ ident }} .docker/
 

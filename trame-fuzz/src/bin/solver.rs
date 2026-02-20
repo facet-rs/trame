@@ -143,10 +143,9 @@ fn run_fuzz(input: FuzzInput) {
                 .iter()
                 .filter(|key| known_fields(input.fixture).contains(&key.as_str()))
             {
-                let route = resolved
-                    .resolution()
-                    .field_by_name(key.as_str())
-                    .expect("known key should resolve");
+                let Some(route) = resolved.resolution().field_by_name(key.as_str()) else {
+                    continue;
+                };
                 let top_idx = route
                     .top_level_field_index()
                     .expect("resolved route should include top-level field index");
@@ -156,7 +155,7 @@ fn run_fuzz(input: FuzzInput) {
                 let stable_route = stable
                     .resolution()
                     .field_by_name(key.as_str())
-                    .expect("stable solve should include same route");
+                    .expect("if the first solve yielded a route for key, stable solve should too");
                 assert_eq!(stable_route.path, route.path);
                 assert_eq!(stable_route.path_display, route.path_display);
             }

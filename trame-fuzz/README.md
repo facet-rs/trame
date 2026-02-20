@@ -21,7 +21,8 @@ Run with:
 
 - `just fuzz` for the existing target
 - `just fuzz-vshape` for the new VShape target
-- `just fuzz-solver` for solver-only schema/key fuzzing
+- `just fuzz-solver` for solver-only schema/key fuzzing (ASAN worker, mac-friendly default)
+- `just fuzz-solver-sand` for ASAN+MSAN dual-worker solver fuzzing
 
 
 ## Sponsors

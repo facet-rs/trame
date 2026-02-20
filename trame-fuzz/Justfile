@@ -8,21 +8,27 @@ solver_bin := afl_target + "/debug/solver"
 
 # Build and run the fuzzer with SAND (decoupled sanitizers)
 fuzz: build
-    cargo afl fuzz -i in -o out \
+    cargo afl fuzz -m none -i in -o out \
         -w {{ main_bin }}-asan \
         -w {{ main_bin }}-msan \
         -- {{ main_bin }}
 
 # Build and run the VShape fuzzer (LRuntime + VShapeView)
 fuzz-vshape: build-vshape
-    cargo afl fuzz -i in-vshape -o out-vshape \
+    cargo afl fuzz -m none -i in-vshape -o out-vshape \
         -w {{ vshape_bin }}-asan \
         -w {{ vshape_bin }}-msan \
         -- {{ vshape_bin }}
 
 # Build and run the solver fuzzer (flatten key routing and schema solving)
 fuzz-solver: build-solver
-    cargo afl fuzz -i in-solver -o out-solver \
+    AFL_FORKSRV_INIT_TMOUT=10000 cargo afl fuzz -m none -i in-solver -o out-solver \
+        -w {{ solver_bin }}-asan \
+        -- {{ solver_bin }}
+
+# Build and run the solver fuzzer with both ASAN and MSAN workers
+fuzz-solver-sand: build-solver
+    AFL_FORKSRV_INIT_TMOUT=10000 cargo afl fuzz -m none -i in-solver -o out-solver \
         -w {{ solver_bin }}-asan \
         -w {{ solver_bin }}-msan \
         -- {{ solver_bin }}
@@ -80,21 +86,27 @@ build-solver-msan:
 
 # Resume fuzzing from previous state
 resume: build
-    cargo afl fuzz -i- -o out \
+    cargo afl fuzz -m none -i- -o out \
         -w {{ main_bin }}-asan \
         -w {{ main_bin }}-msan \
         -- {{ main_bin }}
 
 # Resume VShape fuzzing from previous state
 resume-vshape: build-vshape
-    cargo afl fuzz -i- -o out-vshape \
+    cargo afl fuzz -m none -i- -o out-vshape \
         -w {{ vshape_bin }}-asan \
         -w {{ vshape_bin }}-msan \
         -- {{ vshape_bin }}
 
 # Resume solver fuzzing from previous state
 resume-solver: build-solver
-    cargo afl fuzz -i- -o out-solver \
+    AFL_FORKSRV_INIT_TMOUT=10000 cargo afl fuzz -m none -i- -o out-solver \
+        -w {{ solver_bin }}-asan \
+        -- {{ solver_bin }}
+
+# Resume solver fuzzing with both ASAN and MSAN workers
+resume-solver-sand: build-solver
+    AFL_FORKSRV_INIT_TMOUT=10000 cargo afl fuzz -m none -i- -o out-solver \
         -w {{ solver_bin }}-asan \
         -w {{ solver_bin }}-msan \
         -- {{ solver_bin }}

@@ -3,6 +3,7 @@ target-standalone/
 target-cov/
 target-miri/
 out/
+out*
 coverage/
 Cargo.lock
 .tracey/

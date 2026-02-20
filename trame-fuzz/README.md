@@ -21,8 +21,13 @@ Run with:
 
 - `just fuzz` for the existing target
 - `just fuzz-vshape` for the new VShape target
-- `just fuzz-solver` for solver-only schema/key fuzzing (ASAN worker, mac-friendly default)
+- `just fuzz-solver` for solver-only schema/key fuzzing (single target, mac-friendly default)
 - `just fuzz-solver-sand` for ASAN+MSAN dual-worker solver fuzzing
+
+Solver corpus/output paths can be overridden with:
+
+- `TRAME_SOLVER_IN` (default: `in-solver`)
+- `TRAME_SOLVER_OUT` (default: `out-solver`)
 
 
 ## Sponsors

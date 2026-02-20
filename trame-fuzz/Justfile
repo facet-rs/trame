@@ -5,8 +5,8 @@ afl_target := "target-afl"
 main_bin := afl_target + "/debug/trame-fuzz"
 vshape_bin := afl_target + "/debug/vshape"
 solver_bin := afl_target + "/debug/solver"
-solver_in := "in-solver"
-solver_out := "out-solver2"
+solver_in := env_var_or_default("TRAME_SOLVER_IN", "in-solver")
+solver_out := env_var_or_default("TRAME_SOLVER_OUT", "out-solver")
 
 # Build and run the fuzzer with SAND (decoupled sanitizers)
 fuzz: build
@@ -25,7 +25,6 @@ fuzz-vshape: build-vshape
 # Build and run the solver fuzzer (flatten key routing and schema solving)
 fuzz-solver: build-solver
     AFL_FORKSRV_INIT_TMOUT=10000 cargo afl fuzz -m none -i {{ solver_in }} -o {{ solver_out }} \
-        -w {{ solver_bin }}-asan \
         -- {{ solver_bin }}
 
 # Build and run the solver fuzzer with both ASAN and MSAN workers
@@ -103,7 +102,6 @@ resume-vshape: build-vshape
 # Resume solver fuzzing from previous state
 resume-solver: build-solver
     AFL_FORKSRV_INIT_TMOUT=10000 cargo afl fuzz -m none -i- -o {{ solver_out }} \
-        -w {{ solver_bin }}-asan \
         -- {{ solver_bin }}
 
 # Resume solver fuzzing with both ASAN and MSAN workers

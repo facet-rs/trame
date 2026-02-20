@@ -100,12 +100,59 @@ impl<T> IShapeExtra for T {}
 /// - `&'static facet_core::Shape` (real shapes)
 /// - store-specific shape views (synthetic shapes for verification)
 ///
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnumReprKind {
+    Flattened,
+    ExternallyTagged,
+    InternallyTagged {
+        tag: &'static str,
+    },
+    AdjacentlyTagged {
+        tag: &'static str,
+        content: &'static str,
+    },
+}
+
+/// Interface for enum type information.
+pub trait IEnumType: Copy {
+    /// Struct type used for variant payloads.
+    type StructType: IStructType;
+    /// Variant descriptor type.
+    type Variant: IVariantType<StructType = Self::StructType>;
+
+    /// Number of variants in this enum.
+    fn variant_count(&self) -> usize;
+
+    /// Get variant by index.
+    fn variant(&self, idx: usize) -> Option<Self::Variant>;
+}
+
+/// Interface for enum variant information.
+pub trait IVariantType: Copy {
+    /// Struct layout of this variant's payload.
+    type StructType: IStructType;
+
+    /// Rust variant name.
+    fn name(&self) -> &'static str;
+
+    /// Effective serialized variant name.
+    fn effective_name(&self) -> &'static str {
+        self.name()
+    }
+
+    /// Variant payload struct.
+    fn data(&self) -> Self::StructType;
+}
+
 pub trait IShape: Copy + PartialEq + IShapeExtra {
     /// The struct type returned by `as_struct()`.
     type StructType: IStructType<Field = Self::Field>;
 
     /// The field type used by struct types.
     type Field: IField<Shape = Self>;
+
+    /// The enum type returned by `as_enum()`.
+    type EnumType: IEnumType<StructType = Self::StructType>;
 
     /// The smart-pointer metadata returned by `as_pointer()`.
     type PointerType: IPointerType<Shape = Self>;
@@ -124,6 +171,34 @@ pub trait IShape: Copy + PartialEq + IShapeExtra {
 
     /// Get struct-specific information, if this is a struct.
     fn as_struct(&self) -> Option<Self::StructType>;
+
+    /// Check if this is an enum type.
+    fn is_enum(&self) -> bool {
+        self.as_enum().is_some()
+    }
+
+    /// Get enum-specific information, if this is an enum.
+    fn as_enum(&self) -> Option<Self::EnumType>;
+
+    /// Enum representation metadata for this shape, if this is an enum.
+    fn enum_repr_kind(&self) -> Option<EnumReprKind> {
+        None
+    }
+
+    /// Type identifier (without generic params), when available.
+    fn type_identifier(&self) -> &'static str {
+        "<unknown>"
+    }
+
+    /// If this shape is `Option<T>`, returns `T`.
+    fn option_payload(&self) -> Option<Self> {
+        None
+    }
+
+    /// Check if this is an option type.
+    fn is_option(&self) -> bool {
+        self.option_payload().is_some()
+    }
 
     /// Check if this is a smart-pointer type.
     fn is_pointer(&self) -> bool;
@@ -201,6 +276,36 @@ pub trait IField: Copy {
 
     /// Shape of this field's type.
     fn shape(&self) -> Self::Shape;
+
+    /// Rust field name.
+    fn name(&self) -> &'static str {
+        ""
+    }
+
+    /// Effective serialized field name.
+    fn effective_name(&self) -> &'static str {
+        self.name()
+    }
+
+    /// Field alias, if any.
+    fn alias(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// Whether this field is flattened.
+    fn is_flattened(&self) -> bool {
+        false
+    }
+
+    /// Whether this field has a default.
+    fn has_default(&self) -> bool {
+        false
+    }
+
+    /// Whether this field should be skipped during deserialization.
+    fn should_skip_deserializing(&self) -> bool {
+        false
+    }
 }
 
 // ==================================================================

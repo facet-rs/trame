@@ -4,14 +4,15 @@
 #[cfg(creusot)]
 use crate::MemState;
 use crate::{
-    CopyDesc, IArena, IExecShape, IField, IHeap, IPointerType, IRuntime, IShape, IShapeStore,
-    IStructType, Idx,
+    CopyDesc, EnumReprKind, IArena, IEnumType, IExecShape, IField, IHeap, IPointerType, IRuntime,
+    IShape, IShapeStore, IStructType, IVariantType, Idx,
 };
 use core::marker::PhantomData;
 #[cfg(creusot)]
 use creusot_std::macros::{logic, trusted};
 use facet_core::{
-    Def, Field, KnownPointer, PointerDef, PtrMut, PtrUninit, Shape, StructType, Type, UserType,
+    Def, EnumType, Field, KnownPointer, PointerDef, PtrMut, PtrUninit, Shape, StructType, Type,
+    UserType, Variant,
 };
 
 #[cfg(creusot)]
@@ -87,6 +88,7 @@ impl IShapeStore for LShapeStore {
 impl IShape for &'static Shape {
     type StructType = &'static StructType;
     type Field = &'static Field;
+    type EnumType = &'static EnumType;
     type PointerType = PointerDef;
 
     #[inline]
@@ -103,6 +105,45 @@ impl IShape for &'static Shape {
     fn as_struct(&self) -> Option<Self::StructType> {
         match &self.ty {
             Type::User(UserType::Struct(st)) => Some(st),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn as_enum(&self) -> Option<Self::EnumType> {
+        match &self.ty {
+            Type::User(UserType::Enum(e)) => Some(e),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn enum_repr_kind(&self) -> Option<EnumReprKind> {
+        if !matches!(self.ty, Type::User(UserType::Enum(_))) {
+            return None;
+        }
+
+        let tag = self.get_tag_attr();
+        let content = self.get_content_attr();
+        let untagged = self.is_untagged();
+        let repr = match (tag, content, untagged) {
+            (_, _, true) => EnumReprKind::Flattened,
+            (Some(t), Some(c), false) => EnumReprKind::AdjacentlyTagged { tag: t, content: c },
+            (Some(t), None, false) => EnumReprKind::InternallyTagged { tag: t },
+            _ => EnumReprKind::ExternallyTagged,
+        };
+        Some(repr)
+    }
+
+    #[inline]
+    fn type_identifier(&self) -> &'static str {
+        self.type_identifier
+    }
+
+    #[inline]
+    fn option_payload(&self) -> Option<Self> {
+        match self.def {
+            Def::Option(opt) => Some(opt.t),
             _ => None,
         }
     }
@@ -154,6 +195,40 @@ impl IStructType for &'static StructType {
     }
 }
 
+impl IEnumType for &'static EnumType {
+    type StructType = &'static StructType;
+    type Variant = &'static Variant;
+
+    #[inline]
+    fn variant_count(&self) -> usize {
+        self.variants.len()
+    }
+
+    #[inline]
+    fn variant(&self, idx: usize) -> Option<Self::Variant> {
+        self.variants.get(idx)
+    }
+}
+
+impl IVariantType for &'static Variant {
+    type StructType = &'static StructType;
+
+    #[inline]
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    #[inline]
+    fn effective_name(&self) -> &'static str {
+        Variant::effective_name(self)
+    }
+
+    #[inline]
+    fn data(&self) -> Self::StructType {
+        &self.data
+    }
+}
+
 impl IField for &'static Field {
     type Shape = &'static Shape;
 
@@ -165,6 +240,36 @@ impl IField for &'static Field {
     #[inline]
     fn shape(&self) -> Self::Shape {
         self.shape.get()
+    }
+
+    #[inline]
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    #[inline]
+    fn effective_name(&self) -> &'static str {
+        Field::effective_name(self)
+    }
+
+    #[inline]
+    fn alias(&self) -> Option<&'static str> {
+        self.alias
+    }
+
+    #[inline]
+    fn is_flattened(&self) -> bool {
+        Field::is_flattened(self)
+    }
+
+    #[inline]
+    fn has_default(&self) -> bool {
+        Field::has_default(self)
+    }
+
+    #[inline]
+    fn should_skip_deserializing(&self) -> bool {
+        Field::should_skip_deserializing(self)
     }
 }
 

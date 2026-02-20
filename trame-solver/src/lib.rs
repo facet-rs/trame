@@ -1,8 +1,9 @@
 #![doc = include_str!("../README.md")]
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::marker::PhantomData;
 
-use facet_core::{Def, Field, Shape, StructType, Type, UserType, Variant};
+use trame_runtime::{EnumReprKind, IEnumType, IField, IShape, IStructType, IVariantType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathSegment {
@@ -144,16 +145,17 @@ impl Resolution {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Schema {
+pub struct Schema<S: IShape> {
     resolutions: Vec<Resolution>,
     all_known_fields: BTreeSet<&'static str>,
+    _shape: PhantomData<fn() -> S>,
 }
 
-impl Schema {
-    pub fn build_auto(shape: &'static Shape) -> Result<Self, SchemaError> {
-        let resolutions = match shape.ty {
-            Type::User(UserType::Struct(st)) => analyze_struct(st, Vec::new())?,
-            _ => vec![Resolution::new()],
+impl<S: IShape> Schema<S> {
+    pub fn build_auto(shape: S) -> Result<Self, SchemaError> {
+        let resolutions = match shape.as_struct() {
+            Some(st) => analyze_struct::<S>(st, Vec::new())?,
+            None => vec![Resolution::new()],
         };
 
         let all_known_fields = resolutions
@@ -164,10 +166,11 @@ impl Schema {
         Ok(Self {
             resolutions,
             all_known_fields,
+            _shape: PhantomData,
         })
     }
 
-    pub fn solve_keys<'a, I, K>(&'a self, keys: I) -> Result<Resolved<'a>, SolveError>
+    pub fn solve_keys<'a, I, K>(&'a self, keys: I) -> Result<Resolved<'a, S>, SolveError>
     where
         I: IntoIterator<Item = K>,
         K: AsRef<str>,
@@ -267,7 +270,11 @@ impl Schema {
                     .resolutions
                     .get(index)
                     .expect("internal solver index out of bounds");
-                Ok(Resolved { index, resolution })
+                Ok(Resolved {
+                    index,
+                    resolution,
+                    _shape: PhantomData,
+                })
             }
             _ => {
                 let candidates_desc = viable
@@ -292,12 +299,13 @@ impl Schema {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct Resolved<'a> {
+pub struct Resolved<'a, S: IShape> {
     index: usize,
     resolution: &'a Resolution,
+    _shape: PhantomData<fn() -> S>,
 }
 
-impl<'a> Resolved<'a> {
+impl<'a, S: IShape> Resolved<'a, S> {
     pub const fn index(self) -> usize {
         self.index
     }
@@ -314,7 +322,7 @@ struct VariantSelection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EnumRepr {
+enum SolverEnumRepr {
     Flattened,
     ExternallyTagged,
     InternallyTagged {
@@ -326,34 +334,37 @@ enum EnumRepr {
     },
 }
 
-fn analyze_struct(
-    st: StructType,
+fn analyze_struct<S: IShape>(
+    st: S::StructType,
     parent_path: Vec<PathSegment>,
 ) -> Result<Vec<Resolution>, SchemaError> {
     let mut configs = vec![Resolution::new()];
-    for field in st.fields {
-        configs = analyze_field(field, &parent_path, configs)?;
+    for idx in 0..st.field_count() {
+        let Some(field) = st.field(idx) else {
+            continue;
+        };
+        configs = analyze_field::<S>(field, &parent_path, configs)?;
     }
     Ok(configs)
 }
 
-fn analyze_field(
-    field: &'static Field,
+fn analyze_field<S: IShape>(
+    field: S::Field,
     parent_path: &[PathSegment],
     configs: Vec<Resolution>,
 ) -> Result<Vec<Resolution>, SchemaError> {
     if field.is_flattened() {
-        return analyze_flattened_field(field, parent_path, configs);
+        return analyze_flattened_field::<S>(field, parent_path, configs);
     }
 
     let mut path = parent_path.to_vec();
-    path.push(PathSegment::Field(field.name));
+    path.push(PathSegment::Field(field.name()));
 
     let route = FieldRoute {
         serialized_name: field.effective_name(),
         path,
-        required: !field.has_default() && !is_option_type(field.shape()),
-        defined_in: field.shape().type_identifier,
+        required: !field.has_default() && !field.shape().is_option(),
+        defined_in: field.shape().type_identifier(),
     };
 
     let mut result = configs;
@@ -363,91 +374,95 @@ fn analyze_field(
     Ok(result)
 }
 
-fn analyze_flattened_field(
-    field: &'static Field,
+fn analyze_flattened_field<S: IShape>(
+    field: S::Field,
     parent_path: &[PathSegment],
     configs: Vec<Resolution>,
 ) -> Result<Vec<Resolution>, SchemaError> {
     let mut field_path = parent_path.to_vec();
-    field_path.push(PathSegment::Field(field.name));
+    field_path.push(PathSegment::Field(field.name()));
 
     let original_shape = field.shape();
-    let (shape, is_optional_flatten) = match unwrap_option_type(original_shape) {
+    let (shape, is_optional_flatten) = match original_shape.option_payload() {
         Some(inner) => (inner, true),
         None => (original_shape, false),
     };
 
-    match shape.ty {
-        Type::User(UserType::Struct(st)) => {
-            let mut inner = analyze_struct(st, field_path)?;
-            if is_optional_flatten {
-                for config in &mut inner {
-                    config.mark_all_optional();
-                }
+    if let Some(st) = shape.as_struct() {
+        let mut inner = analyze_struct::<S>(st, field_path)?;
+        if is_optional_flatten {
+            for config in &mut inner {
+                config.mark_all_optional();
             }
-            combine_configs(configs, &inner)
         }
-        Type::User(UserType::Enum(enum_type)) => analyze_flattened_enum(
+        return combine_configs(configs, &inner);
+    }
+
+    if let Some(enum_type) = shape.as_enum() {
+        return analyze_flattened_enum::<S>(
             field,
             shape,
-            enum_type.variants,
+            enum_type,
             field_path,
             configs,
             is_optional_flatten,
-        ),
-        _ => {
-            let required = !field.has_default() && !is_option_type(shape) && !is_optional_flatten;
-            let route = FieldRoute {
-                serialized_name: field.effective_name(),
-                path: field_path,
-                required,
-                defined_in: shape.type_identifier,
-            };
-            let mut result = configs;
-            for config in &mut result {
-                config.add_field(route.clone())?;
-            }
-            Ok(result)
-        }
+        );
     }
+
+    let required = !field.has_default() && !shape.is_option() && !is_optional_flatten;
+    let route = FieldRoute {
+        serialized_name: field.effective_name(),
+        path: field_path,
+        required,
+        defined_in: shape.type_identifier(),
+    };
+    let mut result = configs;
+    for config in &mut result {
+        config.add_field(route.clone())?;
+    }
+    Ok(result)
 }
 
-fn analyze_flattened_enum(
-    field: &'static Field,
-    enum_shape: &'static Shape,
-    variants: &'static [Variant],
+fn analyze_flattened_enum<S: IShape>(
+    field: S::Field,
+    enum_shape: S,
+    enum_type: S::EnumType,
     field_path: Vec<PathSegment>,
     configs: Vec<Resolution>,
     is_optional_flatten: bool,
 ) -> Result<Vec<Resolution>, SchemaError> {
     let repr = enum_repr_from_shape(enum_shape);
-    let enum_name = enum_shape.type_identifier;
+    let enum_name = enum_shape.type_identifier();
     let mut result = Vec::new();
 
     for base in configs {
-        for variant in variants {
+        for idx in 0..enum_type.variant_count() {
+            let Some(variant) = enum_type.variant(idx) else {
+                continue;
+            };
+
             let mut forked = base.clone();
-            forked.add_variant_selection(enum_name, variant.name);
+            forked.add_variant_selection(enum_name, variant.name());
 
             let mut variant_path = field_path.clone();
             variant_path.push(PathSegment::Variant {
-                field: field.name,
-                variant: variant.name,
+                field: field.name(),
+                variant: variant.name(),
             });
 
             match repr {
-                EnumRepr::ExternallyTagged => {
+                SolverEnumRepr::ExternallyTagged => {
                     let route = FieldRoute {
-                        serialized_name: variant.name,
+                        serialized_name: variant.effective_name(),
                         path: variant_path,
                         required: !is_optional_flatten,
-                        defined_in: enum_shape.type_identifier,
+                        defined_in: enum_shape.type_identifier(),
                     };
                     forked.add_field(route)?;
                     result.push(forked);
                 }
-                EnumRepr::Flattened => {
-                    let mut variant_configs = analyze_variant_content(variant, &variant_path)?;
+                SolverEnumRepr::Flattened => {
+                    let mut variant_configs = analyze_variant_content::<S>(variant, &variant_path)?;
                     if is_optional_flatten {
                         for config in &mut variant_configs {
                             config.mark_all_optional();
@@ -459,16 +474,16 @@ fn analyze_flattened_enum(
                         result.push(merged);
                     }
                 }
-                EnumRepr::InternallyTagged { tag } => {
+                SolverEnumRepr::InternallyTagged { tag } => {
                     let tag_route = FieldRoute {
                         serialized_name: tag,
                         path: variant_path.clone(),
                         required: !is_optional_flatten,
-                        defined_in: enum_shape.type_identifier,
+                        defined_in: enum_shape.type_identifier(),
                     };
                     forked.add_field(tag_route)?;
 
-                    let mut variant_configs = analyze_variant_content(variant, &variant_path)?;
+                    let mut variant_configs = analyze_variant_content::<S>(variant, &variant_path)?;
                     if is_optional_flatten {
                         for config in &mut variant_configs {
                             config.mark_all_optional();
@@ -480,12 +495,12 @@ fn analyze_flattened_enum(
                         result.push(merged);
                     }
                 }
-                EnumRepr::AdjacentlyTagged { tag, content } => {
+                SolverEnumRepr::AdjacentlyTagged { tag, content } => {
                     let tag_route = FieldRoute {
                         serialized_name: tag,
                         path: variant_path.clone(),
                         required: !is_optional_flatten,
-                        defined_in: enum_shape.type_identifier,
+                        defined_in: enum_shape.type_identifier(),
                     };
                     forked.add_field(tag_route)?;
 
@@ -493,7 +508,7 @@ fn analyze_flattened_enum(
                         serialized_name: content,
                         path: variant_path,
                         required: !is_optional_flatten,
-                        defined_in: enum_shape.type_identifier,
+                        defined_in: enum_shape.type_identifier(),
                     };
                     forked.add_field(content_route)?;
                     result.push(forked);
@@ -505,22 +520,29 @@ fn analyze_flattened_enum(
     Ok(result)
 }
 
-fn analyze_variant_content(
-    variant: &'static Variant,
+fn analyze_variant_content<S: IShape>(
+    variant: <S::EnumType as IEnumType>::Variant,
     variant_path: &[PathSegment],
 ) -> Result<Vec<Resolution>, SchemaError> {
-    if variant.data.fields.len() == 1 && variant.data.fields[0].name == "0" {
-        let inner_shape = variant.data.fields[0].shape();
-        if let Type::User(UserType::Struct(st)) = inner_shape.ty {
-            let mut inner_path = variant_path.to_vec();
-            inner_path.push(PathSegment::Field("0"));
-            return analyze_struct(st, inner_path);
-        }
+    let data = variant.data();
+    if data.field_count() == 1
+        && data
+            .field(0)
+            .is_some_and(|field| field.name() == "0" && field.shape().as_struct().is_some())
+    {
+        let field = data.field(0).expect("checked above");
+        let inner_struct = field.shape().as_struct().expect("checked above");
+        let mut inner_path = variant_path.to_vec();
+        inner_path.push(PathSegment::Field("0"));
+        return analyze_struct::<S>(inner_struct, inner_path);
     }
 
     let mut configs = vec![Resolution::new()];
-    for field in variant.data.fields {
-        configs = analyze_field(field, variant_path, configs)?;
+    for idx in 0..data.field_count() {
+        let Some(field) = data.field(idx) else {
+            continue;
+        };
+        configs = analyze_field::<S>(field, variant_path, configs)?;
     }
     Ok(configs)
 }
@@ -565,28 +587,17 @@ fn find_disambiguating_fields(candidates: Vec<&Resolution>) -> Vec<String> {
         .collect()
 }
 
-fn enum_repr_from_shape(shape: &'static Shape) -> EnumRepr {
-    let tag = shape.get_tag_attr();
-    let content = shape.get_content_attr();
-    let untagged = shape.is_untagged();
-
-    match (tag, content, untagged) {
-        (_, _, true) => EnumRepr::Flattened,
-        (Some(t), Some(c), false) => EnumRepr::AdjacentlyTagged { tag: t, content: c },
-        (Some(t), None, false) => EnumRepr::InternallyTagged { tag: t },
-        (None, None, false) => EnumRepr::ExternallyTagged,
-        (None, Some(_), false) => EnumRepr::ExternallyTagged,
-    }
-}
-
-fn is_option_type(shape: &'static Shape) -> bool {
-    matches!(shape.def, Def::Option(_))
-}
-
-fn unwrap_option_type(shape: &'static Shape) -> Option<&'static Shape> {
-    match shape.def {
-        Def::Option(opt) => Some(opt.t),
-        _ => None,
+fn enum_repr_from_shape<S: IShape>(shape: S) -> SolverEnumRepr {
+    match shape
+        .enum_repr_kind()
+        .unwrap_or(EnumReprKind::ExternallyTagged)
+    {
+        EnumReprKind::Flattened => SolverEnumRepr::Flattened,
+        EnumReprKind::ExternallyTagged => SolverEnumRepr::ExternallyTagged,
+        EnumReprKind::InternallyTagged { tag } => SolverEnumRepr::InternallyTagged { tag },
+        EnumReprKind::AdjacentlyTagged { tag, content } => {
+            SolverEnumRepr::AdjacentlyTagged { tag, content }
+        }
     }
 }
 

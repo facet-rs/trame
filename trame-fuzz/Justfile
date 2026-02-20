@@ -5,6 +5,8 @@ afl_target := "target-afl"
 main_bin := afl_target + "/debug/trame-fuzz"
 vshape_bin := afl_target + "/debug/vshape"
 solver_bin := afl_target + "/debug/solver"
+solver_in := "in-solver"
+solver_out := "out-solver2"
 
 # Build and run the fuzzer with SAND (decoupled sanitizers)
 fuzz: build
@@ -22,13 +24,13 @@ fuzz-vshape: build-vshape
 
 # Build and run the solver fuzzer (flatten key routing and schema solving)
 fuzz-solver: build-solver
-    AFL_FORKSRV_INIT_TMOUT=10000 cargo afl fuzz -m none -i in-solver -o out-solver2 \
+    AFL_FORKSRV_INIT_TMOUT=10000 cargo afl fuzz -m none -i {{ solver_in }} -o {{ solver_out }} \
         -w {{ solver_bin }}-asan \
         -- {{ solver_bin }}
 
 # Build and run the solver fuzzer with both ASAN and MSAN workers
 fuzz-solver-sand: build-solver
-    AFL_FORKSRV_INIT_TMOUT=10000 cargo afl fuzz -m none -i in-solver -o out-solver2 \
+    AFL_FORKSRV_INIT_TMOUT=10000 cargo afl fuzz -m none -i {{ solver_in }} -o {{ solver_out }} \
         -w {{ solver_bin }}-asan \
         -w {{ solver_bin }}-msan \
         -- {{ solver_bin }}
@@ -100,13 +102,13 @@ resume-vshape: build-vshape
 
 # Resume solver fuzzing from previous state
 resume-solver: build-solver
-    AFL_FORKSRV_INIT_TMOUT=10000 cargo afl fuzz -m none -i- -o out-solver2 \
+    AFL_FORKSRV_INIT_TMOUT=10000 cargo afl fuzz -m none -i- -o {{ solver_out }} \
         -w {{ solver_bin }}-asan \
         -- {{ solver_bin }}
 
 # Resume solver fuzzing with both ASAN and MSAN workers
 resume-solver-sand: build-solver
-    AFL_FORKSRV_INIT_TMOUT=10000 cargo afl fuzz -m none -i- -o out-solver2 \
+    AFL_FORKSRV_INIT_TMOUT=10000 cargo afl fuzz -m none -i- -o {{ solver_out }} \
         -w {{ solver_bin }}-asan \
         -w {{ solver_bin }}-msan \
         -- {{ solver_bin }}
@@ -178,7 +180,7 @@ edges: build-native
 
 # Show AFL edge coverage from the solver corpus
 edges-solver: build-solver-native
-    cargo afl showmap -C -i out-solver/default/queue -o /dev/stdout -- {{ afl_target }}/debug/solver
+    cargo afl showmap -C -i {{ solver_out }}/default/queue -o /dev/stdout -- {{ afl_target }}/debug/solver
 
 # Build with LLVM source coverage (standalone binary with instrumentation)
 build-cov:

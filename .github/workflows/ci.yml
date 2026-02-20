@@ -123,6 +123,17 @@ jobs:
             exit 1
           fi
 
+      - name: Upload AFL crash artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: afl-crashes-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          path: |
+            trame-fuzz/out/**/crashes/id:*
+            trame-fuzz/out/**/crashes/README.txt
+            trame-fuzz/out/**/fuzzer_stats
+
   creusot-migration:
     name: Creusot Migration (Non-blocking)
     runs-on: depot-ubuntu-24.04-32

@@ -37,6 +37,7 @@ impl From<FuzzPathSegment> for PathSegment {
 pub enum FuzzSource {
     Default,
     Stage { len_hint: Option<u8> },
+    StageDeferred { len_hint: Option<u8> },
 }
 
 #[derive(Clone, Arbitrary)]
@@ -184,6 +185,10 @@ fn run_fuzz(input: FuzzInput) {
                     FuzzSource::Stage { len_hint } => trame.apply(Op::Set {
                         dst: path,
                         src: Source::stage(len_hint.map(|n| n as usize)),
+                    }),
+                    FuzzSource::StageDeferred { len_hint } => trame.apply(Op::Set {
+                        dst: path,
+                        src: Source::stage_deferred(len_hint.map(|n| n as usize)),
                     }),
                 };
                 if result.is_err() {

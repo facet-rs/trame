@@ -131,6 +131,7 @@ mod tests {
         Imm { shape_idx: usize },
         Default,
         Stage,
+        StageDeferred,
     }
 
     fn arb_src_kind(num_shapes: usize) -> impl Strategy<Value = SrcKind> {
@@ -138,6 +139,7 @@ mod tests {
             (0..num_shapes).prop_map(|shape_idx| SrcKind::Imm { shape_idx }),
             Just(SrcKind::Default),
             Just(SrcKind::Stage),
+            Just(SrcKind::StageDeferred),
         ]
     }
 
@@ -213,6 +215,7 @@ mod tests {
                             }
                             SrcKind::Default => Source::default_value(),
                             SrcKind::Stage => Source::stage(None),
+                            SrcKind::StageDeferred => Source::stage_deferred(None),
                         };
                         trame.apply(Op::Set { dst: path, src })
                     }
@@ -225,6 +228,7 @@ mod tests {
                             }
                             SrcKind::Default => Source::default_value(),
                             SrcKind::Stage => Source::stage(None),
+                            SrcKind::StageDeferred => Source::stage_deferred(None),
                         };
                         trame.apply(Op::Set {
                             dst: Path::empty(),

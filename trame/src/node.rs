@@ -149,6 +149,7 @@ impl PartialEq for NodeFlags {
 
 impl NodeFlags {
     const OWNS_ALLOCATION: u8 = 1 << 0;
+    const DEFERRED_ROOT: u8 = 1 << 1;
 
     #[inline]
     pub(crate) const fn empty() -> Self {
@@ -164,6 +165,26 @@ impl NodeFlags {
     #[inline]
     pub(crate) const fn owns_allocation(self) -> bool {
         (self.0 & Self::OWNS_ALLOCATION) != 0
+    }
+
+    #[inline]
+    pub(crate) const fn with_deferred_root(mut self) -> Self {
+        self.0 |= Self::DEFERRED_ROOT;
+        self
+    }
+
+    #[inline]
+    pub(crate) const fn deferred_root(self) -> bool {
+        (self.0 & Self::DEFERRED_ROOT) != 0
+    }
+
+    #[inline]
+    pub(crate) const fn with_deferred_root_if(self, enabled: bool) -> Self {
+        if enabled {
+            self.with_deferred_root()
+        } else {
+            self
+        }
     }
 }
 

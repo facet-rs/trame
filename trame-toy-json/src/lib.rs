@@ -389,7 +389,7 @@ fn apply_value(
             if staged {
                 trame.apply(Op::Set {
                     dst: path,
-                    src: Source::stage(None),
+                    src: Source::stage_deferred(None),
                 })?;
             }
 

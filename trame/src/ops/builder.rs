@@ -77,6 +77,14 @@ impl SetBuilder {
         }
     }
 
+    /// Complete with deferred stage (push frame for deferred incremental construction).
+    pub fn stage_deferred(self) -> Op<'static, *mut u8, &'static facet_core::Shape> {
+        Op::Set {
+            dst: self.path,
+            src: Source::stage_deferred(None),
+        }
+    }
+
     /// Complete with stage and capacity hint.
     pub fn stage_with_capacity(
         self,
@@ -85,6 +93,17 @@ impl SetBuilder {
         Op::Set {
             dst: self.path,
             src: Source::stage(Some(hint)),
+        }
+    }
+
+    /// Complete with deferred stage and capacity hint.
+    pub fn stage_deferred_with_capacity(
+        self,
+        hint: usize,
+    ) -> Op<'static, *mut u8, &'static facet_core::Shape> {
+        Op::Set {
+            dst: self.path,
+            src: Source::stage_deferred(Some(hint)),
         }
     }
 }

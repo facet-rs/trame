@@ -192,6 +192,8 @@ pub(crate) enum SourceKind<'facet, P, S> {
     Imm(Imm<'facet, P, S>),
     /// Stage for incremental construction - pushes a frame.
     Stage(Option<usize>),
+    /// Stage a deferred subtree for incremental construction.
+    StageDeferred(Option<usize>),
     /// Use the type's default value.
     Default,
 }
@@ -211,6 +213,13 @@ impl<'facet, P, S> Source<'facet, P, S> {
     pub fn stage(len_hint: Option<usize>) -> Self {
         Source {
             kind: SourceKind::Stage(len_hint),
+        }
+    }
+
+    /// Stage for deferred incremental construction.
+    pub fn stage_deferred(len_hint: Option<usize>) -> Self {
+        Source {
+            kind: SourceKind::StageDeferred(len_hint),
         }
     }
 

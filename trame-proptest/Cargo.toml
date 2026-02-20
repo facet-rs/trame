@@ -8,8 +8,11 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+facet.workspace = true
+facet-core.workspace = true
 proptest.workspace = true
 trame = { path = "../trame" }
+trame-solver = { path = "../trame-solver" }
 
 [lints]
 workspace = true

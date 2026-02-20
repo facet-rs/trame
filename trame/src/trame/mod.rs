@@ -291,7 +291,11 @@ where
     #[cfg_attr(creusot, trusted)]
     fn ascend_to_root(&mut self) -> Result<NodeIdx<R>, TrameError> {
         while !self.current.same(self.root) {
-            self.end_current_node()?;
+            let parent = self.arena.get(self.current).parent;
+            if !parent.is_valid() {
+                return Err(TrameError::Poisoned);
+            }
+            self.current = parent;
         }
         Ok(self.current)
     }

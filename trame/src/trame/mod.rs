@@ -8,16 +8,15 @@ mod heap_value;
 pub use errors::TrameError;
 pub use heap_value::HeapValue;
 
-#[cfg(creusot)]
-use crate::node::FieldStates;
 #[cfg(not(creusot))]
 use crate::runtime::LiveRuntime;
 use crate::{
     Op, PathSegment, Source,
-    node::{FieldSlot, Node, NodeFlags, NodeKind, NodeState},
+    node::{FieldSlot, FieldStates, Node, NodeFlags, NodeKind, NodeState},
     ops::SourceKind,
     runtime::{
-        CopyDesc, IArena, IField, IHeap, IPointerType, IPtr, IRuntime, IShape, IStructType, Idx,
+        CopyDesc, IArena, IEnumType, IField, IHeap, IPointerType, IPtr, IRuntime, IShape,
+        IStructType, IVariantType, Idx,
     },
 };
 use core::marker::PhantomData;
@@ -113,6 +112,9 @@ where
                             self.heap.is_uninit(node.data, node.shape)
                         },
                     NodeKind::Struct { .. } => true,
+                    NodeKind::Enum { .. } => true,
+                    NodeKind::EnumVariant { .. } => true,
+                    NodeKind::EnumPayload { .. } => true,
                 }
             } && forall<j> i != j && self.arena.contains(j) ==> {
                 let nodei = self.arena.get_logic(i);
@@ -205,6 +207,47 @@ where
         shape.as_struct().ok_or(TrameError::NotAStruct)
     }
 
+    fn enum_type(shape: Shape<R>) -> Result<<Shape<R> as IShape>::EnumType, TrameError> {
+        shape.as_enum().ok_or(TrameError::NotAStruct)
+    }
+
+    fn enum_variant(
+        shape: Shape<R>,
+        variant_idx: usize,
+    ) -> Result<<<Shape<R> as IShape>::EnumType as IEnumType>::Variant, TrameError> {
+        let en = Self::enum_type(shape)?;
+        let variant_count = en.variant_count();
+        en.variant(variant_idx).ok_or(TrameError::FieldOutOfBounds {
+            index: variant_idx,
+            count: variant_count,
+        })
+    }
+
+    fn enum_payload_meta(
+        shape: Shape<R>,
+        variant_idx: usize,
+        field_idx: usize,
+    ) -> Result<FieldMeta<Shape<R>>, TrameError> {
+        let variant = Self::enum_variant(shape, variant_idx)?;
+        let payload = variant.data();
+        let field_count = payload.field_count();
+        let field = payload
+            .field(field_idx)
+            .ok_or(TrameError::FieldOutOfBounds {
+                index: field_idx,
+                count: field_count,
+            })?;
+        let field_shape = field.shape();
+        let offset = field.offset();
+        let layout = layout_expect(field_shape.layout());
+        let layout = vlayout_from_layout(layout);
+        Ok(FieldMeta {
+            shape: field_shape,
+            offset,
+            layout,
+        })
+    }
+
     fn field_meta(shape: Shape<R>, field_idx: usize) -> Result<FieldMeta<Shape<R>>, TrameError> {
         let st = Self::struct_type(shape)?;
         let field_count = st.field_count();
@@ -235,6 +278,30 @@ where
         assert!(
             meta.offset + layout_size(meta.layout) <= node_size,
             "field out of bounds: {} + {} > {}",
+            meta.offset,
+            layout_size(meta.layout),
+            node_size
+        );
+        Ok((
+            meta.shape,
+            unsafe { node.data.byte_add(meta.offset) },
+            layout_size(meta.layout),
+        ))
+    }
+
+    fn enum_payload_ptr(
+        node: &Node<Heap<R>, Shape<R>>,
+        variant_idx: usize,
+        field_idx: usize,
+    ) -> Result<(Shape<R>, Ptr<R>, usize), TrameError> {
+        let meta = Self::enum_payload_meta(node.shape, variant_idx, field_idx)?;
+        let node_size = layout_size(vlayout_from_layout(layout_expect(node.shape.layout())));
+        #[cfg(creusot)]
+        assume_field_ptr_in_bounds(&meta, node_size);
+        #[cfg(not(creusot))]
+        assert!(
+            meta.offset + layout_size(meta.layout) <= node_size,
+            "enum payload field out of bounds: {} + {} > {}",
             meta.offset,
             layout_size(meta.layout),
             node_size
@@ -347,6 +414,21 @@ where
                         *child,
                         src,
                     )
+                }
+                NodeKind::Enum {
+                    initialized,
+                    variant_child,
+                    ..
+                } => self.apply_set_direct_enum(
+                    target_idx,
+                    target_shape,
+                    target_data,
+                    *initialized,
+                    *variant_child,
+                    src,
+                ),
+                NodeKind::EnumVariant { .. } | NodeKind::EnumPayload { .. } => {
+                    Err(TrameError::NotAStruct)
                 }
                 NodeKind::Struct { .. } => Err(TrameError::NotAStruct),
             },
@@ -507,6 +589,72 @@ where
         Ok(())
     }
 
+    fn apply_set_direct_enum(
+        &mut self,
+        target_idx: NodeIdx<R>,
+        shape: Shape<R>,
+        dst: Ptr<R>,
+        already_init: bool,
+        existing_variant_child: Option<NodeIdx<R>>,
+        src: Source<Ptr<R>, Shape<R>>,
+    ) -> Result<(), TrameError>
+    where
+        Shape<R>: IShape + PartialEq,
+    {
+        #[cfg(creusot)]
+        assume(snapshot! { false });
+
+        if let Some(child) = existing_variant_child {
+            if !already_init {
+                self.cleanup_node(child);
+            }
+            if self.current_in_subtree(child) {
+                self.current = target_idx;
+            }
+        }
+
+        if already_init {
+            unsafe { self.heap.drop_in_place(dst, shape) };
+        }
+
+        match src.kind {
+            SourceKind::Imm(imm) => {
+                let src_ptr = imm.ptr;
+                let src_shape = imm.shape;
+                #[cfg(creusot)]
+                let same_shape = shape_eq(src_shape, shape);
+                #[cfg(not(creusot))]
+                let same_shape = src_shape == shape;
+                if !same_shape {
+                    return Err(TrameError::ShapeMismatch);
+                }
+                unsafe { self.heap.memcpy(dst, src_ptr, CopyDesc::value(shape)) };
+            }
+            SourceKind::Default => {
+                let ok = unsafe { self.heap.default_in_place(dst, shape) };
+                if !ok {
+                    return Err(TrameError::DefaultUnavailable);
+                }
+            }
+            SourceKind::Stage(_) | SourceKind::StageDeferred(_) => {
+                return Err(TrameError::UnsupportedSource);
+            }
+        }
+
+        if let NodeKind::Enum {
+            selected_variant,
+            variant_child,
+            initialized,
+        } = &mut self.arena.get_mut(target_idx).kind
+        {
+            *selected_variant = None;
+            *variant_child = None;
+            *initialized = true;
+        }
+
+        Ok(())
+    }
+
     fn apply_set_field(
         &mut self,
         target_idx: NodeIdx<R>,
@@ -521,6 +669,56 @@ where
     {
         #[cfg(creusot)]
         assume(snapshot! { false });
+
+        match &target_kind {
+            NodeKind::Enum {
+                selected_variant,
+                variant_child,
+                initialized,
+            } => {
+                return self.apply_set_enum_variant(
+                    target_idx,
+                    target_shape,
+                    target_data,
+                    field_idx,
+                    *selected_variant,
+                    *variant_child,
+                    *initialized,
+                    src,
+                );
+            }
+            NodeKind::EnumVariant {
+                variant_idx,
+                payload_child,
+                initialized,
+            } => {
+                return self.apply_set_enum_payload_entry(
+                    target_idx,
+                    target_shape,
+                    target_data,
+                    *variant_idx,
+                    *payload_child,
+                    *initialized,
+                    field_idx,
+                    src,
+                );
+            }
+            NodeKind::EnumPayload {
+                variant_idx,
+                fields,
+            } => {
+                return self.apply_set_enum_payload_field(
+                    target_idx,
+                    target_shape,
+                    target_data,
+                    *variant_idx,
+                    fields.clone(),
+                    field_idx,
+                    src,
+                );
+            }
+            _ => {}
+        }
 
         let (mut child_idx, mut already_init, is_pointer_parent) = match &target_kind {
             NodeKind::Struct { fields } => {
@@ -553,7 +751,29 @@ where
                 }
                 (*child, *initialized, true)
             }
+            NodeKind::EnumPayload { fields, .. } => {
+                let field_count = fields.len();
+                if field_idx < field_count {
+                    #[cfg(creusot)]
+                    {
+                        prove_field_idx_in_bounds(fields, field_idx)?;
+                    }
+                    (
+                        fields.get_child(field_idx),
+                        fields.is_init(field_idx),
+                        false,
+                    )
+                } else {
+                    return Err(TrameError::FieldOutOfBounds {
+                        index: field_idx,
+                        count: field_count,
+                    });
+                }
+            }
             NodeKind::Scalar { .. } => return Err(TrameError::NotAStruct),
+            NodeKind::Enum { .. } | NodeKind::EnumVariant { .. } => {
+                return Err(TrameError::NotAStruct);
+            }
         };
 
         if is_pointer_parent
@@ -664,6 +884,319 @@ where
     }
 
     #[allow(clippy::too_many_arguments)]
+    fn apply_set_enum_variant(
+        &mut self,
+        target_idx: NodeIdx<R>,
+        target_shape: Shape<R>,
+        target_data: Ptr<R>,
+        field_idx: usize,
+        selected_variant: Option<usize>,
+        variant_child: Option<NodeIdx<R>>,
+        already_init: bool,
+        src: Source<Ptr<R>, Shape<R>>,
+    ) -> Result<(), TrameError>
+    where
+        Shape<R>: IShape + PartialEq,
+    {
+        let enum_type = Self::enum_type(target_shape)?;
+        let variant_count = enum_type.variant_count();
+        if field_idx >= variant_count {
+            return Err(TrameError::FieldOutOfBounds {
+                index: field_idx,
+                count: variant_count,
+            });
+        }
+
+        let is_deferred_stage = matches!(src.kind, SourceKind::StageDeferred(_));
+        if !matches!(
+            src.kind,
+            SourceKind::Stage(_) | SourceKind::StageDeferred(_)
+        ) {
+            return Err(TrameError::UnsupportedSource);
+        }
+
+        let variant = enum_type
+            .variant(field_idx)
+            .expect("validated enum variant index");
+        let is_unit_variant = variant.data().field_count() == 0;
+        let same_variant = selected_variant == Some(field_idx);
+
+        if !same_variant {
+            if let Some(child) = variant_child {
+                if !already_init {
+                    self.cleanup_node(child);
+                }
+                if self.current_in_subtree(child) {
+                    self.current = target_idx;
+                }
+            }
+            if already_init {
+                unsafe { self.heap.drop_in_place(target_data, target_shape) };
+            }
+            if let NodeKind::Enum {
+                selected_variant,
+                variant_child,
+                initialized,
+            } = &mut self.arena.get_mut(target_idx).kind
+            {
+                *selected_variant = None;
+                *variant_child = None;
+                *initialized = false;
+            }
+        }
+
+        let existing_variant_child = match &self.arena.get(target_idx).kind {
+            NodeKind::Enum { variant_child, .. } => *variant_child,
+            _ => None,
+        };
+
+        if let Some(child) = existing_variant_child {
+            if is_deferred_stage {
+                let flags = self.arena.get(child).flags.with_deferred_root();
+                self.arena.get_mut(child).flags = flags;
+            }
+            if let NodeKind::Enum {
+                selected_variant,
+                initialized,
+                ..
+            } = &mut self.arena.get_mut(target_idx).kind
+            {
+                *selected_variant = Some(field_idx);
+                *initialized = is_unit_variant;
+            }
+            self.current = child;
+            return Ok(());
+        }
+
+        let variant_node = Node {
+            data: target_data,
+            shape: target_shape,
+            kind: NodeKind::EnumVariant {
+                variant_idx: field_idx,
+                payload_child: None,
+                initialized: is_unit_variant,
+            },
+            state: NodeState::Staged,
+            parent: target_idx,
+            flags: NodeFlags::empty().with_deferred_root_if(is_deferred_stage),
+        };
+        let variant_child = self.arena.alloc(variant_node);
+        if let NodeKind::Enum {
+            selected_variant,
+            variant_child: stored_child,
+            initialized,
+        } = &mut self.arena.get_mut(target_idx).kind
+        {
+            *selected_variant = Some(field_idx);
+            *stored_child = Some(variant_child);
+            *initialized = is_unit_variant;
+        }
+        self.current = variant_child;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_set_enum_payload_entry(
+        &mut self,
+        target_idx: NodeIdx<R>,
+        target_shape: Shape<R>,
+        target_data: Ptr<R>,
+        variant_idx: usize,
+        payload_child: Option<NodeIdx<R>>,
+        _variant_initialized: bool,
+        field_idx: usize,
+        src: Source<Ptr<R>, Shape<R>>,
+    ) -> Result<(), TrameError>
+    where
+        Shape<R>: IShape + PartialEq,
+    {
+        if !matches!(
+            src.kind,
+            SourceKind::Stage(_) | SourceKind::StageDeferred(_)
+        ) {
+            return Err(TrameError::UnsupportedSource);
+        }
+
+        let variant = Self::enum_variant(target_shape, variant_idx)?;
+        let payload = variant.data();
+        let payload_field_count = payload.field_count();
+
+        if payload_field_count == 0 {
+            return Err(TrameError::FieldOutOfBounds {
+                index: field_idx,
+                count: 0,
+            });
+        }
+        if field_idx != 0 {
+            return Err(TrameError::FieldOutOfBounds {
+                index: field_idx,
+                count: 1,
+            });
+        }
+
+        let is_deferred_stage = matches!(src.kind, SourceKind::StageDeferred(_));
+
+        if let Some(child) = payload_child {
+            if is_deferred_stage {
+                let flags = self.arena.get(child).flags.with_deferred_root();
+                self.arena.get_mut(child).flags = flags;
+            }
+            if let NodeKind::EnumVariant { initialized, .. } =
+                &mut self.arena.get_mut(target_idx).kind
+            {
+                *initialized = false;
+            }
+            let parent_idx = self.arena.get(target_idx).parent;
+            if parent_idx.is_valid() {
+                if let NodeKind::Enum { initialized, .. } = &mut self.arena.get_mut(parent_idx).kind
+                {
+                    *initialized = false;
+                }
+            }
+            self.current = child;
+            return Ok(());
+        }
+
+        let payload_node = Node {
+            data: target_data,
+            shape: target_shape,
+            kind: NodeKind::EnumPayload {
+                variant_idx,
+                fields: FieldStates::new(payload_field_count),
+            },
+            state: NodeState::Staged,
+            parent: target_idx,
+            flags: NodeFlags::empty().with_deferred_root_if(is_deferred_stage),
+        };
+        let payload_child = self.arena.alloc(payload_node);
+
+        if let NodeKind::EnumVariant {
+            payload_child: stored_child,
+            initialized,
+            ..
+        } = &mut self.arena.get_mut(target_idx).kind
+        {
+            *stored_child = Some(payload_child);
+            *initialized = false;
+        }
+        let parent_idx = self.arena.get(target_idx).parent;
+        if parent_idx.is_valid() {
+            if let NodeKind::Enum {
+                selected_variant,
+                initialized,
+                ..
+            } = &mut self.arena.get_mut(parent_idx).kind
+            {
+                *selected_variant = Some(variant_idx);
+                *initialized = false;
+            }
+        }
+        self.current = payload_child;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_set_enum_payload_field(
+        &mut self,
+        target_idx: NodeIdx<R>,
+        _target_shape: Shape<R>,
+        _target_data: Ptr<R>,
+        variant_idx: usize,
+        fields: FieldStates<Node<Heap<R>, Shape<R>>>,
+        field_idx: usize,
+        src: Source<Ptr<R>, Shape<R>>,
+    ) -> Result<(), TrameError>
+    where
+        Shape<R>: IShape + PartialEq,
+    {
+        let field_count = fields.len();
+        if field_idx >= field_count {
+            return Err(TrameError::FieldOutOfBounds {
+                index: field_idx,
+                count: field_count,
+            });
+        }
+        #[cfg(creusot)]
+        {
+            prove_field_idx_in_bounds(&fields, field_idx)?;
+        }
+
+        let mut child_idx = fields.get_child(field_idx);
+        let mut already_init = fields.is_init(field_idx);
+
+        let node_ref = self.arena.get(target_idx);
+        let (field_shape, dst, _size) = Self::enum_payload_ptr(node_ref, variant_idx, field_idx)?;
+
+        if let Some(child) = child_idx {
+            if matches!(&src.kind, SourceKind::Imm { .. } | SourceKind::Default) {
+                self.cleanup_node(child);
+                if self.current_in_subtree(child) {
+                    self.current = target_idx;
+                }
+                self.arena
+                    .get_mut(target_idx)
+                    .mark_field_not_started(field_idx);
+                child_idx = None;
+                already_init = false;
+            }
+        }
+
+        if already_init {
+            unsafe { self.heap.drop_in_place(dst, field_shape) };
+            self.arena
+                .get_mut(target_idx)
+                .mark_field_not_started(field_idx);
+        }
+
+        match src.kind {
+            SourceKind::Imm(imm) => {
+                let src_ptr = imm.ptr;
+                let src_shape = imm.shape;
+                #[cfg(creusot)]
+                let same_shape = shape_eq(src_shape, field_shape);
+                #[cfg(not(creusot))]
+                let same_shape = src_shape == field_shape;
+                if !same_shape {
+                    return Err(TrameError::ShapeMismatch);
+                }
+                unsafe { self.heap.memcpy(dst, src_ptr, CopyDesc::value(field_shape)) };
+                self.arena
+                    .get_mut(target_idx)
+                    .mark_field_complete(field_idx);
+                Ok(())
+            }
+            SourceKind::Default => {
+                let ok = unsafe { self.heap.default_in_place(dst, field_shape) };
+                if !ok {
+                    return Err(TrameError::DefaultUnavailable);
+                }
+                self.arena
+                    .get_mut(target_idx)
+                    .mark_field_complete(field_idx);
+                Ok(())
+            }
+            SourceKind::Stage(_cap) => self.apply_set_stage_field(
+                target_idx,
+                field_idx,
+                field_shape,
+                dst,
+                false,
+                child_idx,
+                false,
+            ),
+            SourceKind::StageDeferred(_cap) => self.apply_set_stage_field(
+                target_idx,
+                field_idx,
+                field_shape,
+                dst,
+                false,
+                child_idx,
+                true,
+            ),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn apply_set_stage_field(
         &mut self,
         target_idx: NodeIdx<R>,
@@ -727,6 +1260,13 @@ where
                 }
                 fields.set_child(field_idx, child_idx);
             }
+            NodeKind::EnumPayload { fields, .. } => {
+                #[cfg(creusot)]
+                {
+                    prove_field_idx_in_bounds(fields, field_idx)?;
+                }
+                fields.set_child(field_idx, child_idx);
+            }
             NodeKind::Pointer { child, .. } => {
                 *child = Some(child_idx);
             }
@@ -768,6 +1308,52 @@ where
             NodeKind::Scalar { initialized } => *initialized,
             NodeKind::Pointer { initialized, .. } => *initialized,
             NodeKind::Struct { fields } => {
+                let field_count = fields.len();
+                let mut i = 0;
+                while i < field_count {
+                    #[cfg(creusot)]
+                    {
+                        fields.prove_idx_in_bounds(i, field_count);
+                    }
+                    match fields.slot(i) {
+                        FieldSlot::Untracked => return false,
+                        FieldSlot::Complete => {}
+                        FieldSlot::Child(child) => {
+                            let child_node = self.arena.get(child);
+                            if child_node.state != NodeState::Sealed {
+                                return false;
+                            }
+                        }
+                    }
+                    i += 1;
+                }
+                true
+            }
+            NodeKind::Enum {
+                initialized,
+                variant_child,
+                ..
+            } => {
+                if *initialized {
+                    true
+                } else {
+                    variant_child
+                        .is_some_and(|child| self.arena.get(child).state == NodeState::Sealed)
+                }
+            }
+            NodeKind::EnumVariant {
+                initialized,
+                payload_child,
+                ..
+            } => {
+                if *initialized {
+                    true
+                } else {
+                    payload_child
+                        .is_some_and(|child| self.arena.get(child).state == NodeState::Sealed)
+                }
+            }
+            NodeKind::EnumPayload { fields, .. } => {
                 let field_count = fields.len();
                 let mut i = 0;
                 while i < field_count {
@@ -962,6 +1548,84 @@ where
                 self.arena.get_mut(idx).state = NodeState::Sealed;
                 Ok(())
             }
+            NodeKind::Enum {
+                variant_child,
+                initialized,
+                ..
+            } => {
+                if initialized {
+                    self.arena.get_mut(idx).state = NodeState::Sealed;
+                    return Ok(());
+                }
+
+                let Some(child_idx) = variant_child else {
+                    return Err(TrameError::Incomplete);
+                };
+                self.finalize_subtree(child_idx)?;
+                if self.arena.get(child_idx).state != NodeState::Sealed {
+                    return Err(TrameError::Incomplete);
+                }
+                if let NodeKind::Enum {
+                    initialized,
+                    selected_variant,
+                    ..
+                } = &mut self.arena.get_mut(idx).kind
+                {
+                    if selected_variant.is_none() {
+                        return Err(TrameError::Incomplete);
+                    }
+                    *initialized = true;
+                }
+                self.arena.get_mut(idx).state = NodeState::Sealed;
+                Ok(())
+            }
+            NodeKind::EnumVariant {
+                payload_child,
+                initialized,
+                ..
+            } => {
+                if initialized {
+                    self.arena.get_mut(idx).state = NodeState::Sealed;
+                    return Ok(());
+                }
+
+                let Some(child_idx) = payload_child else {
+                    return Err(TrameError::Incomplete);
+                };
+                self.finalize_subtree(child_idx)?;
+                if self.arena.get(child_idx).state != NodeState::Sealed {
+                    return Err(TrameError::Incomplete);
+                }
+                if let NodeKind::EnumVariant { initialized, .. } = &mut self.arena.get_mut(idx).kind
+                {
+                    *initialized = true;
+                }
+                self.arena.get_mut(idx).state = NodeState::Sealed;
+                Ok(())
+            }
+            NodeKind::EnumPayload { fields, .. } => {
+                let field_count = fields.len();
+                let mut i = 0;
+                while i < field_count {
+                    #[cfg(creusot)]
+                    {
+                        fields.prove_idx_in_bounds(i, field_count);
+                    }
+                    match fields.slot(i) {
+                        FieldSlot::Untracked => return Err(TrameError::Incomplete),
+                        FieldSlot::Complete => {}
+                        FieldSlot::Child(child_idx) => {
+                            self.finalize_subtree(child_idx)?;
+                            if self.arena.get(child_idx).state != NodeState::Sealed {
+                                return Err(TrameError::Incomplete);
+                            }
+                        }
+                    }
+                    i += 1;
+                }
+                self.arena.get_mut(idx).state = NodeState::Sealed;
+                Ok(())
+            }
         }
     }
 
@@ -1045,7 +1709,12 @@ where
             )
         };
 
-        if node_state == NodeState::Sealed {
+        if node_state == NodeState::Sealed
+            && !matches!(
+                node_kind,
+                NodeKind::EnumVariant { .. } | NodeKind::EnumPayload { .. }
+            )
+        {
             #[cfg(creusot)]
             assume(snapshot! {self.heap.is_init(node_data, node_shape)});
             unsafe {
@@ -1077,6 +1746,40 @@ where
                     children.push(*child_idx);
                 }
                 NodeKind::Pointer { child: None, .. } => {}
+                NodeKind::Enum {
+                    variant_child: Some(child_idx),
+                    ..
+                } => {
+                    children.push(*child_idx);
+                }
+                NodeKind::Enum {
+                    variant_child: None,
+                    ..
+                } => {}
+                NodeKind::EnumVariant {
+                    payload_child: Some(child_idx),
+                    ..
+                } => {
+                    children.push(*child_idx);
+                }
+                NodeKind::EnumVariant {
+                    payload_child: None,
+                    ..
+                } => {}
+                NodeKind::EnumPayload { fields, .. } => {
+                    let field_count = fields.len();
+                    let mut i = 0;
+                    while i < field_count {
+                        #[cfg(creusot)]
+                        {
+                            fields.prove_idx_in_bounds(i, field_count);
+                        }
+                        if let Some(child_idx) = fields.get_child(i) {
+                            children.push(child_idx);
+                        }
+                        i += 1;
+                    }
+                }
                 _ => {}
             }
 
@@ -1122,6 +1825,41 @@ where
                     assume(snapshot! {self.heap.is_init(node_data, node_shape)});
                     unsafe {
                         self.heap.drop_in_place(node_data, node_shape);
+                    }
+                }
+                NodeKind::Enum {
+                    initialized: true, ..
+                } => {
+                    #[cfg(creusot)]
+                    assume(snapshot! {self.heap.is_init(node_data, node_shape)});
+                    unsafe {
+                        self.heap.drop_in_place(node_data, node_shape);
+                    }
+                }
+                NodeKind::EnumPayload {
+                    variant_idx,
+                    fields,
+                } => {
+                    let node = self.arena.get(idx);
+                    let field_count = fields.len();
+                    let mut i = 0;
+                    while i < field_count {
+                        #[cfg(creusot)]
+                        {
+                            fields.prove_idx_in_bounds(i, field_count);
+                        }
+                        if matches!(fields.slot(i), FieldSlot::Complete) {
+                            if let Ok((field_shape, ptr, _size)) =
+                                Self::enum_payload_ptr(node, *variant_idx, i)
+                            {
+                                #[cfg(creusot)]
+                                assume(snapshot! {self.heap.is_init(node_data, node_shape)});
+                                unsafe {
+                                    self.heap.drop_in_place(ptr, field_shape);
+                                }
+                            }
+                        }
+                        i += 1;
                     }
                 }
                 _ => {}

@@ -85,11 +85,13 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
     #[cfg_attr(creusot,
         requires(match self.kind {
             NodeKind::Struct { fields } => field_idx@ < fields.len_logic(),
+            NodeKind::EnumPayload { fields, .. } => field_idx@ < fields.len_logic(),
             NodeKind::Pointer { .. } => true,
             _ => false,
         }),
         ensures(match (^self).kind {
             NodeKind::Struct { fields } => fields.slots@[field_idx@] == FieldSlot::Untracked, // TODO: other fields are unchanged
+            NodeKind::EnumPayload { fields, .. } => fields.slots@[field_idx@] == FieldSlot::Untracked, // TODO: other fields are unchanged
             NodeKind::Pointer { initialized, .. } => !initialized,
             _ => true,
         })
@@ -97,6 +99,7 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
     pub(crate) fn mark_field_not_started(&mut self, field_idx: usize) {
         match &mut self.kind {
             NodeKind::Struct { fields } => fields.mark_not_started(field_idx),
+            NodeKind::EnumPayload { fields, .. } => fields.mark_not_started(field_idx),
             NodeKind::Pointer { initialized, .. } => *initialized = false,
             _ => {}
         }
@@ -105,11 +108,13 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
     #[cfg_attr(creusot,
         requires(match self.kind {
             NodeKind::Struct { fields } => field_idx@ < fields.len_logic(),
+            NodeKind::EnumPayload { fields, .. } => field_idx@ < fields.len_logic(),
             NodeKind::Pointer { .. } => true,
             _ => false,
         }),
         ensures(match (^self).kind {
             NodeKind::Struct { fields } => fields.slots@[field_idx@] == FieldSlot::Complete, // TODO: other fields are unchanged
+            NodeKind::EnumPayload { fields, .. } => fields.slots@[field_idx@] == FieldSlot::Complete, // TODO: other fields are unchanged
             NodeKind::Pointer { initialized, .. } => initialized,
             _ => true,
         })
@@ -117,6 +122,7 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
     pub(crate) fn mark_field_complete(&mut self, field_idx: usize) {
         match &mut self.kind {
             NodeKind::Struct { fields } => fields.mark_complete(field_idx),
+            NodeKind::EnumPayload { fields, .. } => fields.mark_complete(field_idx),
             NodeKind::Pointer { initialized, .. } => *initialized = true,
             _ => {}
         }
@@ -223,7 +229,13 @@ impl PartialEq for NodeState {
 
 impl<H: IHeap<S>, S: IShape> Node<H, S> {
     pub(crate) fn kind_for_shape(shape: S) -> NodeKind<Self> {
-        if let Some(st) = shape.as_struct() {
+        if shape.as_enum().is_some() {
+            NodeKind::Enum {
+                selected_variant: None,
+                variant_child: None,
+                initialized: false,
+            }
+        } else if let Some(st) = shape.as_struct() {
             NodeKind::Struct {
                 fields: FieldStates::new(st.field_count()),
             }
@@ -264,6 +276,23 @@ pub(crate) enum NodeKind<F> {
         child: Option<Idx<F>>,
         initialized: bool,
     },
+    /// Enum root with active variant tracking.
+    Enum {
+        selected_variant: Option<usize>,
+        variant_child: Option<Idx<F>>,
+        initialized: bool,
+    },
+    /// Enum variant selection node.
+    EnumVariant {
+        variant_idx: usize,
+        payload_child: Option<Idx<F>>,
+        initialized: bool,
+    },
+    /// Enum payload node (struct-like field tracking for the selected variant).
+    EnumPayload {
+        variant_idx: usize,
+        fields: FieldStates<F>,
+    },
 }
 
 impl<F> Clone for NodeKind<F> {
@@ -279,6 +308,31 @@ impl<F> Clone for NodeKind<F> {
             Self::Pointer { child, initialized } => Self::Pointer {
                 child: *child,
                 initialized: *initialized,
+            },
+            Self::Enum {
+                selected_variant,
+                variant_child,
+                initialized,
+            } => Self::Enum {
+                selected_variant: *selected_variant,
+                variant_child: *variant_child,
+                initialized: *initialized,
+            },
+            Self::EnumVariant {
+                variant_idx,
+                payload_child,
+                initialized,
+            } => Self::EnumVariant {
+                variant_idx: *variant_idx,
+                payload_child: *payload_child,
+                initialized: *initialized,
+            },
+            Self::EnumPayload {
+                variant_idx,
+                fields,
+            } => Self::EnumPayload {
+                variant_idx: *variant_idx,
+                fields: fields.clone(),
             },
         }
     }

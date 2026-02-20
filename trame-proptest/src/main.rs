@@ -22,6 +22,7 @@ mod tests {
     enum ShapeRecipe {
         Scalar { size: usize },
         Struct { fields: Vec<usize> }, // indices into the shape store (must be < current index)
+        Option { some: usize },        // index of payload shape (must be < current index)
     }
 
     fn arb_shape_recipe(max_existing: usize) -> impl Strategy<Value = ShapeRecipe> {
@@ -31,9 +32,12 @@ mod tests {
                 .prop_map(|size| ShapeRecipe::Scalar { size }),
             // Struct with 1-4 fields referencing existing shapes
             if max_existing > 0 {
-                prop::collection::vec(0..max_existing, 1..=4)
-                    .prop_map(|fields| ShapeRecipe::Struct { fields })
-                    .boxed()
+                prop_oneof![
+                    prop::collection::vec(0..max_existing, 1..=4)
+                        .prop_map(|fields| ShapeRecipe::Struct { fields }),
+                    (0..max_existing).prop_map(|some| ShapeRecipe::Option { some }),
+                ]
+                .boxed()
             } else {
                 // No existing shapes to reference, just make a scalar
                 Just(ShapeRecipe::Scalar { size: 4 }).boxed()
@@ -62,6 +66,12 @@ mod tests {
     fn build_shape_store(recipes: &[ShapeRecipe]) -> Vec<VShapeHandle> {
         let mut handles = Vec::new();
 
+        fn option_layout_for(payload: Layout) -> Layout {
+            let align = payload.align().max(1);
+            let size = (payload.size() + 1).next_multiple_of(align);
+            Layout::from_size_align(size, align).expect("valid option layout")
+        }
+
         for recipe in recipes {
             let handle = match recipe {
                 ShapeRecipe::Scalar { size } => {
@@ -87,6 +97,16 @@ mod tests {
                     }
 
                     vshape_register(VShapeDef::struct_with_fields(vshape_store(), &field_defs))
+                }
+                ShapeRecipe::Option { some } => {
+                    let payload_handle = handles[*some];
+                    let payload_layout = vshape_view(payload_handle).layout().unwrap();
+                    let option_layout = option_layout_for(payload_layout);
+                    vshape_register(VShapeDef::option_of(
+                        payload_handle,
+                        option_layout,
+                        trame::runtime::verified::VTypeOps::pod(),
+                    ))
                 }
             };
             handles.push(handle);

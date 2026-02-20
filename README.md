@@ -8,26 +8,23 @@ verified from the ground up.
 
 ## Verification Strategy
 
-Trame uses a layered verification approach combining five complementary techniques:
+Trame uses a layered verification approach combining four complementary techniques:
 
 | Approach | Coverage | Speed | Annotation Cost | What it catches |
 |----------|----------|-------|-----------------|-----------------|
 | [Kani](https://github.com/model-checking/kani) + VRuntime | Exhaustive within bounds | Slow (exponential) | None | Logic bugs, invariant violations |
 | [Proptest](https://github.com/proptest-rs/proptest) + VRuntime | Statistical | Fast | None | Logic bugs via random exploration |
 | [AFL](https://github.com/rust-fuzz/afl.rs) + LRuntime | Statistical | Fast | None | Memory bugs, crashes, UB |
-| [Creusot](https://github.com/creusot-rs/creusot) + CRuntime | Unbounded/Universal | Fast (per-function) | High | Everything, with proof |
-| [Verus](https://github.com/verus-lang/verus) | Unbounded/Universal | Fast (per-function) | High | Everything, with proof |
+| [Creusot](https://github.com/creusot-rs/creusot) (migration in progress) | Unbounded/Universal | Fast (per-function) | High | Everything, with proof |
 
 ### Runtimes
 
-The codebase is generic over an `IRuntime` trait with three implementations:
+The codebase is generic over an `IRuntime` trait with two active implementations:
 
 - **VRuntime** (Verified Runtime) - Bounded state for Kani proofs and proptest. Uses
   fixed-size arrays, fat pointers with allocation tracking, and explicit byte-range
   initialization tracking. No real memory allocation.
 - **LRuntime** (Live Runtime) - Real memory operations for production use and fuzzing.
-- **CRuntime** (Creusot Runtime) - Logic-level runtime for deductive verification
-  via Creusot.
 
 ### Kani + VRuntime (Bounded Model Checking)
 
@@ -54,26 +51,12 @@ with actual allocations.
 
 Run with `just fuzz`.
 
-### Creusot + CRuntime (Deductive Verification)
+## Formal Verification Status
 
-[Creusot](https://github.com/creusot-rs/creusot) translates Rust code to
-[Why3](https://www.why3.org/) for SMT-based proof discharge. This proves properties
-hold for *all* inputs, not just those within Kani's bounds. Requires contract
-annotations (pre/post conditions, invariants, logic functions) but provides universal
-guarantees.
+`CRuntime` and `trame-verus` are retired.
 
-Run proofs with `just prove`.
-
-### Verus (SMT-based Verification)
-
-[Verus](https://github.com/verus-lang/verus) verifies Rust code directly via
-SMT solving, without translation to an intermediate language. Like Creusot, it
-proves properties for all inputs, but operates on Rust syntax with proof
-annotations (`proof fn`, `requires`, `ensures`). The `trame-verus` crate
-contains proofs for byte-range clearing semantics and recursive tree
-initialization.
-
-Run proofs with `just verus`.
+Future Creusot work is expected to resume against the live/verified runtimes
+directly, instead of maintaining a separate logic-only runtime.
 
 ## Spec
 

@@ -32,6 +32,7 @@ impl ProofShapeStore {
             let kind = match shape.def {
                 VDef::Scalar => ProofShapeKind::Scalar,
                 VDef::Pointer(_) => ProofShapeKind::Scalar,
+                VDef::Option(_) => ProofShapeKind::Scalar,
                 VDef::Struct(def) => {
                     let mut fields = Vec::with_capacity(def.field_count as usize);
                     for field_idx in 0..def.field_count as usize {

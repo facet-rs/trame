@@ -13,6 +13,7 @@ pub enum FuzzScenario {
     Scalar,
     NestedStruct,
     Pointer,
+    Option,
 }
 
 #[derive(Clone, Copy, Arbitrary)]
@@ -127,6 +128,18 @@ fn build_scenario_shape(scenario: FuzzScenario) -> VShapeView<'static, VShapeSto
                 &[(0, pointer)],
             ));
             vshape_view(root)
+        }
+        FuzzScenario::Option => {
+            let payload = vshape_register(VShapeDef::scalar_with_ops(
+                Layout::new::<usize>(),
+                VTypeOps::new(false, drop_noop, Some(default_magic)),
+            ));
+            let option = vshape_register(VShapeDef::option_of(
+                payload,
+                Layout::new::<Option<usize>>(),
+                VTypeOps::pod(),
+            ));
+            vshape_view(option)
         }
     }
 }

@@ -220,6 +220,29 @@ fn vshape_nested_struct() {
     assert_eq!(inner_f1.shape().layout().unwrap().size(), 4);
 }
 
+#[test]
+fn vshape_option_is_not_struct_or_pointer() {
+    let mut store = VShapeStore::new();
+    let payload_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
+    let option_h = store.add(VShapeDef::option_of(
+        payload_h,
+        Layout::new::<Option<u32>>(),
+        VTypeOps::pod(),
+    ));
+
+    let option_shape = store.view(option_h);
+    assert!(!option_shape.is_struct());
+    assert!(option_shape.as_struct().is_none());
+    assert!(!option_shape.is_pointer());
+    assert!(option_shape.as_pointer().is_none());
+    assert_eq!(option_shape.layout().unwrap(), Layout::new::<Option<u32>>());
+
+    match store.get_def(option_h).def {
+        VDef::Option(def) => assert_eq!(def.some_handle, payload_h),
+        _ => panic!("expected option def"),
+    }
+}
+
 // Tests for real Shape implementation
 
 #[derive(facet::Facet)]

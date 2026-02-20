@@ -1,6 +1,7 @@
 use std::alloc::Layout;
+use std::mem::ManuallyDrop;
 
-use facet_core::{Facet, PtrMut, PtrUninit, Shape, Type, UserType};
+use facet_core::{Def, Facet, PtrMut, PtrUninit, Shape, Type, UserType};
 use trame::{LRuntime, Op, Path, Source, Trame, TrameError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -378,6 +379,10 @@ fn apply_value(
     value: &JsonValue,
     offset: usize,
 ) -> Result<(), Error> {
+    if let Def::Option(option_def) = &shape.def {
+        return apply_option(trame, path, shape, option_def, value, offset);
+    }
+
     match (&shape.ty, value) {
         (Type::User(UserType::Struct(st)), JsonValue::Object(entries)) => {
             let staged = !path.is_empty();
@@ -413,7 +418,10 @@ fn apply_value(
                             offset,
                         )?;
                     }
-                    None if field.should_skip_deserializing() || field.has_default() => {
+                    None if field.should_skip_deserializing()
+                        || field.has_default()
+                        || matches!(field.shape.get().def, Def::Option(_)) =>
+                    {
                         trame.apply(Op::Set {
                             dst: Path::field(idx as u32),
                             src: Source::default_value(),
@@ -443,6 +451,63 @@ fn apply_value(
             Ok(())
         }
         _ => apply_scalar(trame, path, shape, value, offset),
+    }
+}
+
+fn build_raw_from_json(
+    shape: &'static Shape,
+    value: &JsonValue,
+    offset: usize,
+) -> Result<RawValue, Error> {
+    let mut trame = unsafe { Trame::<LRuntime>::alloc_shape(shape) }?;
+    apply_value(&mut trame, Path::empty(), shape, value, offset)?;
+    let hv = trame.build()?;
+    let hv = ManuallyDrop::new(hv);
+    Ok(RawValue {
+        ptr: hv.data_ptr(),
+        layout: shape.layout.sized_layout().ok(),
+    })
+}
+
+fn apply_option(
+    trame: &mut Trame<'_, LRuntime>,
+    path: Path,
+    shape: &'static Shape,
+    option_def: &facet_core::OptionDef,
+    value: &JsonValue,
+    offset: usize,
+) -> Result<(), Error> {
+    let raw_option = RawValue::new(shape)?;
+    match value {
+        JsonValue::Null => unsafe {
+            (option_def.vtable.init_none)(PtrUninit::new(raw_option.ptr));
+        },
+        _ => {
+            let raw_some = build_raw_from_json(option_def.t(), value, offset)?;
+            unsafe {
+                (option_def.vtable.init_some)(
+                    PtrUninit::new(raw_option.ptr),
+                    PtrMut::new(raw_some.ptr),
+                );
+            }
+            // value has been moved into the option by init_some.
+            raw_some.dealloc();
+        }
+    }
+
+    let result = trame.apply(Op::Set {
+        dst: path,
+        src: unsafe { Source::from_ptr_shape(raw_option.ptr, shape) },
+    });
+    match result {
+        Ok(()) => {
+            raw_option.dealloc();
+            Ok(())
+        }
+        Err(err) => {
+            raw_option.drop_and_dealloc(shape);
+            Err(Error::Trame(err))
+        }
     }
 }
 
@@ -526,6 +591,12 @@ mod tests {
         inner: Inner,
     }
 
+    #[derive(Debug, PartialEq, facet::Facet)]
+    struct WithOption {
+        count: u32,
+        maybe: Option<u32>,
+    }
+
     #[test]
     fn deserializes_nested_struct() {
         let value: Outer = from_str(r#"{"count":42,"name":"hello","inner":{"ok":true}}"#)
@@ -565,6 +636,48 @@ mod tests {
             Error::UnknownField {
                 field: "extra".to_owned(),
                 offset: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn option_missing_defaults_to_none() {
+        let value: WithOption =
+            from_str(r#"{"count":42}"#).expect("missing option field should default to None");
+
+        assert_eq!(
+            value,
+            WithOption {
+                count: 42,
+                maybe: None,
+            }
+        );
+    }
+
+    #[test]
+    fn option_null_deserializes_to_none() {
+        let value: WithOption =
+            from_str(r#"{"count":42,"maybe":null}"#).expect("null option should deserialize");
+
+        assert_eq!(
+            value,
+            WithOption {
+                count: 42,
+                maybe: None,
+            }
+        );
+    }
+
+    #[test]
+    fn option_number_deserializes_to_some() {
+        let value: WithOption =
+            from_str(r#"{"count":42,"maybe":7}"#).expect("numeric option should deserialize");
+
+        assert_eq!(
+            value,
+            WithOption {
+                count: 42,
+                maybe: Some(7),
             }
         );
     }

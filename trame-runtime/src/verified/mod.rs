@@ -243,7 +243,13 @@ pub enum VDef {
     Struct(VStructDef),
     /// A smart pointer with a known pointee shape.
     Pointer(VPointerDef),
-    // TODO: Enum, Option, Result, List, Map, etc.
+    /// An `Option<T>`-like sum type.
+    ///
+    /// This is modeled as a scalar for now (no partial field addressing), but
+    /// we track the payload shape explicitly so verified shape stores can
+    /// represent optional values without erasing type structure.
+    Option(VOptionDef),
+    // TODO: Enum, Result, List, Map, etc.
 }
 
 /// A synthetic smart-pointer definition for verification.
@@ -258,6 +264,14 @@ pub struct VPointerDef {
     pub known_box: bool,
     /// Pointer-construction hooks.
     pub vtable: VPointerVTable,
+}
+
+/// A synthetic option-like definition for verification.
+#[cfg_attr(creusot, derive(DeepModel))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VOptionDef {
+    /// Handle to the payload shape `T` for `Option<T>`.
+    pub some_handle: VShapeHandle,
 }
 
 /// A store of DynShape definitions.
@@ -643,6 +657,17 @@ impl VShapeDef {
                 constructible_from_pointee: constructible,
                 known_box,
                 vtable,
+            }),
+        }
+    }
+
+    /// Create an option-like shape with payload `T`.
+    pub fn option_of(payload: VShapeHandle, layout: VLayout, type_ops: VTypeOps) -> Self {
+        Self {
+            layout,
+            type_ops,
+            def: VDef::Option(VOptionDef {
+                some_handle: payload,
             }),
         }
     }

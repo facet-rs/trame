@@ -38,8 +38,6 @@ pub use runtime::verified::{
 };
 
 pub use runtime::IRuntime;
-#[cfg(creusot)]
-pub use runtime::creusot_rt::{CLayout, CRuntime, CShapeDef, CShapeHandle, CShapeStore};
 
 #[cfg(not(creusot))]
 pub use runtime::LiveRuntime;

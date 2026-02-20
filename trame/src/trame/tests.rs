@@ -710,6 +710,23 @@ fn box_live_stage_end_drop_droppable_pointee() {
 }
 
 #[test]
+fn option_live_imm_builds_some() {
+    let mut trame = Trame::<LRuntime>::alloc::<Option<u32>>().unwrap();
+    let mut value = Some(7_u32);
+    trame
+        .apply(Op::Set {
+            dst: Path::empty(),
+            src: Source::from_ref(&mut value),
+        })
+        .unwrap();
+
+    assert!(trame.is_complete());
+    let hv = trame.build().unwrap();
+    let out = hv.materialize::<Option<u32>>().unwrap();
+    assert_eq!(out, Some(7));
+}
+
+#[test]
 fn box_verified_stage_end_builds() {
     let _g = FreshStore::new();
     let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
@@ -742,6 +759,30 @@ fn box_verified_stage_end_builds() {
     assert_eq!(trame.depth(), 0);
     assert!(trame.is_complete());
 
+    let _ = trame.build().unwrap();
+}
+
+#[test]
+fn option_verified_default_builds() {
+    let _g = FreshStore::new();
+    let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
+    let opt_h = vshape_register(VShapeDef::option_of(
+        u32_h,
+        Layout::new::<Option<u32>>(),
+        VTypeOps::pod(),
+    ));
+    let opt_shape = vshape_view(opt_h);
+
+    let heap = VRuntime::heap();
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, opt_shape) };
+
+    trame
+        .apply(Op::Set {
+            dst: Path::empty(),
+            src: Source::default_value(),
+        })
+        .unwrap();
+    assert!(trame.is_complete());
     let _ = trame.build().unwrap();
 }
 

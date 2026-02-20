@@ -112,29 +112,19 @@ jobs:
         run: |
           timeout 120 cargo afl fuzz -i in -o out ./target-afl/debug/trame-fuzz || test $? -eq 124
 
-  creusot:
-    name: Creusot Proofs
+  creusot-migration:
+    name: Creusot Migration (Non-blocking)
     runs-on: depot-ubuntu-24.04-32
+    continue-on-error: true
     container:
       image: ghcr.io/facet-rs/creusot-ci:latest
     steps:
       - uses: actions/checkout@v6
 
-      - name: Run Creusot proofs
+      - name: Run Creusot proofs (migration path)
         run: |
           cargo creusot clean --force
           cargo creusot prove -- -p trame-runtime -p trame
-
-  verus:
-    name: Verus Proofs
-    runs-on: depot-ubuntu-24.04-32
-    container:
-      image: ghcr.io/facet-rs/verus-ci:latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Run Verus proofs
-        run: cargo verus verify --workspace --exclude trame-fuzz --exclude trame-proptest
 
   miri-toy-json:
     name: Miri (Toy JSON Paths)

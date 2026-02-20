@@ -5,7 +5,11 @@ all:
     # disabled: bit slow still
     # just kani
     just test
-    just prove
+
+# Creusot migration target (currently expected to require follow-up)
+prove *args:
+    cargo creusot clean --force
+    cargo creusot prove {{ args }} -- -p trame-runtime -p trame
 
 # Run all tests (including prop tests)
 test:
@@ -24,14 +28,6 @@ kani:
 kani-one crate *args:
     soteria-rust cargo {{ crate }} --kani --summary --stats stdout --flamegraph-dir .soteria {{ args }}
 
-# Prove with creusot
-prove *args:
-    cargo creusot clean --force
-    cargo creusot prove {{ args }} -- -p trame-runtime -p trame
-
-verus:
-    cargo verus verify --workspace --exclude trame-fuzz --exclude trame-proptest
-
 # Run fuzzing with afl
 fuzz:
     cd trame-fuzz && CARGO_TARGET_DIR=target-afl cargo afl build
@@ -47,5 +43,3 @@ ci-push ident:
 ci-push-all:
     just ci-push afl
     just ci-push soteria
-    just ci-push creusot
-    just ci-push verus

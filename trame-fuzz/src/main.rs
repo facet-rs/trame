@@ -448,17 +448,22 @@ fn run_fuzz(input: FuzzInput) {
 
     for op in input.ops {
         match op {
-            FuzzOp::Set { path, mut source } => {
+            FuzzOp::Set { path, source } => {
                 let path_buf: Vec<PathSegment> = path.into_iter().map(Into::into).collect();
                 let path = Path::from_segments(&path_buf);
-                let result = match &mut source {
+                let result = match source {
                     FuzzSource::Imm(value) => {
-                        // Get the shape from the FuzzValue
+                        // Source::from_ptr_shape performs a raw-byte move/copy. Keep the backing
+                        // value alive and undropped to avoid aliasing/double-drop UB for owned
+                        // values like String/Vec/Map/Set.
+                        let mut value = value;
                         let (ptr, shape) = value.as_ptr_and_shape();
-                        trame.apply(Op::Set {
+                        let result = trame.apply(Op::Set {
                             dst: path.clone(),
                             src: unsafe { Source::from_ptr_shape(ptr, shape) },
-                        })
+                        });
+                        core::mem::forget(value);
+                        result
                     }
                     FuzzSource::Default => trame.apply(Op::Set {
                         dst: path.clone(),

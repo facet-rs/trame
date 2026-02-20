@@ -11,6 +11,10 @@ all:
 test:
     cargo nextest run
 
+# Run property tests only
+prop:
+    cargo nextest run -p trame-proptest
+
 # Test all kani proofs using soteria-rust
 kani:
     just kani-one trame-runtime
@@ -32,6 +36,10 @@ verus:
 fuzz:
     cd trame-fuzz && CARGO_TARGET_DIR=target-afl cargo afl build
     cd trame-fuzz && CARGO_TARGET_DIR=target-afl cargo afl fuzz -i in -o out ./target-afl/debug/trame-fuzz
+
+# Run VShape fuzzing target (LRuntime + VShapeView)
+fuzz-vshape:
+    cd trame-fuzz && just fuzz-vshape
 
 ci-push ident:
     depot build --push --build-platform=linux/amd64 -t ghcr.io/facet-rs/{{ ident }}-ci:latest -f .docker/Dockerfile.{{ ident }} .docker/

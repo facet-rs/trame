@@ -6,6 +6,7 @@ use crate::vshape_store_reset;
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use facet_core::Facet;
+use std::collections::BTreeSet;
 
 /// Guard that resets the global shape store on creation and drop.
 struct FreshStore;
@@ -681,6 +682,31 @@ fn box_live_imm_whole_value() {
     let hv = trame.build().unwrap();
     let value = hv.materialize::<Box<u32>>().unwrap();
     assert_eq!(*value, 9);
+}
+
+#[test]
+fn box_live_stage_end_drop_droppable_pointee() {
+    let mut trame = Trame::<LRuntime>::alloc::<Box<BTreeSet<String>>>().unwrap();
+
+    trame
+        .apply(Op::Set {
+            dst: Path::from_segments(&[PathSegment::Field(0)]),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    assert_eq!(trame.depth(), 1);
+
+    trame
+        .apply(Op::Set {
+            dst: Path::empty(),
+            src: Source::default_value(),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+
+    assert_eq!(trame.depth(), 0);
+    assert!(trame.is_complete());
+    // Intentionally drop without build(); cleanup must remain memory-safe.
 }
 
 #[test]

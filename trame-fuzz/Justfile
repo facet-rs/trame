@@ -22,13 +22,13 @@ fuzz-vshape: build-vshape
 
 # Build and run the solver fuzzer (flatten key routing and schema solving)
 fuzz-solver: build-solver
-    AFL_FORKSRV_INIT_TMOUT=10000 cargo afl fuzz -m none -i in-solver -o out-solver \
+    AFL_FORKSRV_INIT_TMOUT=10000 cargo afl fuzz -m none -i in-solver -o out-solver2 \
         -w {{ solver_bin }}-asan \
         -- {{ solver_bin }}
 
 # Build and run the solver fuzzer with both ASAN and MSAN workers
 fuzz-solver-sand: build-solver
-    AFL_FORKSRV_INIT_TMOUT=10000 cargo afl fuzz -m none -i in-solver -o out-solver \
+    AFL_FORKSRV_INIT_TMOUT=10000 cargo afl fuzz -m none -i in-solver -o out-solver2 \
         -w {{ solver_bin }}-asan \
         -w {{ solver_bin }}-msan \
         -- {{ solver_bin }}
@@ -100,13 +100,13 @@ resume-vshape: build-vshape
 
 # Resume solver fuzzing from previous state
 resume-solver: build-solver
-    AFL_FORKSRV_INIT_TMOUT=10000 cargo afl fuzz -m none -i- -o out-solver \
+    AFL_FORKSRV_INIT_TMOUT=10000 cargo afl fuzz -m none -i- -o out-solver2 \
         -w {{ solver_bin }}-asan \
         -- {{ solver_bin }}
 
 # Resume solver fuzzing with both ASAN and MSAN workers
 resume-solver-sand: build-solver
-    AFL_FORKSRV_INIT_TMOUT=10000 cargo afl fuzz -m none -i- -o out-solver \
+    AFL_FORKSRV_INIT_TMOUT=10000 cargo afl fuzz -m none -i- -o out-solver2 \
         -w {{ solver_bin }}-asan \
         -w {{ solver_bin }}-msan \
         -- {{ solver_bin }}
@@ -225,4 +225,4 @@ cov format="report": build-cov
 
 # Clean build artifacts and output
 clean:
-    rm -rf target target-afl target-standalone target-cov target-miri out out-vshape out-solver minimized.bin minimized-vshape.bin minimized-solver.bin coverage
+    rm -rf target target-afl target-standalone target-cov target-miri out out-vshape out-solver out-solver2 minimized.bin minimized-vshape.bin minimized-solver.bin coverage

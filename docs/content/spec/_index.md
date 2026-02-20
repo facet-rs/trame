@@ -679,6 +679,11 @@ We model enums as a three-level tree: **Enum → Variant → Payload**. Variant
 selection uses `Field(n)`, and variant payloads are staged (no `Imm` for the
 payload itself).
 
+Selecting a variant is a state transition, not just navigation. When
+`Field(n)` is applied at an enum node, trame must make variant `n` active
+immediately (including writing the enum discriminant/tag in memory) before any
+payload writes for that variant occur.
+
 Example:
 
 ```rust
@@ -709,7 +714,9 @@ set(&[], imm(some_enum))
 ```
 
 If you later stage the enum, re-entering the **same** variant resumes; staging
-a **different** variant replaces the old one and resets its payload.
+a **different** variant replaces the old one and resets its payload. Replacing
+the old variant must drop any initialized bytes owned by the previous payload
+before activating the new variant.
 
 Unit variants are initialized by default and have no payload.
 
@@ -989,6 +996,18 @@ Unit variants are initialized by default and have no payload.
 
 If a variant is selected again: re-entering the same variant resumes, while a
 different variant replaces the old one and resets its payload.
+
+Variant selection is also a memory update. Applying `Field(n)` at an enum node
+must establish variant `n` as active immediately by writing/updating the
+discriminant/tag before any payload field writes are performed.
+
+If a different variant was active, the previous payload must be dropped (for
+its initialized portion) before switching, then the new payload starts from its
+initial state (unit payload initialized by definition; non-unit payload
+uninitialized until written/defaulted).
+
+For multi-segment paths (for example, `Field(1) / Field(0) / ...`), the enum
+transition for `Field(1)` occurs before descending into payload segments.
 
 ### Node lifecycle
 

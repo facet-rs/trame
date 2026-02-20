@@ -104,6 +104,10 @@ jobs:
         working-directory: trame-fuzz
         run: CARGO_TARGET_DIR=target-afl cargo afl build
 
+      - name: Reset AFL output directory
+        working-directory: trame-fuzz
+        run: rm -rf out
+
       - name: Run fuzzing (2 minutes)
         working-directory: trame-fuzz
         env:

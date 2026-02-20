@@ -262,6 +262,7 @@ pub struct VShapeDef {
 
 /// Type-specific definition for verified shapes.
 #[cfg_attr(creusot, derive(DeepModel))]
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VDef {
     /// A scalar type (no internal structure to track).

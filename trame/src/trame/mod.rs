@@ -616,6 +616,16 @@ where
         if already_init {
             unsafe { self.heap.drop_in_place(dst, shape) };
         }
+        if let NodeKind::Enum {
+            selected_variant,
+            variant_child,
+            initialized,
+        } = &mut self.arena.get_mut(target_idx).kind
+        {
+            *selected_variant = None;
+            *variant_child = None;
+            *initialized = false;
+        }
 
         match src.kind {
             SourceKind::Imm(imm) => {
@@ -892,7 +902,7 @@ where
         field_idx: usize,
         selected_variant: Option<usize>,
         variant_child: Option<NodeIdx<R>>,
-        already_init: bool,
+        _already_init: bool,
         src: Source<Ptr<R>, Shape<R>>,
     ) -> Result<(), TrameError>
     where
@@ -923,15 +933,10 @@ where
 
         if !same_variant {
             if let Some(child) = variant_child {
-                if !already_init {
-                    self.cleanup_node(child);
-                }
+                self.cleanup_node(child);
                 if self.current_in_subtree(child) {
                     self.current = target_idx;
                 }
-            }
-            if already_init {
-                unsafe { self.heap.drop_in_place(target_data, target_shape) };
             }
             if let NodeKind::Enum {
                 selected_variant,
@@ -1144,6 +1149,7 @@ where
                 self.arena
                     .get_mut(target_idx)
                     .mark_field_not_started(field_idx);
+                self.mark_enum_lineage_uninitialized(target_idx);
                 child_idx = None;
                 already_init = false;
             }
@@ -1154,6 +1160,7 @@ where
             self.arena
                 .get_mut(target_idx)
                 .mark_field_not_started(field_idx);
+            self.mark_enum_lineage_uninitialized(target_idx);
         }
 
         match src.kind {
@@ -1282,6 +1289,24 @@ where
         }
         self.current = child_idx;
         Ok(())
+    }
+
+    fn mark_enum_lineage_uninitialized(&mut self, payload_idx: NodeIdx<R>) {
+        let variant_idx = self.arena.get(payload_idx).parent;
+        if !variant_idx.is_valid() {
+            return;
+        }
+        if let NodeKind::EnumVariant { initialized, .. } = &mut self.arena.get_mut(variant_idx).kind
+        {
+            *initialized = false;
+        }
+        let enum_idx = self.arena.get(variant_idx).parent;
+        if !enum_idx.is_valid() {
+            return;
+        }
+        if let NodeKind::Enum { initialized, .. } = &mut self.arena.get_mut(enum_idx).kind {
+            *initialized = false;
+        }
     }
 
     #[cfg_attr(creusot, trusted)]
@@ -1756,10 +1781,14 @@ where
                 NodeKind::Pointer { child: None, .. } => {}
                 NodeKind::Enum {
                     variant_child: Some(child_idx),
+                    initialized: false,
                     ..
                 } => {
                     children.push(*child_idx);
                 }
+                NodeKind::Enum {
+                    initialized: true, ..
+                } => {}
                 NodeKind::Enum {
                     variant_child: None,
                     ..

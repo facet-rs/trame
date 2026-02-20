@@ -1794,12 +1794,11 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
         );
 
         let (tracker, _) = self.get_tracker_mut(alloc_id);
-        if let Err(e) = tracker.mark_init(dst.offset, end) {
-            self.print_history(alloc_id);
-            panic!(
-                "select_enum_variant: discriminant range already initialized: {:?}",
-                e
-            );
+        if !tracker.is_init(dst.offset, end) {
+            if let Err(e) = tracker.mark_init(dst.offset, end) {
+                self.print_history(alloc_id);
+                panic!("select_enum_variant: discriminant init failed: {:?}", e);
+            }
         }
         true
     }

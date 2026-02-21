@@ -5,14 +5,15 @@
 use crate::MemState;
 use crate::{
     CopyDesc, EnumDiscriminantRepr, EnumReprKind, IArena, IEnumType, IExecShape, IField, IHeap,
-    IListType, IPointerType, IRuntime, IShape, IShapeStore, IStructType, IVariantType, Idx,
+    IListType, IMapType, IPointerType, IRuntime, IShape, IShapeStore, IStructType, IVariantType,
+    Idx,
 };
 use core::marker::PhantomData;
 #[cfg(creusot)]
 use creusot_std::macros::{logic, trusted};
 use facet_core::{
-    Def, EnumRepr, EnumType, Field, KnownPointer, ListDef, PointerDef, PtrMut, PtrUninit, Shape,
-    StructType, Type, UserType, Variant,
+    Def, EnumRepr, EnumType, Field, KnownPointer, ListDef, MapDef, PointerDef, PtrMut, PtrUninit,
+    Shape, StructType, Type, UserType, Variant,
 };
 
 #[cfg(creusot)]
@@ -91,6 +92,7 @@ impl IShape for &'static Shape {
     type EnumType = &'static EnumType;
     type PointerType = PointerDef;
     type ListType = ListDef;
+    type MapType = MapDef;
 
     #[inline]
     fn layout(&self) -> Option<std::alloc::Layout> {
@@ -196,6 +198,14 @@ impl IShape for &'static Shape {
             _ => None,
         }
     }
+
+    #[inline]
+    fn as_map(&self) -> Option<Self::MapType> {
+        match self.def {
+            Def::Map(def) => Some(def),
+            _ => None,
+        }
+    }
 }
 
 impl IListType for ListDef {
@@ -224,6 +234,40 @@ impl IListType for ListDef {
         };
         unsafe {
             push(PtrMut::new(list_ptr), PtrMut::new(elem_ptr).into());
+        }
+        true
+    }
+}
+
+impl IMapType for MapDef {
+    type Shape = &'static Shape;
+
+    #[inline]
+    fn key(&self) -> Self::Shape {
+        self.k()
+    }
+
+    #[inline]
+    fn value(&self) -> Self::Shape {
+        self.v()
+    }
+
+    #[inline]
+    unsafe fn init_in_place_with_capacity(&self, dst: *mut u8, capacity: usize) -> bool {
+        unsafe {
+            (self.vtable.init_in_place_with_capacity)(PtrUninit::new(dst), capacity);
+        }
+        true
+    }
+
+    #[inline]
+    unsafe fn insert_entry(&self, map_ptr: *mut u8, key_ptr: *mut u8, value_ptr: *mut u8) -> bool {
+        unsafe {
+            (self.vtable.insert)(
+                PtrMut::new(map_ptr),
+                PtrMut::new(key_ptr),
+                PtrMut::new(value_ptr),
+            );
         }
         true
     }
@@ -577,6 +621,36 @@ impl<S: IExecShape<*mut u8>> IHeap<S> for LHeap {
             return false;
         }
         unsafe { list.push_element(list_ptr, elem_ptr) }
+    }
+
+    unsafe fn map_init_in_place_with_capacity(
+        &mut self,
+        dst: *mut u8,
+        map_shape: S,
+        capacity: usize,
+    ) -> bool {
+        let Some(map) = map_shape.as_map() else {
+            return false;
+        };
+        unsafe { map.init_in_place_with_capacity(dst, capacity) }
+    }
+
+    unsafe fn map_insert_entry(
+        &mut self,
+        map_ptr: *mut u8,
+        map_shape: S,
+        key_ptr: *mut u8,
+        key_shape: S,
+        value_ptr: *mut u8,
+        value_shape: S,
+    ) -> bool {
+        let Some(map) = map_shape.as_map() else {
+            return false;
+        };
+        if map.key() != key_shape || map.value() != value_shape {
+            return false;
+        }
+        unsafe { map.insert_entry(map_ptr, key_ptr, value_ptr) }
     }
 
     #[cfg(creusot)]

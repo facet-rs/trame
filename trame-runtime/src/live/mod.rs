@@ -5,14 +5,14 @@
 use crate::MemState;
 use crate::{
     CopyDesc, EnumDiscriminantRepr, EnumReprKind, IArena, IEnumType, IExecShape, IField, IHeap,
-    IPointerType, IRuntime, IShape, IShapeStore, IStructType, IVariantType, Idx,
+    IListType, IPointerType, IRuntime, IShape, IShapeStore, IStructType, IVariantType, Idx,
 };
 use core::marker::PhantomData;
 #[cfg(creusot)]
 use creusot_std::macros::{logic, trusted};
 use facet_core::{
-    Def, EnumRepr, EnumType, Field, KnownPointer, PointerDef, PtrMut, PtrUninit, Shape, StructType,
-    Type, UserType, Variant,
+    Def, EnumRepr, EnumType, Field, KnownPointer, ListDef, PointerDef, PtrMut, PtrUninit, Shape,
+    StructType, Type, UserType, Variant,
 };
 
 #[cfg(creusot)]
@@ -90,6 +90,7 @@ impl IShape for &'static Shape {
     type Field = &'static Field;
     type EnumType = &'static EnumType;
     type PointerType = PointerDef;
+    type ListType = ListDef;
 
     #[inline]
     fn layout(&self) -> Option<std::alloc::Layout> {
@@ -186,6 +187,23 @@ impl IShape for &'static Shape {
             Def::Pointer(def) => Some(def),
             _ => None,
         }
+    }
+
+    #[inline]
+    fn as_list(&self) -> Option<Self::ListType> {
+        match self.def {
+            Def::List(def) => Some(def),
+            _ => None,
+        }
+    }
+}
+
+impl IListType for ListDef {
+    type Shape = &'static Shape;
+
+    #[inline]
+    fn element(&self) -> Self::Shape {
+        self.t()
     }
 }
 

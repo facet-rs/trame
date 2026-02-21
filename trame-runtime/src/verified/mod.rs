@@ -13,7 +13,7 @@ use byte_range::{ByteRangeError, ByteRangeTracker, Range};
 
 use crate::{
     CopyDesc, EnumDiscriminantRepr, EnumReprKind, IArena, IEnumType, IExecShape, IField, IHeap,
-    IPointerType, IPtr, IRuntime, IShape, IShapeStore, IStructType, IVariantType, Idx,
+    IListType, IPointerType, IPtr, IRuntime, IShape, IShapeStore, IStructType, IVariantType, Idx,
 };
 
 /// A runtime that verifies all operations
@@ -283,7 +283,9 @@ pub enum VDef {
     /// we track the payload shape explicitly so verified shape stores can
     /// represent optional values without erasing type structure.
     Option(VOptionDef),
-    // TODO: Result, List, Map, etc.
+    /// A `List<T>`-like collection.
+    List(VListDef),
+    // TODO: Result, Map, Set, etc.
 }
 
 /// A synthetic smart-pointer definition for verification.
@@ -306,6 +308,14 @@ pub struct VPointerDef {
 pub struct VOptionDef {
     /// Handle to the payload shape `T` for `Option<T>`.
     pub some_handle: VShapeHandle,
+}
+
+/// A synthetic list-like definition for verification.
+#[cfg_attr(creusot, derive(DeepModel))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VListDef {
+    /// Handle to the element shape `T` for `List<T>`.
+    pub elem_handle: VShapeHandle,
 }
 
 /// A store of DynShape definitions.
@@ -429,6 +439,13 @@ pub struct VPointerView<'a> {
     pub def: &'a VPointerDef,
 }
 
+/// A list type view that borrows from a store.
+#[derive(Clone, Copy)]
+pub struct VListView<'a> {
+    pub store: &'a VShapeStore,
+    pub def: &'a VListDef,
+}
+
 /// Enum type view for verified shapes.
 #[derive(Clone, Copy)]
 pub struct VEnumView<'a> {
@@ -458,6 +475,7 @@ impl<'a> IShape for VShapeView<'a, VShapeStore> {
     type Field = VFieldView<'a>;
     type EnumType = VEnumView<'a>;
     type PointerType = VPointerView<'a>;
+    type ListType = VListView<'a>;
 
     #[inline]
     fn layout(&self) -> Option<Layout> {
@@ -553,6 +571,17 @@ impl<'a> IShape for VShapeView<'a, VShapeStore> {
             _ => None,
         }
     }
+
+    #[inline]
+    fn as_list(&self) -> Option<Self::ListType> {
+        match &self.store.get_def(self.handle).def {
+            VDef::List(def) => Some(VListView {
+                store: self.store,
+                def,
+            }),
+            _ => None,
+        }
+    }
 }
 
 impl<'a> IExecShape<*mut u8> for VShapeView<'a, VShapeStore> {
@@ -619,6 +648,15 @@ impl<'a> IPointerType for VPointerView<'a> {
     #[inline]
     fn is_known_box(&self) -> bool {
         self.def.known_box
+    }
+}
+
+impl<'a> IListType for VListView<'a> {
+    type Shape = VShapeView<'a, VShapeStore>;
+
+    #[inline]
+    fn element(&self) -> Self::Shape {
+        self.store.view(self.def.elem_handle)
     }
 }
 
@@ -822,6 +860,17 @@ impl VShapeDef {
             type_ops,
             def: VDef::Option(VOptionDef {
                 some_handle: payload,
+            }),
+        }
+    }
+
+    /// Create a list-like shape with element `T`.
+    pub fn list_of(element: VShapeHandle, layout: VLayout, type_ops: VTypeOps) -> Self {
+        Self {
+            layout,
+            type_ops,
+            def: VDef::List(VListDef {
+                elem_handle: element,
             }),
         }
     }

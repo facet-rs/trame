@@ -205,6 +205,28 @@ impl IListType for ListDef {
     fn element(&self) -> Self::Shape {
         self.t()
     }
+
+    #[inline]
+    unsafe fn init_in_place_with_capacity(&self, dst: *mut u8, capacity: usize) -> bool {
+        let Some(init) = ListDef::init_in_place_with_capacity(self) else {
+            return false;
+        };
+        unsafe {
+            init(PtrUninit::new(dst), capacity);
+        }
+        true
+    }
+
+    #[inline]
+    unsafe fn push_element(&self, list_ptr: *mut u8, elem_ptr: *mut u8) -> bool {
+        let Some(push) = ListDef::push(self) else {
+            return false;
+        };
+        unsafe {
+            push(PtrMut::new(list_ptr), PtrMut::new(elem_ptr).into());
+        }
+        true
+    }
 }
 
 impl IPointerType for PointerDef {
@@ -487,6 +509,35 @@ impl<S: IExecShape<*mut u8>> IHeap<S> for LHeap {
             }
         }
         true
+    }
+
+    unsafe fn list_init_in_place_with_capacity(
+        &mut self,
+        dst: *mut u8,
+        list_shape: S,
+        capacity: usize,
+    ) -> bool {
+        let Some(list) = list_shape.as_list() else {
+            return false;
+        };
+        unsafe { list.init_in_place_with_capacity(dst, capacity) }
+    }
+
+    unsafe fn list_push_element(
+        &mut self,
+        list_ptr: *mut u8,
+        list_shape: S,
+        elem_ptr: *mut u8,
+        elem_shape: S,
+    ) -> bool {
+        let Some(list) = list_shape.as_list() else {
+            return false;
+        };
+        let elem_matches = list.element() == elem_shape;
+        if !elem_matches {
+            return false;
+        }
+        unsafe { list.push_element(list_ptr, elem_ptr) }
     }
 
     #[cfg(creusot)]

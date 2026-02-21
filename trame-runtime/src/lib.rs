@@ -167,6 +167,27 @@ pub trait IListType: Copy {
 
     /// Shape of list elements.
     fn element(&self) -> Self::Shape;
+
+    /// Initialize the list in place with a capacity hint.
+    ///
+    /// Returns `false` when unsupported.
+    ///
+    /// # Safety
+    /// `dst` must point at storage for this list type.
+    unsafe fn init_in_place_with_capacity(&self, _dst: *mut u8, _capacity: usize) -> bool {
+        false
+    }
+
+    /// Push one element into this list.
+    ///
+    /// Returns `false` when unsupported.
+    ///
+    /// # Safety
+    /// `list_ptr` must point to an initialized list and `elem_ptr` to an
+    /// initialized element matching `element()`.
+    unsafe fn push_element(&self, _list_ptr: *mut u8, _elem_ptr: *mut u8) -> bool {
+        false
+    }
 }
 
 pub trait IShape: Copy + PartialEq + IShapeExtra {
@@ -540,6 +561,35 @@ pub trait IHeap<S: IShape> {
         dst: Self::Ptr,
         enum_shape: S,
         variant_idx: usize,
+    ) -> bool;
+
+    /// Initialize a list value in place, optionally with a capacity hint.
+    ///
+    /// Returns `false` if this shape is not a list, or if list initialization
+    /// is unsupported for this runtime/shape combination.
+    ///
+    /// # Safety
+    /// The caller must ensure `dst` points at storage for `list_shape`.
+    unsafe fn list_init_in_place_with_capacity(
+        &mut self,
+        dst: Self::Ptr,
+        list_shape: S,
+        capacity: usize,
+    ) -> bool;
+
+    /// Push one initialized element into a list value.
+    ///
+    /// Returns `false` if shapes are incompatible, or if list push is unsupported.
+    ///
+    /// # Safety
+    /// The caller must ensure `list_ptr` points at an initialized list of shape
+    /// `list_shape`, and `elem_ptr` points at an initialized value of `elem_shape`.
+    unsafe fn list_push_element(
+        &mut self,
+        list_ptr: Self::Ptr,
+        list_shape: S,
+        elem_ptr: Self::Ptr,
+        elem_shape: S,
     ) -> bool;
 
     /// Creusot predicate for the state of an allocation.

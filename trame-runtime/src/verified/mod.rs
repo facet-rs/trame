@@ -1851,6 +1851,95 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
         }
         true
     }
+
+    unsafe fn list_init_in_place_with_capacity(
+        &mut self,
+        dst: VPtr,
+        list_shape: S,
+        _capacity: usize,
+    ) -> bool {
+        if list_shape.as_list().is_none() {
+            return false;
+        }
+        let Some(layout) = list_shape.layout() else {
+            return false;
+        };
+        let len = layout.size();
+        if len == 0 {
+            return true;
+        }
+
+        let alloc_id = dst.alloc_id();
+        if dst.offset_bytes() + len > dst.alloc_size() {
+            self.print_history(alloc_id);
+            panic!("list_init_in_place_with_capacity: out of bounds");
+        }
+
+        self.record_op(
+            alloc_id,
+            HeapOpKind::DefaultInPlace,
+            Some(Range::new(dst.offset, dst.offset + len as u32)),
+        );
+
+        let (tracker, _) = self.get_tracker_mut(alloc_id);
+        if let Err(e) = tracker.mark_init(dst.offset, dst.offset + len as u32) {
+            self.print_history(alloc_id);
+            panic!(
+                "list_init_in_place_with_capacity: destination already initialized: {:?}",
+                e
+            );
+        }
+        true
+    }
+
+    unsafe fn list_push_element(
+        &mut self,
+        list_ptr: VPtr,
+        list_shape: S,
+        elem_ptr: VPtr,
+        elem_shape: S,
+    ) -> bool {
+        let Some(list) = list_shape.as_list() else {
+            return false;
+        };
+        if list.element() != elem_shape {
+            return false;
+        }
+
+        let Some(list_layout) = list_shape.layout() else {
+            return false;
+        };
+        let list_len = list_layout.size();
+        if list_len > 0 {
+            if list_ptr.offset_bytes() + list_len > list_ptr.alloc_size() {
+                self.print_history(list_ptr.alloc_id());
+                panic!("list_push_element: list out of bounds");
+            }
+            let (tracker, _) = self.get_tracker(list_ptr.alloc_id());
+            if !tracker.is_init(list_ptr.offset, list_ptr.offset + list_len as u32) {
+                return false;
+            }
+        }
+
+        let Some(elem_layout) = elem_shape.layout() else {
+            return false;
+        };
+        let elem_len = elem_layout.size();
+        if elem_len > 0 {
+            if elem_ptr.offset_bytes() + elem_len > elem_ptr.alloc_size() {
+                self.print_history(elem_ptr.alloc_id());
+                panic!("list_push_element: element out of bounds");
+            }
+            let (tracker, stored_shape) = self.get_tracker(elem_ptr.alloc_id());
+            if !Self::matches_subshape(*stored_shape, elem_ptr.offset_bytes(), elem_shape) {
+                return false;
+            }
+            if !tracker.is_init(elem_ptr.offset, elem_ptr.offset + elem_len as u32) {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 // ==================================================================

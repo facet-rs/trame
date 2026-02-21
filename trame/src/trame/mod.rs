@@ -393,6 +393,7 @@ where
             let node = self.arena.get(target_idx);
             (node.kind.clone(), node.shape, node.data)
         };
+        self.mark_lineage_staged(target_idx);
 
         match field_idx {
             None => match &target_kind {
@@ -1234,22 +1235,20 @@ where
             return Err(TrameError::NotAStruct);
         }
         if let Some(child) = child_idx {
-            let state = self.arena.get(child).state;
             if is_deferred_stage {
                 let flags = self.arena.get(child).flags.with_deferred_root();
                 self.arena.get_mut(child).flags = flags;
             }
+            self.mark_parent_incomplete_for_stage_reentry(target_idx, field_idx, is_pointer_parent);
 
+            let state = self.arena.get(child).state;
             if state == NodeState::Staged || self.arena.get(child).flags.deferred_root() {
                 self.current = child;
                 return Ok(());
             }
+
             self.cleanup_node(child);
-            {
-                let child_node = self.arena.get_mut(child);
-                child_node.kind = Node::<Heap<R>, Shape<R>>::kind_for_shape(child_node.shape);
-                child_node.state = NodeState::Staged;
-            }
+            self.recycle_child_for_stage_reuse(child);
             self.current = child;
             return Ok(());
         }
@@ -1297,6 +1296,61 @@ where
         }
         self.current = child_idx;
         Ok(())
+    }
+
+    /// Stage re-entry must make all parent-level completion state incomplete.
+    fn mark_parent_incomplete_for_stage_reentry(
+        &mut self,
+        target_idx: NodeIdx<R>,
+        field_idx: usize,
+        is_pointer_parent: bool,
+    ) {
+        if is_pointer_parent {
+            self.arena
+                .get_mut(target_idx)
+                .mark_field_not_started(field_idx);
+        }
+
+        if matches!(
+            self.arena.get(target_idx).kind,
+            NodeKind::EnumPayload { .. }
+        ) {
+            self.mark_enum_lineage_uninitialized(target_idx);
+        }
+    }
+
+    /// Reinitialize a cleaned child node so it can be staged again.
+    ///
+    /// Precondition: `cleanup_node(child_idx)` has already been called.
+    fn recycle_child_for_stage_reuse(&mut self, child_idx: NodeIdx<R>) {
+        let (child_shape, child_flags) = {
+            let child_node = self.arena.get(child_idx);
+            (child_node.shape, child_node.flags)
+        };
+        let refreshed_data = if child_flags.owns_allocation() {
+            Some(unsafe { self.heap.alloc(child_shape) })
+        } else {
+            None
+        };
+        let child_node = self.arena.get_mut(child_idx);
+        if let Some(data) = refreshed_data {
+            child_node.data = data;
+        }
+        child_node.kind = Node::<Heap<R>, Shape<R>>::kind_for_shape(child_node.shape);
+        child_node.state = NodeState::Staged;
+        child_node.flags = child_node.flags.without_cleaned();
+    }
+
+    /// Mark `idx` and all ancestors as staged.
+    fn mark_lineage_staged(&mut self, mut idx: NodeIdx<R>) {
+        while idx.is_valid() {
+            let parent = {
+                let node = self.arena.get_mut(idx);
+                node.state = NodeState::Staged;
+                node.parent
+            };
+            idx = parent;
+        }
     }
 
     fn mark_enum_lineage_uninitialized(&mut self, payload_idx: NodeIdx<R>) {
@@ -1743,6 +1797,14 @@ where
         // t[impl state.machine.cleanup-no-double-free]
         if !idx.is_valid() {
             return;
+        }
+
+        {
+            let flags = self.arena.get(idx).flags;
+            if flags.cleaned() {
+                return;
+            }
+            self.arena.get_mut(idx).flags = flags.with_cleaned();
         }
 
         let (node_state, node_kind, node_data, node_shape, node_flags) = {

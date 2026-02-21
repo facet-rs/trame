@@ -938,6 +938,379 @@ fn box_live_imm_whole_value() {
     assert_eq!(*value, 9);
 }
 
+#[derive(Clone, Debug, PartialEq, facet::Facet)]
+struct LiveListItem {
+    a: u32,
+    b: u32,
+}
+
+#[test]
+fn list_live_append_stage_end_builds() {
+    let mut trame = Trame::<LRuntime>::alloc::<Vec<u32>>().unwrap();
+
+    let mut v0 = 11_u32;
+    let mut v1 = 22_u32;
+
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    assert_eq!(trame.depth(), 1);
+    trame
+        .apply(Op::Set {
+            dst: Path::empty(),
+            src: Source::from_ref(&mut v0),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+    assert_eq!(trame.depth(), 0);
+
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    assert_eq!(trame.depth(), 1);
+    trame
+        .apply(Op::Set {
+            dst: Path::empty(),
+            src: Source::from_ref(&mut v1),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+
+    assert_eq!(trame.depth(), 0);
+    assert!(trame.is_complete());
+
+    let hv = trame.build().unwrap();
+    let out = hv.materialize::<Vec<u32>>().unwrap();
+    assert_eq!(out, vec![11, 22]);
+}
+
+#[test]
+fn list_live_append_struct_elements_builds() {
+    let mut trame = Trame::<LRuntime>::alloc::<Vec<LiveListItem>>().unwrap();
+    let mut a0 = 1_u32;
+    let mut b0 = 2_u32;
+    let mut a1 = 3_u32;
+    let mut b1 = 4_u32;
+
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::from_ref(&mut a0),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(1),
+            src: Source::from_ref(&mut b0),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::from_ref(&mut a1),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(1),
+            src: Source::from_ref(&mut b1),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+
+    let hv = trame.build().unwrap();
+    let out = hv.materialize::<Vec<LiveListItem>>().unwrap();
+    assert_eq!(
+        out,
+        vec![LiveListItem { a: 1, b: 2 }, LiveListItem { a: 3, b: 4 }]
+    );
+}
+
+#[test]
+fn list_live_append_nested_lists_builds() {
+    let mut trame = Trame::<LRuntime>::alloc::<Vec<Vec<u32>>>().unwrap();
+    let mut v0 = 10_u32;
+    let mut v1 = 20_u32;
+    let mut v2 = 30_u32;
+
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::empty(),
+            src: Source::from_ref(&mut v0),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::empty(),
+            src: Source::from_ref(&mut v1),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+    trame.apply(Op::End).unwrap();
+
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::empty(),
+            src: Source::from_ref(&mut v2),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+    trame.apply(Op::End).unwrap();
+
+    let hv = trame.build().unwrap();
+    let out = hv.materialize::<Vec<Vec<u32>>>().unwrap();
+    assert_eq!(out, vec![vec![10, 20], vec![30]]);
+}
+
+#[test]
+fn list_live_empty_builds() {
+    let trame = Trame::<LRuntime>::alloc::<Vec<u32>>().unwrap();
+    assert!(trame.is_complete());
+    let hv = trame.build().unwrap();
+    let out = hv.materialize::<Vec<u32>>().unwrap();
+    assert!(out.is_empty());
+}
+
+#[test]
+fn list_live_deferred_reenter_element_by_index() {
+    let mut trame = Trame::<LRuntime>::alloc::<Vec<u32>>().unwrap();
+    let mut v0 = 7_u32;
+    let mut v1 = 9_u32;
+
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage_deferred(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::empty(),
+            src: Source::from_ref(&mut v0),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+    assert_eq!(trame.depth(), 0);
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    assert_eq!(trame.depth(), 1);
+    trame
+        .apply(Op::Set {
+            dst: Path::empty(),
+            src: Source::from_ref(&mut v1),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+
+    assert_eq!(trame.depth(), 0);
+    assert!(trame.is_complete());
+    let hv = trame.build().unwrap();
+    let out = hv.materialize::<Vec<u32>>().unwrap();
+    assert_eq!(out, vec![9]);
+}
+
+#[test]
+fn list_verified_append_stage_end_builds() {
+    let _g = FreshStore::new();
+    let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
+    let list_h = vshape_register(VShapeDef::list_of(
+        u32_h,
+        Layout::new::<Vec<u32>>(),
+        VTypeOps::pod(),
+    ));
+    let list_shape = vshape_view(list_h);
+    let u32_shape = vshape_view(u32_h);
+
+    let mut heap = VRuntime::heap();
+    let src = unsafe { heap.alloc(u32_shape) };
+    unsafe { heap.default_in_place(src, u32_shape) };
+
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, list_shape) };
+
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::empty(),
+            src: unsafe { Source::from_vptr(src, u32_shape) },
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+
+    assert!(trame.is_complete());
+    let _ = trame.build().unwrap();
+}
+
+#[test]
+fn list_verified_empty_builds() {
+    let _g = FreshStore::new();
+    let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
+    let list_h = vshape_register(VShapeDef::list_of(
+        u32_h,
+        Layout::new::<Vec<u32>>(),
+        VTypeOps::pod(),
+    ));
+    let list_shape = vshape_view(list_h);
+
+    let heap = VRuntime::heap();
+    let trame = unsafe { Trame::<VRuntime>::new(heap, list_shape) };
+
+    assert!(trame.is_complete());
+    let _ = trame.build().unwrap();
+}
+
+#[test]
+fn list_verified_append_struct_element_builds() {
+    let _g = FreshStore::new();
+    let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
+    let pair_h = vshape_register(VShapeDef::struct_with_fields(
+        vshape_store(),
+        &[(0, u32_h), (4, u32_h)],
+    ));
+    let list_h = vshape_register(VShapeDef::list_of(
+        pair_h,
+        Layout::new::<Vec<(u32, u32)>>(),
+        VTypeOps::pod(),
+    ));
+    let list_shape = vshape_view(list_h);
+    let u32_shape = vshape_view(u32_h);
+
+    let mut heap = VRuntime::heap();
+    let src0 = unsafe { heap.alloc(u32_shape) };
+    let src1 = unsafe { heap.alloc(u32_shape) };
+    unsafe { heap.default_in_place(src0, u32_shape) };
+    unsafe { heap.default_in_place(src1, u32_shape) };
+
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, list_shape) };
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: unsafe { Source::from_vptr(src0, u32_shape) },
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(1),
+            src: unsafe { Source::from_vptr(src1, u32_shape) },
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+    assert!(trame.is_complete());
+    let _ = trame.build().unwrap();
+}
+
+#[test]
+fn list_verified_append_nested_list_builds() {
+    let _g = FreshStore::new();
+    let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
+    let inner_h = vshape_register(VShapeDef::list_of(
+        u32_h,
+        Layout::new::<Vec<u32>>(),
+        VTypeOps::pod(),
+    ));
+    let outer_h = vshape_register(VShapeDef::list_of(
+        inner_h,
+        Layout::new::<Vec<Vec<u32>>>(),
+        VTypeOps::pod(),
+    ));
+    let outer_shape = vshape_view(outer_h);
+    let u32_shape = vshape_view(u32_h);
+
+    let mut heap = VRuntime::heap();
+    let src = unsafe { heap.alloc(u32_shape) };
+    unsafe { heap.default_in_place(src, u32_shape) };
+
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, outer_shape) };
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::empty(),
+            src: unsafe { Source::from_vptr(src, u32_shape) },
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+    trame.apply(Op::End).unwrap();
+    assert!(trame.is_complete());
+    let _ = trame.build().unwrap();
+}
+
 #[test]
 fn box_live_stage_end_drop_droppable_pointee() {
     let mut trame = Trame::<LRuntime>::alloc::<Box<BTreeSet<String>>>().unwrap();

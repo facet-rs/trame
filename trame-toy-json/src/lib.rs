@@ -58,6 +58,7 @@ impl From<TrameError> for Error {
 #[derive(Debug, Clone, PartialEq)]
 enum JsonValue {
     Object(Vec<(String, JsonValue)>),
+    Array(Vec<JsonValue>),
     String(String),
     Number(String),
     Bool(bool),
@@ -97,6 +98,7 @@ impl<'a> Parser<'a> {
 
         match b {
             b'{' => self.parse_object(),
+            b'[' => self.parse_array(),
             b'"' => self.parse_string().map(JsonValue::String),
             b'-' | b'0'..=b'9' => self.parse_number().map(JsonValue::Number),
             b't' => {
@@ -150,6 +152,35 @@ impl<'a> Parser<'a> {
         }
 
         Ok(JsonValue::Object(entries))
+    }
+
+    fn parse_array(&mut self) -> Result<JsonValue, Error> {
+        self.pos += 1; // '['
+        self.skip_ws();
+        let mut values = Vec::new();
+
+        if self.peek_byte() == Some(b']') {
+            self.pos += 1;
+            return Ok(JsonValue::Array(values));
+        }
+
+        loop {
+            self.skip_ws();
+            values.push(self.parse_value()?);
+            self.skip_ws();
+            match self.peek_byte() {
+                Some(b',') => {
+                    self.pos += 1;
+                }
+                Some(b']') => {
+                    self.pos += 1;
+                    break;
+                }
+                _ => return Err(Error::InvalidLiteral { offset: self.pos }),
+            }
+        }
+
+        Ok(JsonValue::Array(values))
     }
 
     fn parse_string(&mut self) -> Result<String, Error> {
@@ -383,6 +414,33 @@ fn apply_value(
 ) -> Result<(), Error> {
     if let Def::Option(option_def) = &shape.def {
         return apply_option(trame, path, shape, option_def, value, offset);
+    }
+    if let Def::List(list_def) = shape.def {
+        let JsonValue::Array(items) = value else {
+            return Err(Error::TypeMismatch {
+                expected: "array",
+                offset,
+            });
+        };
+        let staged = !path.is_empty();
+        if staged {
+            trame.apply(Op::Set {
+                dst: path.clone(),
+                src: Source::stage(Some(items.len())),
+            })?;
+        }
+        for item in items {
+            trame.apply(Op::Set {
+                dst: Path::append(),
+                src: Source::stage(None),
+            })?;
+            apply_value(trame, Path::empty(), list_def.t(), item, offset)?;
+            trame.apply(Op::end())?;
+        }
+        if staged {
+            trame.apply(Op::end())?;
+        }
+        return Ok(());
     }
 
     match (&shape.ty, value) {
@@ -651,7 +709,7 @@ fn apply_scalar(
             })?;
             return Ok(());
         }
-        JsonValue::Object(_) => {
+        JsonValue::Object(_) | JsonValue::Array(_) => {
             return Err(Error::TypeMismatch {
                 expected: shape.type_identifier,
                 offset,
@@ -716,6 +774,16 @@ mod tests {
     struct WithOption {
         count: u32,
         maybe: Option<u32>,
+    }
+
+    #[derive(Debug, PartialEq, facet::Facet)]
+    struct WithList {
+        items: Vec<u32>,
+    }
+
+    #[derive(Debug, PartialEq, facet::Facet)]
+    struct WithListOfStructs {
+        items: Vec<Inner>,
     }
 
     #[derive(Debug, PartialEq, facet::Facet)]
@@ -831,5 +899,38 @@ mod tests {
                 },
             }
         );
+    }
+
+    #[test]
+    fn list_field_deserializes() {
+        let value: WithList =
+            from_str(r#"{"items":[1,2,3]}"#).expect("list field should deserialize");
+
+        assert_eq!(
+            value,
+            WithList {
+                items: vec![1, 2, 3],
+            }
+        );
+    }
+
+    #[test]
+    fn list_of_structs_deserializes() {
+        let value: WithListOfStructs = from_str(r#"{"items":[{"ok":true},{"ok":false}]}"#)
+            .expect("list of structs should deserialize");
+
+        assert_eq!(
+            value,
+            WithListOfStructs {
+                items: vec![Inner { ok: true }, Inner { ok: false }],
+            }
+        );
+    }
+
+    #[test]
+    fn root_nested_lists_deserialize() {
+        let value: Vec<Vec<u32>> =
+            from_str(r#"[[1,2],[3],[]]"#).expect("nested root lists should deserialize");
+        assert_eq!(value, vec![vec![1, 2], vec![3], vec![]]);
     }
 }

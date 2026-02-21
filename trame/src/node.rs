@@ -86,12 +86,14 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
         requires(match self.kind {
             NodeKind::Struct { fields } => field_idx@ < fields.len_logic(),
             NodeKind::EnumPayload { fields, .. } => field_idx@ < fields.len_logic(),
+            NodeKind::List { elements, .. } => field_idx@ < elements.len_logic(),
             NodeKind::Pointer { .. } => true,
             _ => false,
         }),
         ensures(match (^self).kind {
             NodeKind::Struct { fields } => fields.slots@[field_idx@] == FieldSlot::Untracked, // TODO: other fields are unchanged
             NodeKind::EnumPayload { fields, .. } => fields.slots@[field_idx@] == FieldSlot::Untracked, // TODO: other fields are unchanged
+            NodeKind::List { elements, .. } => elements.slots@[field_idx@] == FieldSlot::Untracked,
             NodeKind::Pointer { initialized, .. } => !initialized,
             _ => true,
         })
@@ -100,6 +102,7 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
         match &mut self.kind {
             NodeKind::Struct { fields } => fields.mark_not_started(field_idx),
             NodeKind::EnumPayload { fields, .. } => fields.mark_not_started(field_idx),
+            NodeKind::List { elements, .. } => elements.mark_not_started(field_idx),
             NodeKind::Pointer { initialized, .. } => *initialized = false,
             _ => {}
         }
@@ -109,12 +112,14 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
         requires(match self.kind {
             NodeKind::Struct { fields } => field_idx@ < fields.len_logic(),
             NodeKind::EnumPayload { fields, .. } => field_idx@ < fields.len_logic(),
+            NodeKind::List { elements, .. } => field_idx@ < elements.len_logic(),
             NodeKind::Pointer { .. } => true,
             _ => false,
         }),
         ensures(match (^self).kind {
             NodeKind::Struct { fields } => fields.slots@[field_idx@] == FieldSlot::Complete, // TODO: other fields are unchanged
             NodeKind::EnumPayload { fields, .. } => fields.slots@[field_idx@] == FieldSlot::Complete, // TODO: other fields are unchanged
+            NodeKind::List { elements, .. } => elements.slots@[field_idx@] == FieldSlot::Complete,
             NodeKind::Pointer { initialized, .. } => initialized,
             _ => true,
         })
@@ -123,6 +128,7 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
         match &mut self.kind {
             NodeKind::Struct { fields } => fields.mark_complete(field_idx),
             NodeKind::EnumPayload { fields, .. } => fields.mark_complete(field_idx),
+            NodeKind::List { elements, .. } => elements.mark_complete(field_idx),
             NodeKind::Pointer { initialized, .. } => *initialized = true,
             _ => {}
         }
@@ -257,6 +263,12 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
             NodeKind::Struct {
                 fields: FieldStates::new(st.field_count()),
             }
+        } else if shape.is_list() {
+            NodeKind::List {
+                elements: FieldStates::new(0),
+                initialized: false,
+                closed: false,
+            }
         } else if shape.as_pointer().is_some() {
             NodeKind::Pointer {
                 child: None,
@@ -294,6 +306,12 @@ pub(crate) enum NodeKind<F> {
         child: Option<Idx<F>>,
         initialized: bool,
     },
+    /// List with tracked appended elements.
+    List {
+        elements: FieldStates<F>,
+        initialized: bool,
+        closed: bool,
+    },
     /// Enum root with active variant tracking.
     Enum {
         selected_variant: Option<usize>,
@@ -326,6 +344,15 @@ impl<F> Clone for NodeKind<F> {
             Self::Pointer { child, initialized } => Self::Pointer {
                 child: *child,
                 initialized: *initialized,
+            },
+            Self::List {
+                elements,
+                initialized,
+                closed,
+            } => Self::List {
+                elements: elements.clone(),
+                initialized: *initialized,
+                closed: *closed,
             },
             Self::Enum {
                 selected_variant,

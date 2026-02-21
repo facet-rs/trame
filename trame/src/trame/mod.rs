@@ -15,8 +15,8 @@ use crate::{
     node::{FieldSlot, FieldStates, Node, NodeFlags, NodeKind, NodeState},
     ops::SourceKind,
     runtime::{
-        CopyDesc, IArena, IEnumType, IField, IHeap, IPointerType, IPtr, IRuntime, IShape,
-        IStructType, IVariantType, Idx,
+        CopyDesc, IArena, IEnumType, IField, IHeap, IListType, IPointerType, IPtr, IRuntime,
+        IShape, IStructType, IVariantType, Idx,
     },
 };
 use core::marker::PhantomData;
@@ -112,6 +112,7 @@ where
                             self.heap.is_uninit(node.data, node.shape)
                         },
                     NodeKind::Struct { .. } => true,
+                    NodeKind::List { .. } => true,
                     NodeKind::Enum { .. } => true,
                     NodeKind::EnumVariant { .. } => true,
                     NodeKind::EnumPayload { .. } => true,
@@ -130,6 +131,13 @@ struct FieldMeta<S: IShape> {
     shape: S,
     offset: usize,
     layout: trame_runtime::VLayout,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PathTarget {
+    Direct,
+    Field(usize),
+    Append,
 }
 
 fn layout_size(layout: trame_runtime::VLayout) -> usize {
@@ -323,9 +331,9 @@ where
     fn resolve_path(
         &mut self,
         path: &[PathSegment],
-    ) -> Result<(NodeIdx<R>, Option<usize>), TrameError> {
+    ) -> Result<(NodeIdx<R>, PathTarget), TrameError> {
         if path.is_empty() {
-            return Ok((self.current, None));
+            return Ok((self.current, PathTarget::Direct));
         }
 
         let mut idx = self.current;
@@ -337,7 +345,7 @@ where
         }
 
         if segs.is_empty() {
-            return Ok((idx, None));
+            return Ok((idx, PathTarget::Direct));
         }
 
         if segs.len() != 1 {
@@ -345,10 +353,8 @@ where
         }
 
         match segs[0] {
-            PathSegment::Field(n) => Ok((idx, Some(n as usize))),
-            PathSegment::Append => Err(TrameError::UnsupportedPath {
-                segment: PathSegment::Append,
-            }),
+            PathSegment::Field(n) => Ok((idx, PathTarget::Field(n as usize))),
+            PathSegment::Append => Ok((idx, PathTarget::Append)),
             PathSegment::Root => Err(TrameError::UnsupportedPath {
                 segment: PathSegment::Root,
             }),
@@ -383,7 +389,7 @@ where
     fn apply_set(
         &mut self,
         target_idx: NodeIdx<R>,
-        field_idx: Option<usize>,
+        target: PathTarget,
         src: Source<Ptr<R>, Shape<R>>,
     ) -> Result<(), TrameError>
     where
@@ -395,8 +401,8 @@ where
         };
         self.mark_lineage_staged(target_idx);
 
-        match field_idx {
-            None => match &target_kind {
+        match target {
+            PathTarget::Direct => match &target_kind {
                 NodeKind::Scalar { initialized } => self.apply_set_direct_scalar(
                     target_idx,
                     target_shape,
@@ -432,8 +438,21 @@ where
                     Err(TrameError::NotAStruct)
                 }
                 NodeKind::Struct { .. } => Err(TrameError::NotAStruct),
+                NodeKind::List {
+                    initialized,
+                    elements,
+                    closed,
+                } => self.apply_set_direct_list(
+                    target_idx,
+                    target_shape,
+                    target_data,
+                    *initialized,
+                    elements.clone(),
+                    *closed,
+                    src,
+                ),
             },
-            Some(field_idx) => {
+            PathTarget::Field(field_idx) => {
                 #[cfg(creusot)]
                 assume(snapshot! { false });
                 self.apply_set_field(
@@ -444,6 +463,9 @@ where
                     field_idx,
                     src,
                 )
+            }
+            PathTarget::Append => {
+                self.apply_set_append(target_idx, target_kind, target_shape, target_data, src)
             }
         }
     }
@@ -667,6 +689,150 @@ where
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn apply_set_direct_list(
+        &mut self,
+        target_idx: NodeIdx<R>,
+        shape: Shape<R>,
+        dst: Ptr<R>,
+        was_initialized: bool,
+        elements: FieldStates<Node<Heap<R>, Shape<R>>>,
+        _was_closed: bool,
+        src: Source<Ptr<R>, Shape<R>>,
+    ) -> Result<(), TrameError>
+    where
+        Shape<R>: IShape + PartialEq,
+    {
+        let element_count = elements.len();
+        for i in 0..element_count {
+            #[cfg(creusot)]
+            {
+                elements.prove_idx_in_bounds(i, element_count);
+            }
+            if let Some(child) = elements.get_child(i) {
+                self.cleanup_node(child);
+                if self.current_in_subtree(child) {
+                    self.current = target_idx;
+                }
+            }
+        }
+
+        if was_initialized {
+            unsafe { self.heap.drop_in_place(dst, shape) };
+        }
+        if let NodeKind::List {
+            initialized,
+            elements,
+            closed,
+        } = &mut self.arena.get_mut(target_idx).kind
+        {
+            *initialized = false;
+            *closed = false;
+            *elements = FieldStates::new(0);
+        }
+
+        match src.kind {
+            SourceKind::Imm(imm) => {
+                let src_ptr = imm.ptr;
+                let src_shape = imm.shape;
+                #[cfg(creusot)]
+                let same_shape = shape_eq(src_shape, shape);
+                #[cfg(not(creusot))]
+                let same_shape = src_shape == shape;
+                if !same_shape {
+                    return Err(TrameError::ShapeMismatch);
+                }
+                unsafe { self.heap.memcpy(dst, src_ptr, CopyDesc::value(shape)) };
+            }
+            SourceKind::Default => {
+                let ok = unsafe { self.heap.default_in_place(dst, shape) };
+                if !ok {
+                    return Err(TrameError::DefaultUnavailable);
+                }
+            }
+            SourceKind::Stage(_) | SourceKind::StageDeferred(_) => {
+                return Err(TrameError::UnsupportedSource);
+            }
+        }
+
+        if let NodeKind::List {
+            initialized,
+            elements,
+            closed,
+        } = &mut self.arena.get_mut(target_idx).kind
+        {
+            *initialized = true;
+            *closed = true;
+            *elements = FieldStates::new(0);
+        }
+        Ok(())
+    }
+
+    fn apply_set_append(
+        &mut self,
+        target_idx: NodeIdx<R>,
+        target_kind: NodeKind<Node<Heap<R>, Shape<R>>>,
+        target_shape: Shape<R>,
+        _target_data: Ptr<R>,
+        src: Source<Ptr<R>, Shape<R>>,
+    ) -> Result<(), TrameError>
+    where
+        Shape<R>: IShape + PartialEq,
+    {
+        let (mut elements, closed) = match &target_kind {
+            NodeKind::List {
+                elements, closed, ..
+            } => (elements.clone(), *closed),
+            _ => {
+                return Err(TrameError::UnsupportedPath {
+                    segment: PathSegment::Append,
+                });
+            }
+        };
+
+        let is_deferred_stage = match src.kind {
+            SourceKind::StageDeferred(_) => true,
+            SourceKind::Stage(_) => false,
+            _ => return Err(TrameError::UnsupportedSource),
+        };
+
+        if closed {
+            return Err(TrameError::UnsupportedSource);
+        }
+
+        let list_type = target_shape
+            .as_list()
+            .ok_or(TrameError::UnsupportedSource)?;
+        let element_shape = list_type.element();
+        let child_data = unsafe { self.heap.alloc(element_shape) };
+        let child_node = Node {
+            data: child_data,
+            shape: element_shape,
+            kind: Node::<Heap<R>, Shape<R>>::kind_for_shape(element_shape),
+            state: NodeState::Staged,
+            parent: target_idx,
+            flags: NodeFlags::empty()
+                .with_owns_allocation()
+                .with_deferred_root_if(is_deferred_stage),
+        };
+        let child_idx = self.arena.alloc(child_node);
+
+        elements.slots.push(FieldSlot::Child(child_idx));
+
+        if let NodeKind::List {
+            elements: stored_elements,
+            closed: stored_closed,
+            ..
+        } = &mut self.arena.get_mut(target_idx).kind
+        {
+            *stored_elements = elements;
+            *stored_closed = false;
+        }
+
+        self.current = child_idx;
+        Ok(())
+    }
+
     fn apply_set_field(
         &mut self,
         target_idx: NodeIdx<R>,
@@ -732,63 +898,96 @@ where
             _ => {}
         }
 
-        let (mut child_idx, mut already_init, is_pointer_parent) = match &target_kind {
-            NodeKind::Struct { fields } => {
-                let field_count = fields.len();
-                if field_idx < field_count {
-                    #[cfg(creusot)]
-                    {
-                        prove_field_idx_in_bounds(fields, field_idx)?;
+        let (mut child_idx, mut already_init, is_pointer_parent, is_list_parent) =
+            match &target_kind {
+                NodeKind::Struct { fields } => {
+                    let field_count = fields.len();
+                    if field_idx < field_count {
+                        #[cfg(creusot)]
+                        {
+                            prove_field_idx_in_bounds(fields, field_idx)?;
+                        }
+                        (
+                            fields.get_child(field_idx),
+                            fields.is_init(field_idx),
+                            false,
+                            false,
+                        )
+                    } else {
+                        return Err(TrameError::FieldOutOfBounds {
+                            index: field_idx,
+                            count: field_count,
+                        });
+                    }
+                }
+                NodeKind::Pointer {
+                    child, initialized, ..
+                } => {
+                    if field_idx != 0 {
+                        return Err(TrameError::FieldOutOfBounds {
+                            index: field_idx,
+                            count: 1,
+                        });
+                    }
+                    (*child, *initialized, true, false)
+                }
+                NodeKind::List {
+                    elements,
+                    initialized: _,
+                    closed,
+                } => {
+                    let element_count = elements.len();
+                    if field_idx >= element_count {
+                        return Err(TrameError::FieldOutOfBounds {
+                            index: field_idx,
+                            count: element_count,
+                        });
+                    }
+                    if *closed {
+                        return Err(TrameError::UnsupportedSource);
                     }
                     (
-                        fields.get_child(field_idx),
-                        fields.is_init(field_idx),
+                        elements.get_child(field_idx),
+                        elements.is_init(field_idx),
                         false,
+                        true,
                     )
-                } else {
-                    return Err(TrameError::FieldOutOfBounds {
-                        index: field_idx,
-                        count: field_count,
-                    });
                 }
-            }
-            NodeKind::Pointer {
-                child, initialized, ..
-            } => {
-                if field_idx != 0 {
-                    return Err(TrameError::FieldOutOfBounds {
-                        index: field_idx,
-                        count: 1,
-                    });
-                }
-                (*child, *initialized, true)
-            }
-            NodeKind::EnumPayload { fields, .. } => {
-                let field_count = fields.len();
-                if field_idx < field_count {
-                    #[cfg(creusot)]
-                    {
-                        prove_field_idx_in_bounds(fields, field_idx)?;
+                NodeKind::EnumPayload { fields, .. } => {
+                    let field_count = fields.len();
+                    if field_idx < field_count {
+                        #[cfg(creusot)]
+                        {
+                            prove_field_idx_in_bounds(fields, field_idx)?;
+                        }
+                        (
+                            fields.get_child(field_idx),
+                            fields.is_init(field_idx),
+                            false,
+                            false,
+                        )
+                    } else {
+                        return Err(TrameError::FieldOutOfBounds {
+                            index: field_idx,
+                            count: field_count,
+                        });
                     }
-                    (
-                        fields.get_child(field_idx),
-                        fields.is_init(field_idx),
-                        false,
-                    )
-                } else {
-                    return Err(TrameError::FieldOutOfBounds {
-                        index: field_idx,
-                        count: field_count,
-                    });
                 }
-            }
-            NodeKind::Scalar { .. } => return Err(TrameError::NotAStruct),
-            NodeKind::Enum { .. } | NodeKind::EnumVariant { .. } => {
-                return Err(TrameError::NotAStruct);
-            }
-        };
+                NodeKind::Scalar { .. } => return Err(TrameError::NotAStruct),
+                NodeKind::Enum { .. } | NodeKind::EnumVariant { .. } => {
+                    return Err(TrameError::NotAStruct);
+                }
+            };
 
         if is_pointer_parent
+            && !matches!(
+                &src.kind,
+                SourceKind::Stage(_) | SourceKind::StageDeferred(_)
+            )
+        {
+            return Err(TrameError::UnsupportedSource);
+        }
+        if is_list_parent
             && !matches!(
                 &src.kind,
                 SourceKind::Stage(_) | SourceKind::StageDeferred(_)
@@ -813,6 +1012,9 @@ where
                 assume(snapshot! { size == pointee.size_logic() });
             }
             (pointee, target_data)
+        } else if is_list_parent {
+            let list = target_shape.as_list().ok_or(TrameError::NotAStruct)?;
+            (list.element(), target_data)
         } else {
             #[cfg(creusot)]
             assume(snapshot! { false });
@@ -880,6 +1082,7 @@ where
                 field_shape,
                 dst,
                 is_pointer_parent,
+                is_list_parent,
                 child_idx,
                 false,
             ),
@@ -889,6 +1092,7 @@ where
                 field_shape,
                 dst,
                 is_pointer_parent,
+                is_list_parent,
                 child_idx,
                 true,
             ),
@@ -1205,6 +1409,7 @@ where
                 field_shape,
                 dst,
                 false,
+                false,
                 child_idx,
                 false,
             ),
@@ -1213,6 +1418,7 @@ where
                 field_idx,
                 field_shape,
                 dst,
+                false,
                 false,
                 child_idx,
                 true,
@@ -1228,10 +1434,17 @@ where
         field_shape: Shape<R>,
         dst: Ptr<R>,
         is_pointer_parent: bool,
+        is_list_parent: bool,
         child_idx: Option<NodeIdx<R>>,
         is_deferred_stage: bool,
     ) -> Result<(), TrameError> {
-        if !is_pointer_parent && !field_shape.is_struct() && field_shape.as_pointer().is_none() {
+        if !is_pointer_parent
+            && !is_list_parent
+            && !field_shape.is_struct()
+            && !field_shape.is_list()
+            && field_shape.as_enum().is_none()
+            && field_shape.as_pointer().is_none()
+        {
             return Err(TrameError::NotAStruct);
         }
         if let Some(child) = child_idx {
@@ -1253,7 +1466,7 @@ where
             return Ok(());
         }
 
-        let child_data = if is_pointer_parent {
+        let child_data = if is_pointer_parent || is_list_parent {
             unsafe { self.heap.alloc(field_shape) }
         } else {
             dst
@@ -1265,7 +1478,7 @@ where
             kind: Node::<Heap<R>, Shape<R>>::kind_for_shape(field_shape),
             state: NodeState::Staged,
             parent: target_idx,
-            flags: if is_pointer_parent {
+            flags: if is_pointer_parent || is_list_parent {
                 NodeFlags::empty().with_owns_allocation()
             } else {
                 NodeFlags::empty()
@@ -1288,6 +1501,13 @@ where
                     prove_field_idx_in_bounds(fields, field_idx)?;
                 }
                 fields.set_child(field_idx, child_idx);
+            }
+            NodeKind::List { elements, .. } => {
+                #[cfg(creusot)]
+                {
+                    prove_field_idx_in_bounds(elements, field_idx)?;
+                }
+                elements.set_child(field_idx, child_idx);
             }
             NodeKind::Pointer { child, .. } => {
                 *child = Some(child_idx);
@@ -1424,6 +1644,28 @@ where
                 }
                 true
             }
+            NodeKind::List { elements, .. } => {
+                let element_count = elements.len();
+                let mut i = 0;
+                while i < element_count {
+                    #[cfg(creusot)]
+                    {
+                        elements.prove_idx_in_bounds(i, element_count);
+                    }
+                    match elements.slot(i) {
+                        FieldSlot::Untracked => return false,
+                        FieldSlot::Complete => {}
+                        FieldSlot::Child(child) => {
+                            let child_node = self.arena.get(child);
+                            if child_node.state != NodeState::Sealed {
+                                return false;
+                            }
+                        }
+                    }
+                    i += 1;
+                }
+                true
+            }
             NodeKind::Enum {
                 initialized,
                 variant_child,
@@ -1482,10 +1724,10 @@ where
         match op {
             Op::End => self.end_current_node(),
             Op::Set { dst, src } => {
-                let (target, field_idx) = self.resolve_path(dst.segments())?;
+                let (target, path_target) = self.resolve_path(dst.segments())?;
                 #[cfg(creusot)]
                 assume(snapshot! { false });
-                self.apply_set(target, field_idx, src)
+                self.apply_set(target, path_target, src)
             }
         }
     }
@@ -1537,6 +1779,9 @@ where
             let child_idx = self.current;
             self.fold_pointer_child(parent_idx, child_idx)?;
             return Ok(());
+        }
+        if matches!(self.arena.get(self.current).kind, NodeKind::List { .. }) {
+            self.materialize_list_node(self.current)?;
         }
 
         // Mark this Node as complete.
@@ -1593,6 +1838,78 @@ where
         Ok(())
     }
 
+    fn materialize_list_node(&mut self, idx: NodeIdx<R>) -> Result<(), TrameError> {
+        let (list_data, list_shape, was_initialized, elements) = {
+            let node = self.arena.get(idx);
+            let NodeKind::List {
+                elements,
+                initialized,
+                ..
+            } = &node.kind
+            else {
+                return Ok(());
+            };
+            (node.data, node.shape, *initialized, elements.clone())
+        };
+
+        if !was_initialized {
+            let ok = unsafe {
+                self.heap
+                    .list_init_in_place_with_capacity(list_data, list_shape, elements.len())
+            };
+            if !ok {
+                return Err(TrameError::UnsupportedSource);
+            }
+        }
+
+        let element_count = elements.len();
+        let mut i = 0;
+        while i < element_count {
+            #[cfg(creusot)]
+            {
+                elements.prove_idx_in_bounds(i, element_count);
+            }
+            match elements.slot(i) {
+                FieldSlot::Untracked => return Err(TrameError::Incomplete),
+                FieldSlot::Complete => {}
+                FieldSlot::Child(child_idx) => {
+                    let child_node = self.arena.get(child_idx);
+                    if child_node.state != NodeState::Sealed {
+                        return Err(TrameError::Incomplete);
+                    }
+
+                    let child_data = child_node.data;
+                    let child_shape = child_node.shape;
+                    let child_flags = child_node.flags;
+                    let ok = unsafe {
+                        self.heap
+                            .list_push_element(list_data, list_shape, child_data, child_shape)
+                    };
+                    if !ok {
+                        return Err(TrameError::UnsupportedSource);
+                    }
+                    if child_flags.owns_allocation() {
+                        unsafe { self.heap.dealloc_moved(child_data, child_shape) };
+                    }
+                    self.arena.free(child_idx);
+                }
+            }
+            i += 1;
+        }
+
+        if let NodeKind::List {
+            initialized,
+            closed,
+            elements,
+        } = &mut self.arena.get_mut(idx).kind
+        {
+            *initialized = true;
+            *closed = true;
+            *elements = FieldStates::new(0);
+        }
+        Ok(())
+    }
+
     fn finalize_subtree(&mut self, idx: NodeIdx<R>) -> Result<(), TrameError> {
         // t[impl state.init.byte-tracking]
         // t[impl state.machine.strict-end]
@@ -1626,6 +1943,30 @@ where
                     }
                     i += 1;
                 }
+                self.arena.get_mut(idx).state = NodeState::Sealed;
+                Ok(())
+            }
+            NodeKind::List { elements, .. } => {
+                let element_count = elements.len();
+                let mut i = 0;
+                while i < element_count {
+                    #[cfg(creusot)]
+                    {
+                        elements.prove_idx_in_bounds(i, element_count);
+                    }
+                    match elements.slot(i) {
+                        FieldSlot::Untracked => return Err(TrameError::Incomplete),
+                        FieldSlot::Complete => {}
+                        FieldSlot::Child(child_idx) => {
+                            self.finalize_subtree(child_idx)?;
+                            if self.arena.get(child_idx).state != NodeState::Sealed {
+                                return Err(TrameError::Incomplete);
+                            }
+                        }
+                    }
+                    i += 1;
+                }
+                self.materialize_list_node(idx)?;
                 self.arena.get_mut(idx).state = NodeState::Sealed;
                 Ok(())
             }
@@ -1821,7 +2162,7 @@ where
         if node_state == NodeState::Sealed
             && !matches!(
                 node_kind,
-                NodeKind::EnumVariant { .. } | NodeKind::EnumPayload { .. }
+                NodeKind::EnumVariant { .. } | NodeKind::EnumPayload { .. } | NodeKind::List { .. }
             )
         {
             #[cfg(creusot)]
@@ -1843,6 +2184,20 @@ where
                             fields.prove_idx_in_bounds(i, field_count);
                         }
                         if let Some(child_idx) = fields.get_child(i) {
+                            children.push(child_idx);
+                        }
+                        i += 1;
+                    }
+                }
+                NodeKind::List { elements, .. } => {
+                    let element_count = elements.len();
+                    let mut i = 0;
+                    while i < element_count {
+                        #[cfg(creusot)]
+                        {
+                            elements.prove_idx_in_bounds(i, element_count);
+                        }
+                        if let Some(child_idx) = elements.get_child(i) {
                             children.push(child_idx);
                         }
                         i += 1;
@@ -1933,6 +2288,15 @@ where
                             }
                         }
                         i += 1;
+                    }
+                }
+                NodeKind::List {
+                    initialized: true, ..
+                } => {
+                    #[cfg(creusot)]
+                    assume(snapshot! {self.heap.is_init(node_data, node_shape)});
+                    unsafe {
+                        self.heap.drop_in_place(node_data, node_shape);
                     }
                 }
                 NodeKind::Pointer {

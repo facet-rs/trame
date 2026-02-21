@@ -14,6 +14,7 @@ pub enum FuzzScenario {
     NestedStruct,
     Pointer,
     Option,
+    List,
 }
 
 #[derive(Clone, Copy, Arbitrary)]
@@ -142,6 +143,18 @@ fn build_scenario_shape(scenario: FuzzScenario) -> VShapeView<'static, VShapeSto
             ));
             vshape_view(option)
         }
+        FuzzScenario::List => {
+            let elem = vshape_register(VShapeDef::scalar_with_ops(
+                Layout::new::<usize>(),
+                VTypeOps::new(false, drop_noop, Some(default_magic)),
+            ));
+            let list = vshape_register(VShapeDef::list_of(
+                elem,
+                Layout::new::<Vec<usize>>(),
+                VTypeOps::pod(),
+            ));
+            vshape_view(list)
+        }
     }
 }
 
@@ -203,7 +216,5 @@ fn run_fuzz(input: FuzzInput) {
         }
     }
 
-    if trame.is_complete() {
-        let _ = trame.build();
-    }
+    let _ = trame.build();
 }

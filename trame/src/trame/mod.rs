@@ -763,18 +763,16 @@ where
         target_idx: NodeIdx<R>,
         target_kind: NodeKind<Node<Heap<R>, Shape<R>>>,
         target_shape: Shape<R>,
-        target_data: Ptr<R>,
+        _target_data: Ptr<R>,
         src: Source<Ptr<R>, Shape<R>>,
     ) -> Result<(), TrameError>
     where
         Shape<R>: IShape + PartialEq,
     {
-        let (mut elements, mut initialized, closed) = match &target_kind {
+        let (mut elements, closed) = match &target_kind {
             NodeKind::List {
-                elements,
-                initialized,
-                closed,
-            } => (elements.clone(), *initialized, *closed),
+                elements, closed, ..
+            } => (elements.clone(), *closed),
             _ => {
                 return Err(TrameError::UnsupportedPath {
                     segment: PathSegment::Append,
@@ -787,24 +785,9 @@ where
             SourceKind::Stage(_) => false,
             _ => return Err(TrameError::UnsupportedSource),
         };
-        let capacity = match src.kind {
-            SourceKind::Stage(cap) | SourceKind::StageDeferred(cap) => cap.unwrap_or(0),
-            _ => 0,
-        };
 
         if closed {
             return Err(TrameError::UnsupportedSource);
-        }
-
-        if !initialized {
-            let ok = unsafe {
-                self.heap
-                    .list_init_in_place_with_capacity(target_data, target_shape, capacity)
-            };
-            if !ok {
-                return Err(TrameError::UnsupportedSource);
-            }
-            initialized = true;
         }
 
         let list_type = target_shape
@@ -828,12 +811,11 @@ where
 
         if let NodeKind::List {
             elements: stored_elements,
-            initialized: stored_initialized,
             closed: stored_closed,
+            ..
         } = &mut self.arena.get_mut(target_idx).kind
         {
             *stored_elements = elements;
-            *stored_initialized = initialized;
             *stored_closed = false;
         }
 
@@ -1650,14 +1632,7 @@ where
                 }
                 true
             }
-            NodeKind::List {
-                elements,
-                initialized,
-                ..
-            } => {
-                if !*initialized {
-                    return false;
-                }
+            NodeKind::List { elements, .. } => {
                 let element_count = elements.len();
                 let mut i = 0;
                 while i < element_count {
@@ -1793,11 +1768,8 @@ where
             self.fold_pointer_child(parent_idx, child_idx)?;
             return Ok(());
         }
-
-        if let Some(slot_idx) = self.find_list_child_slot(parent_idx, self.current) {
-            let child_idx = self.current;
-            self.fold_list_child(parent_idx, child_idx, slot_idx)?;
-            return Ok(());
+        if matches!(self.arena.get(self.current).kind, NodeKind::List { .. }) {
+            self.materialize_list_node(self.current)?;
         }
 
         // Mark this Node as complete.
@@ -1854,68 +1826,74 @@ where
         Ok(())
     }
 
-    #[allow(clippy::manual_find)]
-    fn find_list_child_slot(&self, parent_idx: NodeIdx<R>, child_idx: NodeIdx<R>) -> Option<usize> {
-        let NodeKind::List { elements, .. } = &self.arena.get(parent_idx).kind else {
-            return None;
+    fn materialize_list_node(&mut self, idx: NodeIdx<R>) -> Result<(), TrameError> {
+        let (list_data, list_shape, was_initialized, elements) = {
+            let node = self.arena.get(idx);
+            let NodeKind::List {
+                elements,
+                initialized,
+                ..
+            } = &node.kind
+            else {
+                return Ok(());
+            };
+            (node.data, node.shape, *initialized, elements.clone())
         };
+
+        if !was_initialized {
+            let ok = unsafe {
+                self.heap
+                    .list_init_in_place_with_capacity(list_data, list_shape, elements.len())
+            };
+            if !ok {
+                return Err(TrameError::UnsupportedSource);
+            }
+        }
+
         let element_count = elements.len();
-        for i in 0..element_count {
+        let mut i = 0;
+        while i < element_count {
             #[cfg(creusot)]
             {
                 elements.prove_idx_in_bounds(i, element_count);
             }
-            if elements
-                .get_child(i)
-                .is_some_and(|slot_child| slot_child.same(child_idx))
-            {
-                return Some(i);
+            match elements.slot(i) {
+                FieldSlot::Untracked => return Err(TrameError::Incomplete),
+                FieldSlot::Complete => {}
+                FieldSlot::Child(child_idx) => {
+                    let child_node = self.arena.get(child_idx);
+                    if child_node.state != NodeState::Sealed {
+                        return Err(TrameError::Incomplete);
+                    }
+
+                    let child_data = child_node.data;
+                    let child_shape = child_node.shape;
+                    let child_flags = child_node.flags;
+                    let ok = unsafe {
+                        self.heap
+                            .list_push_element(list_data, list_shape, child_data, child_shape)
+                    };
+                    if !ok {
+                        return Err(TrameError::UnsupportedSource);
+                    }
+                    if child_flags.owns_allocation() {
+                        unsafe { self.heap.dealloc_moved(child_data, child_shape) };
+                    }
+                    self.arena.free(child_idx);
+                }
             }
-        }
-        None
-    }
-
-    fn fold_list_child(
-        &mut self,
-        parent_idx: NodeIdx<R>,
-        child_idx: NodeIdx<R>,
-        slot_idx: usize,
-    ) -> Result<(), TrameError> {
-        let (list_data, list_shape, child_data, child_shape, child_flags) = {
-            let parent = self.arena.get(parent_idx);
-            let child = self.arena.get(child_idx);
-            (
-                parent.data,
-                parent.shape,
-                child.data,
-                child.shape,
-                child.flags,
-            )
-        };
-
-        let ok = unsafe {
-            self.heap
-                .list_push_element(list_data, list_shape, child_data, child_shape)
-        };
-        if !ok {
-            return Err(TrameError::UnsupportedSource);
+            i += 1;
         }
 
-        if child_flags.owns_allocation() {
-            unsafe { self.heap.dealloc_moved(child_data, child_shape) };
-        }
-
-        if let NodeKind::List { elements, .. } = &mut self.arena.get_mut(parent_idx).kind {
-            #[cfg(creusot)]
-            {
-                prove_field_idx_in_bounds(elements, slot_idx)?;
-            }
-            elements.mark_complete(slot_idx);
-        }
-
-        self.arena.free(child_idx);
-        if self.current.same(child_idx) {
-            self.current = parent_idx;
+        if let NodeKind::List {
+            initialized,
+            closed,
+            elements,
+        } = &mut self.arena.get_mut(idx).kind
+        {
+            *initialized = true;
+            *closed = true;
+            *elements = FieldStates::new(0);
         }
         Ok(())
     }
@@ -1956,14 +1934,7 @@ where
                 self.arena.get_mut(idx).state = NodeState::Sealed;
                 Ok(())
             }
-            NodeKind::List {
-                elements,
-                initialized,
-                ..
-            } => {
-                if !initialized {
-                    return Err(TrameError::Incomplete);
-                }
+            NodeKind::List { elements, .. } => {
                 let element_count = elements.len();
                 let mut i = 0;
                 while i < element_count {
@@ -1979,11 +1950,11 @@ where
                             if self.arena.get(child_idx).state != NodeState::Sealed {
                                 return Err(TrameError::Incomplete);
                             }
-                            self.fold_list_child(idx, child_idx, i)?;
                         }
                     }
                     i += 1;
                 }
+                self.materialize_list_node(idx)?;
                 self.arena.get_mut(idx).state = NodeState::Sealed;
                 Ok(())
             }

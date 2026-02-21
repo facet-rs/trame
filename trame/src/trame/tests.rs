@@ -985,6 +985,15 @@ fn list_live_append_stage_end_builds() {
 }
 
 #[test]
+fn list_live_empty_builds() {
+    let trame = Trame::<LRuntime>::alloc::<Vec<u32>>().unwrap();
+    assert!(trame.is_complete());
+    let hv = trame.build().unwrap();
+    let out = hv.materialize::<Vec<u32>>().unwrap();
+    assert!(out.is_empty());
+}
+
+#[test]
 fn list_live_deferred_reenter_element_by_index() {
     let mut trame = Trame::<LRuntime>::alloc::<Vec<u32>>().unwrap();
     let mut v0 = 7_u32;
@@ -1058,6 +1067,24 @@ fn list_verified_append_stage_end_builds() {
         })
         .unwrap();
     trame.apply(Op::End).unwrap();
+
+    assert!(trame.is_complete());
+    let _ = trame.build().unwrap();
+}
+
+#[test]
+fn list_verified_empty_builds() {
+    let _g = FreshStore::new();
+    let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
+    let list_h = vshape_register(VShapeDef::list_of(
+        u32_h,
+        Layout::new::<Vec<u32>>(),
+        VTypeOps::pod(),
+    ));
+    let list_shape = vshape_view(list_h);
+
+    let heap = VRuntime::heap();
+    let trame = unsafe { Trame::<VRuntime>::new(heap, list_shape) };
 
     assert!(trame.is_complete());
     let _ = trame.build().unwrap();

@@ -400,6 +400,21 @@ impl LHeap {
     pub const fn new() -> Self {
         Self
     }
+
+    fn repeat_layout<S: IExecShape<*mut u8>>(
+        elem_shape: S,
+        count: usize,
+    ) -> Option<std::alloc::Layout> {
+        let elem_layout = elem_shape.layout()?;
+        if elem_layout.size() == 0 || count == 0 {
+            return None;
+        }
+        let total_size = elem_layout
+            .size()
+            .checked_mul(count)
+            .expect("repeat allocation size overflow");
+        std::alloc::Layout::from_size_align(total_size, elem_layout.align()).ok()
+    }
 }
 
 impl Default for LHeap {
@@ -448,6 +463,30 @@ impl<S: IExecShape<*mut u8>> IHeap<S> for LHeap {
 
     unsafe fn dealloc_moved(&mut self, ptr: *mut u8, shape: S) {
         unsafe { self.dealloc(ptr, shape) };
+    }
+
+    unsafe fn alloc_repeat(&mut self, elem_shape: S, count: usize) -> *mut u8 {
+        if let Some(layout) = Self::repeat_layout(elem_shape, count) {
+            // SAFETY: layout.size() > 0
+            let ptr = unsafe { std::alloc::alloc(layout) };
+            if ptr.is_null() {
+                std::alloc::handle_alloc_error(layout);
+            }
+            ptr
+        } else {
+            core::ptr::NonNull::dangling().as_ptr()
+        }
+    }
+
+    unsafe fn dealloc_repeat(&mut self, ptr: *mut u8, elem_shape: S, count: usize) {
+        if let Some(layout) = Self::repeat_layout(elem_shape, count) {
+            // SAFETY: caller guarantees this is the original live allocation.
+            unsafe { std::alloc::dealloc(ptr, layout) };
+        }
+    }
+
+    unsafe fn dealloc_repeat_moved(&mut self, ptr: *mut u8, elem_shape: S, count: usize) {
+        unsafe { self.dealloc_repeat(ptr, elem_shape, count) };
     }
 
     unsafe fn memcpy(&mut self, dst: *mut u8, src: *mut u8, desc: CopyDesc<S>) {

@@ -39,6 +39,7 @@ type Heap<R> = <R as IRuntime>::Heap;
 type Shape<R> = <R as IRuntime>::Shape;
 type NodeIdx<R> = Idx<Node<Heap<R>, Shape<R>>>;
 type Ptr<R> = <Heap<R> as IHeap<Shape<R>>>::Ptr;
+const LIST_STAGE_CHUNK_DEFAULT_CAPACITY: usize = 8;
 
 #[cfg(creusot)]
 #[ensures(result == Ok(()) ==> field_idx@ < fields.len_logic())]
@@ -81,6 +82,9 @@ where
 
     /// Whether we've been poisoned (error occurred).
     poisoned: bool,
+
+    /// Per-list-node rope staging chunks for append-based construction.
+    list_staging: Vec<Option<ListStage<Ptr<R>, Shape<R>>>>,
 
     _marker: PhantomData<&'facet ()>,
 }
@@ -138,6 +142,25 @@ enum PathTarget {
     Direct,
     Field(usize),
     Append,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ListStageChunk<P, S> {
+    base: P,
+    element_shape: S,
+    capacity: usize,
+    len: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ListStage<P, S> {
+    chunks: Vec<ListStageChunk<P, S>>,
+}
+
+impl<P, S> ListStage<P, S> {
+    fn new() -> Self {
+        Self { chunks: Vec::new() }
+    }
 }
 
 fn layout_size(layout: trame_runtime::VLayout) -> usize {
@@ -198,6 +221,7 @@ where
             root,
             current: root,
             poisoned: false,
+            list_staging: Vec::new(),
             _marker: PhantomData,
         }
     }
@@ -209,6 +233,120 @@ where
         } else {
             Ok(())
         }
+    }
+
+    fn list_stage_slot_mut(
+        &mut self,
+        list_idx: NodeIdx<R>,
+    ) -> &mut Option<ListStage<Ptr<R>, Shape<R>>> {
+        let slot = list_idx.raw as usize;
+        if self.list_staging.len() <= slot {
+            self.list_staging.resize_with(slot + 1, || None);
+        }
+        &mut self.list_staging[slot]
+    }
+
+    fn list_stage_entry_mut(&mut self, list_idx: NodeIdx<R>) -> &mut ListStage<Ptr<R>, Shape<R>> {
+        let slot = self.list_stage_slot_mut(list_idx);
+        if slot.is_none() {
+            *slot = Some(ListStage::new());
+        }
+        slot.as_mut().expect("list staging entry inserted")
+    }
+
+    fn take_list_stage(&mut self, list_idx: NodeIdx<R>) -> Option<ListStage<Ptr<R>, Shape<R>>> {
+        let slot = list_idx.raw as usize;
+        if slot >= self.list_staging.len() {
+            None
+        } else {
+            self.list_staging[slot].take()
+        }
+    }
+
+    fn alloc_list_stage_slot(
+        &mut self,
+        list_idx: NodeIdx<R>,
+        element_shape: Shape<R>,
+        hint: Option<usize>,
+    ) -> Result<Ptr<R>, TrameError> {
+        let Some(elem_layout) = element_shape.layout() else {
+            return Err(TrameError::UnsupportedSource);
+        };
+        let elem_size = elem_layout.size();
+
+        let maybe_new_capacity = {
+            let stage = self.list_stage_entry_mut(list_idx);
+            if let Some(last) = stage.chunks.last() {
+                if last.len < last.capacity {
+                    None
+                } else {
+                    Some(last.capacity.saturating_mul(2).max(1))
+                }
+            } else {
+                Some(hint.unwrap_or(LIST_STAGE_CHUNK_DEFAULT_CAPACITY).max(1))
+            }
+        };
+
+        if let Some(capacity) = maybe_new_capacity {
+            let base = unsafe { self.heap.alloc_repeat(element_shape, capacity) };
+            let stage = self.list_stage_entry_mut(list_idx);
+            stage.chunks.push(ListStageChunk {
+                base,
+                element_shape,
+                capacity,
+                len: 0,
+            });
+        }
+
+        let stage = self.list_stage_entry_mut(list_idx);
+        let chunk = stage
+            .chunks
+            .last_mut()
+            .expect("list stage must have at least one chunk");
+        let slot_offset = elem_size
+            .checked_mul(chunk.len)
+            .expect("list stage slot offset overflow");
+        let ptr = if elem_size == 0 {
+            chunk.base
+        } else {
+            unsafe { chunk.base.byte_add(slot_offset) }
+        };
+        chunk.len += 1;
+        Ok(ptr)
+    }
+
+    fn release_list_stage_chunks_uninit(&mut self, list_idx: NodeIdx<R>) {
+        if let Some(stage) = self.take_list_stage(list_idx) {
+            for chunk in stage.chunks {
+                unsafe {
+                    self.heap
+                        .dealloc_repeat(chunk.base, chunk.element_shape, chunk.capacity);
+                }
+            }
+        }
+    }
+
+    fn release_list_stage_chunks_moved(&mut self, list_idx: NodeIdx<R>) {
+        if let Some(stage) = self.take_list_stage(list_idx) {
+            for chunk in stage.chunks {
+                unsafe {
+                    self.heap
+                        .dealloc_repeat_moved(chunk.base, chunk.element_shape, chunk.capacity);
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn list_stage_chunk_capacities(&self, list_idx: NodeIdx<R>) -> Vec<usize> {
+        let slot = list_idx.raw as usize;
+        if slot >= self.list_staging.len() {
+            return Vec::new();
+        }
+        let Some(stage) = &self.list_staging[slot] else {
+            return Vec::new();
+        };
+        stage.chunks.iter().map(|chunk| chunk.capacity).collect()
     }
 
     fn struct_type(shape: Shape<R>) -> Result<<Shape<R> as IShape>::StructType, TrameError> {
@@ -716,6 +854,7 @@ where
                 }
             }
         }
+        self.release_list_stage_chunks_uninit(target_idx);
 
         if was_initialized {
             unsafe { self.heap.drop_in_place(dst, shape) };
@@ -790,9 +929,9 @@ where
             }
         };
 
-        let is_deferred_stage = match src.kind {
-            SourceKind::StageDeferred(_) => true,
-            SourceKind::Stage(_) => false,
+        let (is_deferred_stage, stage_hint) = match src.kind {
+            SourceKind::StageDeferred(cap) => (true, cap),
+            SourceKind::Stage(cap) => (false, cap),
             _ => return Err(TrameError::UnsupportedSource),
         };
 
@@ -804,16 +943,14 @@ where
             .as_list()
             .ok_or(TrameError::UnsupportedSource)?;
         let element_shape = list_type.element();
-        let child_data = unsafe { self.heap.alloc(element_shape) };
+        let child_data = self.alloc_list_stage_slot(target_idx, element_shape, stage_hint)?;
         let child_node = Node {
             data: child_data,
             shape: element_shape,
             kind: Node::<Heap<R>, Shape<R>>::kind_for_shape(element_shape),
             state: NodeState::Staged,
             parent: target_idx,
-            flags: NodeFlags::empty()
-                .with_owns_allocation()
-                .with_deferred_root_if(is_deferred_stage),
+            flags: NodeFlags::empty().with_deferred_root_if(is_deferred_stage),
         };
         let child_idx = self.arena.alloc(child_node);
 
@@ -1076,7 +1213,7 @@ where
                     .mark_field_complete(field_idx);
                 Ok(())
             }
-            SourceKind::Stage(_cap) => self.apply_set_stage_field(
+            SourceKind::Stage(cap) => self.apply_set_stage_field(
                 target_idx,
                 field_idx,
                 field_shape,
@@ -1084,9 +1221,10 @@ where
                 is_pointer_parent,
                 is_list_parent,
                 child_idx,
+                cap,
                 false,
             ),
-            SourceKind::StageDeferred(_cap) => self.apply_set_stage_field(
+            SourceKind::StageDeferred(cap) => self.apply_set_stage_field(
                 target_idx,
                 field_idx,
                 field_shape,
@@ -1094,6 +1232,7 @@ where
                 is_pointer_parent,
                 is_list_parent,
                 child_idx,
+                cap,
                 true,
             ),
         }
@@ -1403,7 +1542,7 @@ where
                     .mark_field_complete(field_idx);
                 Ok(())
             }
-            SourceKind::Stage(_cap) => self.apply_set_stage_field(
+            SourceKind::Stage(cap) => self.apply_set_stage_field(
                 target_idx,
                 field_idx,
                 field_shape,
@@ -1411,9 +1550,10 @@ where
                 false,
                 false,
                 child_idx,
+                cap,
                 false,
             ),
-            SourceKind::StageDeferred(_cap) => self.apply_set_stage_field(
+            SourceKind::StageDeferred(cap) => self.apply_set_stage_field(
                 target_idx,
                 field_idx,
                 field_shape,
@@ -1421,6 +1561,7 @@ where
                 false,
                 false,
                 child_idx,
+                cap,
                 true,
             ),
         }
@@ -1436,6 +1577,7 @@ where
         is_pointer_parent: bool,
         is_list_parent: bool,
         child_idx: Option<NodeIdx<R>>,
+        stage_hint: Option<usize>,
         is_deferred_stage: bool,
     ) -> Result<(), TrameError> {
         if !is_pointer_parent
@@ -1466,8 +1608,10 @@ where
             return Ok(());
         }
 
-        let child_data = if is_pointer_parent || is_list_parent {
+        let child_data = if is_pointer_parent {
             unsafe { self.heap.alloc(field_shape) }
+        } else if is_list_parent {
+            self.alloc_list_stage_slot(target_idx, field_shape, stage_hint)?
         } else {
             dst
         };
@@ -1478,7 +1622,7 @@ where
             kind: Node::<Heap<R>, Shape<R>>::kind_for_shape(field_shape),
             state: NodeState::Staged,
             parent: target_idx,
-            flags: if is_pointer_parent || is_list_parent {
+            flags: if is_pointer_parent {
                 NodeFlags::empty().with_owns_allocation()
             } else {
                 NodeFlags::empty()
@@ -1896,6 +2040,7 @@ where
             }
             i += 1;
         }
+        self.release_list_stage_chunks_moved(idx);
 
         if let NodeKind::List {
             initialized,
@@ -2258,6 +2403,10 @@ where
             // Recursively clean up children first (depth-first)
             for child in children.iter() {
                 self.cleanup_node(*child);
+            }
+
+            if matches!(&node_kind, NodeKind::List { .. }) {
+                self.release_list_stage_chunks_uninit(idx);
             }
 
             // Now clean up this Node's initialized slots

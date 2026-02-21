@@ -1391,15 +1391,21 @@ fn print_allocation_layout<S: IShape>(tracker: &ByteRangeTracker, shape: S, allo
     eprintln!("=== End Layout ===");
 }
 
+#[derive(Debug, Clone, Copy)]
+enum VAllocShape<S: IShape> {
+    Single(S),
+    Repeat { elem: S, count: usize },
+}
+
 /// Verified heap that tracks state for Kani proofs.
 ///
 /// This heap doesn't do any real memory operations - it just tracks
 /// the abstract state of allocations and asserts that all transitions are valid.
 #[derive(Debug)]
 pub struct VHeap<S: IShape> {
-    /// Each allocation's initialization state and shape.
-    /// None = freed, Some((tracker, shape)) = live allocation.
-    allocs: [Option<(ByteRangeTracker, S)>; MAX_VHEAP_ALLOCS],
+    /// Each allocation's initialization state and shape descriptor.
+    /// None = freed, Some((tracker, desc)) = live allocation.
+    allocs: [Option<(ByteRangeTracker, VAllocShape<S>)>; MAX_VHEAP_ALLOCS],
     /// Next allocation ID to assign.
     next_id: u8,
     /// Operation history for each allocation (only when not running under Kani).
@@ -1432,9 +1438,22 @@ impl<S: IShape> VHeap<S> {
     fn print_history(&self, alloc_id: u8) {
         self.history[alloc_id as usize].print(alloc_id);
         // Also print the current layout if allocation is still live
-        if let Some((tracker, shape)) = &self.allocs[alloc_id as usize] {
-            let alloc_size = shape.layout().map(|l| l.size() as u32).unwrap_or(0);
-            print_allocation_layout(tracker, *shape, alloc_size);
+        if let Some((tracker, desc)) = &self.allocs[alloc_id as usize] {
+            match desc {
+                VAllocShape::Single(shape) => {
+                    let alloc_size = shape.layout().map(|l| l.size() as u32).unwrap_or(0);
+                    print_allocation_layout(tracker, *shape, alloc_size);
+                }
+                VAllocShape::Repeat { elem, count } => {
+                    let elem_size = elem.layout().map(|l| l.size() as u32).unwrap_or(0);
+                    let alloc_size = elem_size.saturating_mul(*count as u32);
+                    eprintln!(
+                        "repeat allocation: count={} elem_size={} total={}",
+                        count, elem_size, alloc_size
+                    );
+                    print_allocation_layout(tracker, *elem, alloc_size);
+                }
+            }
         }
     }
 
@@ -1458,21 +1477,29 @@ impl<S: IShape> VHeap<S> {
     }
 
     /// Get the tracker for an allocation, panicking if freed.
-    fn get_tracker(&self, alloc_id: u8) -> &(ByteRangeTracker, S) {
+    fn get_tracker(&self, alloc_id: u8) -> &(ByteRangeTracker, VAllocShape<S>) {
         self.allocs[alloc_id as usize]
             .as_ref()
             .expect("allocation already freed")
     }
 
     /// Get the tracker mutably for an allocation, panicking if freed.
-    fn get_tracker_mut(&mut self, alloc_id: u8) -> &mut (ByteRangeTracker, S) {
+    fn get_tracker_mut(&mut self, alloc_id: u8) -> &mut (ByteRangeTracker, VAllocShape<S>) {
         self.allocs[alloc_id as usize]
             .as_mut()
             .expect("allocation already freed")
     }
 
+    fn repeat_byte_len(elem: S, count: usize) -> usize {
+        elem.layout()
+            .expect("IShape requires sized types")
+            .size()
+            .checked_mul(count)
+            .expect("repeat allocation size overflow")
+    }
+
     #[cfg(not(creusot))]
-    fn matches_subshape(stored: S, offset: usize, target: S) -> bool {
+    fn matches_subshape_single(stored: S, offset: usize, target: S) -> bool {
         if offset == 0 && stored == target {
             return true;
         }
@@ -1490,7 +1517,7 @@ impl<S: IShape> VHeap<S> {
                 let start = field.offset();
                 let end = start + field_size;
                 if offset >= start && offset < end {
-                    return Self::matches_subshape(field_shape, offset - start, target);
+                    return Self::matches_subshape_single(field_shape, offset - start, target);
                 }
             }
             return false;
@@ -1512,7 +1539,7 @@ impl<S: IShape> VHeap<S> {
                     let start = field.offset();
                     let end = start + field_size;
                     if offset >= start && offset < end {
-                        return Self::matches_subshape(field_shape, offset - start, target);
+                        return Self::matches_subshape_single(field_shape, offset - start, target);
                     }
                 }
             }
@@ -1522,7 +1549,34 @@ impl<S: IShape> VHeap<S> {
     }
 
     #[cfg(creusot)]
-    fn matches_subshape(_stored: S, _offset: usize, _target: S) -> bool {
+    fn matches_subshape_single(_stored: S, _offset: usize, _target: S) -> bool {
+        true
+    }
+
+    #[cfg(not(creusot))]
+    fn matches_subshape(stored: VAllocShape<S>, offset: usize, target: S) -> bool {
+        match stored {
+            VAllocShape::Single(shape) => Self::matches_subshape_single(shape, offset, target),
+            VAllocShape::Repeat { elem, count } => {
+                let Some(elem_layout) = elem.layout() else {
+                    return false;
+                };
+                let elem_size = elem_layout.size();
+                if elem_size == 0 {
+                    return offset == 0 && target == elem;
+                }
+                let total = elem_size.checked_mul(count).expect("repeat size overflow");
+                if offset >= total {
+                    return false;
+                }
+                let within_elem = offset % elem_size;
+                Self::matches_subshape_single(elem, within_elem, target)
+            }
+        }
+    }
+
+    #[cfg(creusot)]
+    fn matches_subshape(_stored: VAllocShape<S>, _offset: usize, _target: S) -> bool {
         true
     }
 
@@ -1565,7 +1619,7 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
         }
 
         let layout = shape.layout().expect("IShape requires sized types");
-        self.allocs[id as usize] = Some((ByteRangeTracker::new(), shape));
+        self.allocs[id as usize] = Some((ByteRangeTracker::new(), VAllocShape::Single(shape)));
         self.next_id += 1;
 
         self.record_op(
@@ -1585,12 +1639,16 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
             "dealloc: pointer not at allocation start",
         );
 
-        let (tracker, stored_shape) = self.get_tracker(id);
+        let (tracker, stored_desc) = self.get_tracker(id);
         #[cfg(not(creusot))]
-        self.assert_with_history(*stored_shape == shape, id, "dealloc: shape mismatch");
+        self.assert_with_history(
+            matches!(stored_desc, VAllocShape::Single(stored_shape) if *stored_shape == shape),
+            id,
+            "dealloc: shape mismatch",
+        );
         #[cfg(creusot)]
         {
-            if *stored_shape != shape {
+            if !matches!(stored_desc, VAllocShape::Single(stored_shape) if *stored_shape == shape) {
                 self.print_history(id);
                 panic!("dealloc: shape mismatch");
             }
@@ -1613,14 +1671,122 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
             "dealloc_moved: pointer not at allocation start",
         );
 
-        let (_tracker, stored_shape) = self.get_tracker(id);
+        let (_tracker, stored_desc) = self.get_tracker(id);
         #[cfg(not(creusot))]
-        self.assert_with_history(*stored_shape == shape, id, "dealloc_moved: shape mismatch");
+        self.assert_with_history(
+            matches!(stored_desc, VAllocShape::Single(stored_shape) if *stored_shape == shape),
+            id,
+            "dealloc_moved: shape mismatch",
+        );
         #[cfg(creusot)]
         {
-            if *stored_shape != shape {
+            if !matches!(stored_desc, VAllocShape::Single(stored_shape) if *stored_shape == shape) {
                 self.print_history(id);
                 panic!("dealloc_moved: shape mismatch");
+            }
+        }
+
+        self.record_op(id, HeapOpKind::Dealloc, None);
+        self.allocs[id as usize] = None;
+    }
+
+    unsafe fn alloc_repeat(&mut self, elem_shape: S, count: usize) -> VPtr {
+        let id = self.next_id;
+        #[cfg(not(creusot))]
+        assert!(
+            (id as usize) < MAX_VHEAP_ALLOCS,
+            "too many allocations (max {})",
+            MAX_VHEAP_ALLOCS
+        );
+        #[cfg(creusot)]
+        {
+            if (id as usize) >= MAX_VHEAP_ALLOCS {
+                panic!("too many allocations");
+            }
+        }
+
+        let len = Self::repeat_byte_len(elem_shape, count);
+        self.allocs[id as usize] = Some((
+            ByteRangeTracker::new(),
+            VAllocShape::Repeat {
+                elem: elem_shape,
+                count,
+            },
+        ));
+        self.next_id += 1;
+
+        self.record_op(id, HeapOpKind::Alloc, Some(Range::new(0, len as u32)));
+        VPtr::new(id, len as u32)
+    }
+
+    unsafe fn dealloc_repeat(&mut self, ptr: VPtr, elem_shape: S, count: usize) {
+        let id = ptr.alloc_id();
+        self.assert_with_history(
+            ptr.is_at_start(),
+            id,
+            "dealloc_repeat: pointer not at allocation start",
+        );
+
+        let (tracker, stored_desc) = self.get_tracker(id);
+        #[cfg(not(creusot))]
+        self.assert_with_history(
+            matches!(
+                stored_desc,
+                VAllocShape::Repeat { elem, count: stored_count }
+                if *elem == elem_shape && *stored_count == count
+            ),
+            id,
+            "dealloc_repeat: shape mismatch",
+        );
+        #[cfg(creusot)]
+        {
+            if !matches!(
+                stored_desc,
+                VAllocShape::Repeat { elem, count: stored_count }
+                if *elem == elem_shape && *stored_count == count
+            ) {
+                self.print_history(id);
+                panic!("dealloc_repeat: shape mismatch");
+            }
+        }
+        self.assert_with_history(
+            tracker.is_empty(),
+            id,
+            "dealloc_repeat: allocation still has initialized bytes",
+        );
+
+        self.record_op(id, HeapOpKind::Dealloc, None);
+        self.allocs[id as usize] = None;
+    }
+
+    unsafe fn dealloc_repeat_moved(&mut self, ptr: VPtr, elem_shape: S, count: usize) {
+        let id = ptr.alloc_id();
+        self.assert_with_history(
+            ptr.is_at_start(),
+            id,
+            "dealloc_repeat_moved: pointer not at allocation start",
+        );
+
+        let (_tracker, stored_desc) = self.get_tracker(id);
+        #[cfg(not(creusot))]
+        self.assert_with_history(
+            matches!(
+                stored_desc,
+                VAllocShape::Repeat { elem, count: stored_count }
+                if *elem == elem_shape && *stored_count == count
+            ),
+            id,
+            "dealloc_repeat_moved: shape mismatch",
+        );
+        #[cfg(creusot)]
+        {
+            if !matches!(
+                stored_desc,
+                VAllocShape::Repeat { elem, count: stored_count }
+                if *elem == elem_shape && *stored_count == count
+            ) {
+                self.print_history(id);
+                panic!("dealloc_repeat_moved: shape mismatch");
             }
         }
 
@@ -1682,9 +1848,9 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
             Some(Range::new(ptr.offset, ptr.offset + layout.size() as u32)),
         );
 
-        let (tracker, stored_shape) = self.get_tracker_mut(alloc_id);
+        let (tracker, stored_desc) = self.get_tracker_mut(alloc_id);
 
-        if !Self::matches_subshape(*stored_shape, ptr.offset_bytes(), shape) {
+        if !Self::matches_subshape(*stored_desc, ptr.offset_bytes(), shape) {
             self.print_history(alloc_id);
             panic!("drop_in_place: shape mismatch");
         }
@@ -1930,8 +2096,8 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
                 self.print_history(elem_ptr.alloc_id());
                 panic!("list_push_element: element out of bounds");
             }
-            let (tracker, stored_shape) = self.get_tracker(elem_ptr.alloc_id());
-            if !Self::matches_subshape(*stored_shape, elem_ptr.offset_bytes(), elem_shape) {
+            let (tracker, stored_desc) = self.get_tracker(elem_ptr.alloc_id());
+            if !Self::matches_subshape(*stored_desc, elem_ptr.offset_bytes(), elem_shape) {
                 return false;
             }
             if !tracker.is_init(elem_ptr.offset, elem_ptr.offset + elem_len as u32) {

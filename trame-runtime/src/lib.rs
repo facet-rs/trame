@@ -488,6 +488,27 @@ pub trait IHeap<S: IShape> {
     /// The caller must ensure `ptr` points to a live allocation for `shape`.
     unsafe fn dealloc_moved(&mut self, ptr: Self::Ptr, shape: S);
 
+    /// Allocate contiguous staging storage for `count` values of `elem_shape`.
+    ///
+    /// This is used by container rope staging to reserve stable chunk buffers.
+    ///
+    /// # Safety
+    /// The caller must ensure `elem_shape` is valid for allocation and `count`
+    /// is the intended number of elements for this chunk.
+    unsafe fn alloc_repeat(&mut self, elem_shape: S, count: usize) -> Self::Ptr;
+
+    /// Deallocate repeat storage previously allocated by `alloc_repeat`.
+    ///
+    /// # Safety
+    /// The caller must ensure all bytes in the chunk are uninitialized.
+    unsafe fn dealloc_repeat(&mut self, ptr: Self::Ptr, elem_shape: S, count: usize);
+
+    /// Deallocate repeat storage whose values were moved out without drop.
+    ///
+    /// # Safety
+    /// The caller must ensure `ptr` is a live allocation from `alloc_repeat`.
+    unsafe fn dealloc_repeat_moved(&mut self, ptr: Self::Ptr, elem_shape: S, count: usize);
+
     /// Copy bytes from `src` to `dst` according to a typed descriptor.
     ///
     /// # Safety

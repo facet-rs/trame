@@ -190,6 +190,44 @@ pub trait IListType: Copy {
     }
 }
 
+/// Interface for map type information.
+pub trait IMapType: Copy {
+    /// The shape type.
+    type Shape: IShape;
+
+    /// Shape of map keys.
+    fn key(&self) -> Self::Shape;
+
+    /// Shape of map values.
+    fn value(&self) -> Self::Shape;
+
+    /// Initialize the map in place with a capacity hint.
+    ///
+    /// Returns `false` when unsupported.
+    ///
+    /// # Safety
+    /// `dst` must point at storage for this map type.
+    unsafe fn init_in_place_with_capacity(&self, _dst: *mut u8, _capacity: usize) -> bool {
+        false
+    }
+
+    /// Insert one entry into this map.
+    ///
+    /// Returns `false` when unsupported.
+    ///
+    /// # Safety
+    /// `map_ptr` must point to an initialized map, and `key_ptr`/`value_ptr`
+    /// must point to initialized values matching `key()`/`value()`.
+    unsafe fn insert_entry(
+        &self,
+        _map_ptr: *mut u8,
+        _key_ptr: *mut u8,
+        _value_ptr: *mut u8,
+    ) -> bool {
+        false
+    }
+}
+
 pub trait IShape: Copy + PartialEq + IShapeExtra {
     /// The struct type returned by `as_struct()`.
     type StructType: IStructType<Field = Self::Field>;
@@ -205,6 +243,9 @@ pub trait IShape: Copy + PartialEq + IShapeExtra {
 
     /// The list metadata returned by `as_list()`.
     type ListType: IListType<Shape = Self>;
+
+    /// The map metadata returned by `as_map()`.
+    type MapType: IMapType<Shape = Self>;
 
     /// Get the layout (size and alignment) of this shape.
     ///
@@ -272,6 +313,14 @@ pub trait IShape: Copy + PartialEq + IShapeExtra {
 
     /// Get list-specific information, if this is a list.
     fn as_list(&self) -> Option<Self::ListType>;
+
+    /// Check if this is a map type.
+    fn is_map(&self) -> bool {
+        self.as_map().is_some()
+    }
+
+    /// Get map-specific information, if this is a map.
+    fn as_map(&self) -> Option<Self::MapType>;
 }
 
 /// Shape operations required by executable heaps.
@@ -611,6 +660,38 @@ pub trait IHeap<S: IShape> {
         list_shape: S,
         elem_ptr: Self::Ptr,
         elem_shape: S,
+    ) -> bool;
+
+    /// Initialize a map value in place, optionally with a capacity hint.
+    ///
+    /// Returns `false` if this shape is not a map, or if map initialization
+    /// is unsupported for this runtime/shape combination.
+    ///
+    /// # Safety
+    /// The caller must ensure `dst` points at storage for `map_shape`.
+    unsafe fn map_init_in_place_with_capacity(
+        &mut self,
+        dst: Self::Ptr,
+        map_shape: S,
+        capacity: usize,
+    ) -> bool;
+
+    /// Insert one initialized key/value entry into a map value.
+    ///
+    /// Returns `false` if shapes are incompatible, or if map insert is unsupported.
+    ///
+    /// # Safety
+    /// The caller must ensure `map_ptr` points at an initialized map of shape
+    /// `map_shape`, and `key_ptr`/`value_ptr` point at initialized values of
+    /// `key_shape`/`value_shape`.
+    unsafe fn map_insert_entry(
+        &mut self,
+        map_ptr: Self::Ptr,
+        map_shape: S,
+        key_ptr: Self::Ptr,
+        key_shape: S,
+        value_ptr: Self::Ptr,
+        value_shape: S,
     ) -> bool;
 
     /// Creusot predicate for the state of an allocation.

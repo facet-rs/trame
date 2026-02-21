@@ -13,7 +13,8 @@ use byte_range::{ByteRangeError, ByteRangeTracker, Range};
 
 use crate::{
     CopyDesc, EnumDiscriminantRepr, EnumReprKind, IArena, IEnumType, IExecShape, IField, IHeap,
-    IListType, IPointerType, IPtr, IRuntime, IShape, IShapeStore, IStructType, IVariantType, Idx,
+    IListType, IMapType, IPointerType, IPtr, IRuntime, IShape, IShapeStore, IStructType,
+    IVariantType, Idx,
 };
 
 /// A runtime that verifies all operations
@@ -446,6 +447,15 @@ pub struct VListView<'a> {
     pub def: &'a VListDef,
 }
 
+/// Map type view placeholder for verified shapes.
+///
+/// Verified shapes currently do not model map defs; this uninhabited type
+/// satisfies trait plumbing until VDef gains map support.
+#[derive(Clone, Copy)]
+pub struct VMapView<'a> {
+    _marker: core::marker::PhantomData<&'a VShapeStore>,
+}
+
 /// Enum type view for verified shapes.
 #[derive(Clone, Copy)]
 pub struct VEnumView<'a> {
@@ -476,6 +486,7 @@ impl<'a> IShape for VShapeView<'a, VShapeStore> {
     type EnumType = VEnumView<'a>;
     type PointerType = VPointerView<'a>;
     type ListType = VListView<'a>;
+    type MapType = VMapView<'a>;
 
     #[inline]
     fn layout(&self) -> Option<Layout> {
@@ -582,6 +593,11 @@ impl<'a> IShape for VShapeView<'a, VShapeStore> {
             _ => None,
         }
     }
+
+    #[inline]
+    fn as_map(&self) -> Option<Self::MapType> {
+        None
+    }
 }
 
 impl<'a> IExecShape<*mut u8> for VShapeView<'a, VShapeStore> {
@@ -657,6 +673,18 @@ impl<'a> IListType for VListView<'a> {
     #[inline]
     fn element(&self) -> Self::Shape {
         self.store.view(self.def.elem_handle)
+    }
+}
+
+impl<'a> IMapType for VMapView<'a> {
+    type Shape = VShapeView<'a, VShapeStore>;
+
+    fn key(&self) -> Self::Shape {
+        panic!("verified map metadata is unavailable")
+    }
+
+    fn value(&self) -> Self::Shape {
+        panic!("verified map metadata is unavailable")
     }
 }
 
@@ -2104,6 +2132,116 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
                 return false;
             }
         }
+        true
+    }
+
+    unsafe fn map_init_in_place_with_capacity(
+        &mut self,
+        dst: VPtr,
+        map_shape: S,
+        _capacity: usize,
+    ) -> bool {
+        if map_shape.as_map().is_none() {
+            return false;
+        }
+        let Some(layout) = map_shape.layout() else {
+            return false;
+        };
+        let len = layout.size();
+        if len == 0 {
+            return true;
+        }
+
+        let alloc_id = dst.alloc_id();
+        if dst.offset_bytes() + len > dst.alloc_size() {
+            self.print_history(alloc_id);
+            panic!("map_init_in_place_with_capacity: out of bounds");
+        }
+
+        self.record_op(
+            alloc_id,
+            HeapOpKind::DefaultInPlace,
+            Some(Range::new(dst.offset, dst.offset + len as u32)),
+        );
+
+        let (tracker, _) = self.get_tracker_mut(alloc_id);
+        if let Err(e) = tracker.mark_init(dst.offset, dst.offset + len as u32) {
+            self.print_history(alloc_id);
+            panic!(
+                "map_init_in_place_with_capacity: destination already initialized: {:?}",
+                e
+            );
+        }
+        true
+    }
+
+    unsafe fn map_insert_entry(
+        &mut self,
+        map_ptr: VPtr,
+        map_shape: S,
+        key_ptr: VPtr,
+        key_shape: S,
+        value_ptr: VPtr,
+        value_shape: S,
+    ) -> bool {
+        let Some(map) = map_shape.as_map() else {
+            return false;
+        };
+        if map.key() != key_shape || map.value() != value_shape {
+            return false;
+        }
+
+        let Some(map_layout) = map_shape.layout() else {
+            return false;
+        };
+        let map_len = map_layout.size();
+        if map_len > 0 {
+            if map_ptr.offset_bytes() + map_len > map_ptr.alloc_size() {
+                self.print_history(map_ptr.alloc_id());
+                panic!("map_insert_entry: map out of bounds");
+            }
+            let (tracker, _) = self.get_tracker(map_ptr.alloc_id());
+            if !tracker.is_init(map_ptr.offset, map_ptr.offset + map_len as u32) {
+                return false;
+            }
+        }
+
+        let Some(key_layout) = key_shape.layout() else {
+            return false;
+        };
+        let key_len = key_layout.size();
+        if key_len > 0 {
+            if key_ptr.offset_bytes() + key_len > key_ptr.alloc_size() {
+                self.print_history(key_ptr.alloc_id());
+                panic!("map_insert_entry: key out of bounds");
+            }
+            let (tracker, stored_desc) = self.get_tracker(key_ptr.alloc_id());
+            if !Self::matches_subshape(*stored_desc, key_ptr.offset_bytes(), key_shape) {
+                return false;
+            }
+            if !tracker.is_init(key_ptr.offset, key_ptr.offset + key_len as u32) {
+                return false;
+            }
+        }
+
+        let Some(value_layout) = value_shape.layout() else {
+            return false;
+        };
+        let value_len = value_layout.size();
+        if value_len > 0 {
+            if value_ptr.offset_bytes() + value_len > value_ptr.alloc_size() {
+                self.print_history(value_ptr.alloc_id());
+                panic!("map_insert_entry: value out of bounds");
+            }
+            let (tracker, stored_desc) = self.get_tracker(value_ptr.alloc_id());
+            if !Self::matches_subshape(*stored_desc, value_ptr.offset_bytes(), value_shape) {
+                return false;
+            }
+            if !tracker.is_init(value_ptr.offset, value_ptr.offset + value_len as u32) {
+                return false;
+            }
+        }
+
         true
     }
 }

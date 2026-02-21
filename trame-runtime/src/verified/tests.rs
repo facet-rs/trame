@@ -1,9 +1,10 @@
 use super::*;
 use crate::live::LHeap;
-use crate::{IHeap, IListType, IShape};
+use crate::{IHeap, IListType, IMapType, IShape};
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use facet_core::{Facet, Shape};
+use std::collections::{BTreeMap, HashMap};
 
 type S<'a> = VShapeView<'a, VShapeStore>;
 
@@ -369,6 +370,68 @@ fn real_vec_shape_is_list() {
     let list = shape.as_list().unwrap();
     let elem = list.element();
     assert_eq!(elem.layout().unwrap().size(), 4);
+}
+
+#[test]
+fn real_hashmap_shape_is_map() {
+    let shape: &'static Shape = HashMap::<String, u32>::SHAPE;
+    assert!(shape.is_map());
+    assert!(shape.as_map().is_some());
+
+    let map = shape.as_map().unwrap();
+    assert_eq!(map.key(), String::SHAPE);
+    assert_eq!(map.value(), u32::SHAPE);
+}
+
+#[test]
+fn real_btreemap_shape_is_map() {
+    let shape: &'static Shape = BTreeMap::<String, u32>::SHAPE;
+    assert!(shape.is_map());
+    assert!(shape.as_map().is_some());
+
+    let map = shape.as_map().unwrap();
+    assert_eq!(map.key(), String::SHAPE);
+    assert_eq!(map.value(), u32::SHAPE);
+}
+
+#[test]
+fn lheap_map_insert_rejects_shape_mismatch() {
+    let map_shape: &'static Shape = HashMap::<String, u32>::SHAPE;
+    let key_shape: &'static Shape = String::SHAPE;
+    let bad_value_shape: &'static Shape = u64::SHAPE;
+
+    let mut heap = LHeap::new();
+    let map_ptr = unsafe { heap.alloc(map_shape) };
+    let key_ptr = unsafe { heap.alloc(key_shape) };
+    let bad_value_ptr = unsafe { heap.alloc(bad_value_shape) };
+
+    let map_init = unsafe { heap.map_init_in_place_with_capacity(map_ptr, map_shape, 2) };
+    assert!(map_init);
+    let key_init = unsafe { heap.default_in_place(key_ptr, key_shape) };
+    assert!(key_init);
+    let value_init = unsafe { heap.default_in_place(bad_value_ptr, bad_value_shape) };
+    assert!(value_init);
+
+    let inserted = unsafe {
+        heap.map_insert_entry(
+            map_ptr,
+            map_shape,
+            key_ptr,
+            key_shape,
+            bad_value_ptr,
+            bad_value_shape,
+        )
+    };
+    assert!(!inserted);
+
+    unsafe {
+        heap.drop_in_place(key_ptr, key_shape);
+        heap.dealloc(key_ptr, key_shape);
+        heap.drop_in_place(bad_value_ptr, bad_value_shape);
+        heap.dealloc(bad_value_ptr, bad_value_shape);
+        heap.drop_in_place(map_ptr, map_shape);
+        heap.dealloc(map_ptr, map_shape);
+    }
 }
 
 #[derive(facet::Facet)]

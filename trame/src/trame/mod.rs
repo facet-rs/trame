@@ -720,6 +720,16 @@ where
         if was_initialized {
             unsafe { self.heap.drop_in_place(dst, shape) };
         }
+        if let NodeKind::List {
+            initialized,
+            elements,
+            closed,
+        } = &mut self.arena.get_mut(target_idx).kind
+        {
+            *initialized = false;
+            *closed = false;
+            *elements = FieldStates::new(0);
+        }
 
         match src.kind {
             SourceKind::Imm(imm) => {
@@ -1431,6 +1441,8 @@ where
         if !is_pointer_parent
             && !is_list_parent
             && !field_shape.is_struct()
+            && !field_shape.is_list()
+            && field_shape.as_enum().is_none()
             && field_shape.as_pointer().is_none()
         {
             return Err(TrameError::NotAStruct);

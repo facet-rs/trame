@@ -9,8 +9,7 @@ mod tests {
     use std::panic::catch_unwind;
     use std::{alloc::Layout, collections::BTreeSet};
     use trame::{
-        IRuntime, Op, Path, Source, Trame, VRuntime, VShapeDef, VShapeHandle,
-        runtime::{IHeap, IShape},
+        IRuntime, Op, Path, Source, Trame, VRuntime, VShapeDef, VShapeHandle, runtime::IShape,
         vshape_register, vshape_store, vshape_store_reset, vshape_view,
     };
     use trame_solver::{Schema as SolverSchema, SolveError};
@@ -25,6 +24,7 @@ mod tests {
         Scalar { size: usize },
         Struct { fields: Vec<usize> }, // indices into the shape store (must be < current index)
         Option { some: usize },        // index of payload shape (must be < current index)
+        List { elem: usize },          // index of element shape (must be < current index)
     }
 
     fn arb_shape_recipe(max_existing: usize) -> impl Strategy<Value = ShapeRecipe> {
@@ -38,6 +38,7 @@ mod tests {
                     prop::collection::vec(0..max_existing, 1..=4)
                         .prop_map(|fields| ShapeRecipe::Struct { fields }),
                     (0..max_existing).prop_map(|some| ShapeRecipe::Option { some }),
+                    (0..max_existing).prop_map(|elem| ShapeRecipe::List { elem }),
                 ]
                 .boxed()
             } else {
@@ -110,6 +111,14 @@ mod tests {
                         trame::runtime::verified::VTypeOps::pod(),
                     ))
                 }
+                ShapeRecipe::List { elem } => {
+                    let elem_handle = handles[*elem];
+                    vshape_register(VShapeDef::list_of(
+                        elem_handle,
+                        Layout::new::<Vec<u8>>(),
+                        trame::runtime::verified::VTypeOps::pod(),
+                    ))
+                }
             };
             handles.push(handle);
         }
@@ -124,38 +133,39 @@ mod tests {
     #[derive(Debug, Clone)]
     enum OpRecipe {
         SetField { field: u8, src_kind: SrcKind },
+        SetAppend { src_kind: SrcKind },
         SetRoot { src_kind: SrcKind },
         End,
     }
 
     #[derive(Debug, Clone)]
     enum SrcKind {
-        Imm { shape_idx: usize },
         Default,
         Stage,
         StageDeferred,
     }
 
-    fn arb_src_kind(num_shapes: usize) -> impl Strategy<Value = SrcKind> {
+    fn arb_src_kind() -> impl Strategy<Value = SrcKind> {
         prop_oneof![
-            (0..num_shapes).prop_map(|shape_idx| SrcKind::Imm { shape_idx }),
             Just(SrcKind::Default),
             Just(SrcKind::Stage),
             Just(SrcKind::StageDeferred),
         ]
     }
 
-    fn arb_op_recipe(num_shapes: usize) -> impl Strategy<Value = OpRecipe> {
+    fn arb_op_recipe() -> impl Strategy<Value = OpRecipe> {
+        let append_src = prop_oneof![Just(SrcKind::Stage), Just(SrcKind::StageDeferred)];
         prop_oneof![
-            ((0u8..8), arb_src_kind(num_shapes))
+            ((0u8..8), arb_src_kind())
                 .prop_map(|(field, src_kind)| OpRecipe::SetField { field, src_kind }),
-            arb_src_kind(num_shapes).prop_map(|src_kind| OpRecipe::SetRoot { src_kind }),
+            append_src.prop_map(|src_kind| OpRecipe::SetAppend { src_kind }),
+            arb_src_kind().prop_map(|src_kind| OpRecipe::SetRoot { src_kind }),
             Just(OpRecipe::End),
         ]
     }
 
-    fn arb_op_recipes(num_shapes: usize, count: usize) -> impl Strategy<Value = Vec<OpRecipe>> {
-        prop::collection::vec(arb_op_recipe(num_shapes), 0..count)
+    fn arb_op_recipes(count: usize) -> impl Strategy<Value = Vec<OpRecipe>> {
+        prop::collection::vec(arb_op_recipe(), 0..count)
     }
 
     // ============================================================================
@@ -192,29 +202,17 @@ mod tests {
             let target_handle = handles[target_idx];
             let target_shape = vshape_view(target_handle);
 
-            // Allocate source values for each shape (for Imm sources)
-            let mut heap = VRuntime::heap();
-            let mut src_ptrs = Vec::new();
-            for &h in &handles {
-                let shape = vshape_view(h);
-                let ptr = unsafe { heap.alloc(shape) };
-                unsafe { heap.default_in_place(ptr, shape) };
-                src_ptrs.push((ptr, shape));
-            }
+            let heap = VRuntime::heap();
 
             // Create trame and apply ops
             let mut trame = unsafe { Trame::<VRuntime>::new(heap, target_shape) };
+            let mut had_error = false;
 
             for op in op_recipes {
                 let result = match op {
                     OpRecipe::SetField { field, src_kind } => {
                         let path = Path::field(field as u32);
                         let src = match src_kind {
-                            SrcKind::Imm { shape_idx } => {
-                                let idx = shape_idx % handles.len();
-                                let (ptr, shape) = src_ptrs[idx];
-                                unsafe { Source::from_vptr(ptr, shape) }
-                            }
                             SrcKind::Default => Source::default_value(),
                             SrcKind::Stage => Source::stage(None),
                             SrcKind::StageDeferred => Source::stage_deferred(None),
@@ -223,11 +221,6 @@ mod tests {
                     }
                     OpRecipe::SetRoot { src_kind } => {
                         let src = match src_kind {
-                            SrcKind::Imm { shape_idx } => {
-                                let idx = shape_idx % handles.len();
-                                let (ptr, shape) = src_ptrs[idx];
-                                unsafe { Source::from_vptr(ptr, shape) }
-                            }
                             SrcKind::Default => Source::default_value(),
                             SrcKind::Stage => Source::stage(None),
                             SrcKind::StageDeferred => Source::stage_deferred(None),
@@ -237,14 +230,30 @@ mod tests {
                             src,
                         })
                     }
+                    OpRecipe::SetAppend { src_kind } => {
+                        let src = match src_kind {
+                            SrcKind::Default => Source::default_value(),
+                            SrcKind::Stage => Source::stage(None),
+                            SrcKind::StageDeferred => Source::stage_deferred(None),
+                        };
+                        trame.apply(Op::Set {
+                            dst: Path::append(),
+                            src,
+                        })
+                    }
                     OpRecipe::End => trame.apply(Op::End),
                 };
 
                 // Errors are fine, panics are not
-                let _ = result;
+                if result.is_err() {
+                    had_error = true;
+                    break;
+                }
             }
 
-            // Drop exercises cleanup paths
+            if !had_error {
+                let _ = trame.build();
+            }
         });
     }
 
@@ -477,7 +486,7 @@ mod tests {
         fn arbitrary_shapes_and_ops(
             shape_recipes in arb_shape_recipes(6),
             target_idx in 0usize..100,
-            op_recipes in arb_op_recipes(6, 30),
+            op_recipes in arb_op_recipes(8),
         ) {
             let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
                 run_test(shape_recipes, target_idx, op_recipes);

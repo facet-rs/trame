@@ -482,14 +482,15 @@ fn run_fuzz(input: FuzzInput) {
                     }),
                 };
                 if result.is_err() {
-                    return;
+                    break;
                 }
             }
             FuzzOp::End => {
                 if trame.apply(Op::End).is_err() {
-                    return;
+                    break;
                 }
             }
         }
     }
+    let _ = trame.build();
 }

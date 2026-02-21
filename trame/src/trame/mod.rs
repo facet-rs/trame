@@ -902,7 +902,7 @@ where
         field_idx: usize,
         selected_variant: Option<usize>,
         variant_child: Option<NodeIdx<R>>,
-        _already_init: bool,
+        already_init: bool,
         src: Source<Ptr<R>, Shape<R>>,
     ) -> Result<(), TrameError>
     where
@@ -937,6 +937,9 @@ where
                 if self.current_in_subtree(child) {
                     self.current = target_idx;
                 }
+            }
+            if already_init && variant_child.is_none() {
+                unsafe { self.heap.drop_in_place(target_data, target_shape) };
             }
             if let NodeKind::Enum {
                 selected_variant,

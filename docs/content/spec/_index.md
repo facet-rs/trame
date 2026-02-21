@@ -457,10 +457,11 @@ set(&[], imm(some_box))
 
 ### Lists and Sets
 
-Lists and sets use the same staging model. The list/set node owns a staging
-allocation (`📦`). `Append` creates a new element frame at the end of the
-staging buffer and moves the cursor into it. The caller tracks the element
-index (track synthesis) for later re-entry.
+Lists and sets use the same staging model. The container node owns a **rope of
+stable staging buffers** (`📦0`, `📦1`, ...), not the final runtime container.
+`Append` allocates a new staging slot and creates an element frame pointing to
+that stable slot. The caller tracks the element index (track synthesis) for
+later re-entry.
 
 Example: `Vec<Pair>` (the same model applies to sets).
 
@@ -481,7 +482,7 @@ set(&[Append], stage())
 ```
 
 ```
-▶ ⟨Root: Vec<Pair>⟩ 📦 ● ✨
+▶ ⟨Root: Vec<Pair>⟩ 📦0 ● ✨
   └─ 0 → ⟨Child: Pair⟩ ✨
       ├─ a ○
       └─ b ○
@@ -492,7 +493,7 @@ set(&[Field(0)], imm(1))
 ```
 
 ```
-▶ ⟨Root: Vec<Pair>⟩ 📦 ●
+▶ ⟨Root: Vec<Pair>⟩ 📦0 ●
   └─ 0 → ⟨Child: Pair⟩
       ├─ a ● ✨
       └─ b ○
@@ -506,7 +507,7 @@ end()
 ```
 
 ```
-▶ ⟨Root: Vec<Pair>⟩ 📦 ✨
+▶ ⟨Root: Vec<Pair>⟩ 📦0 ✨
   └─ 0 → ⟨Child: Pair⟩
       ├─ a ●
       └─ b ○
@@ -519,7 +520,7 @@ set(&[Field(0)], stage())
 ```
 
 ```
-  ⟨Root: Vec<Pair>⟩ 📦
+  ⟨Root: Vec<Pair>⟩ 📦0
 ▶ └─ 0 → ⟨Child: Pair⟩
       ├─ a ●
       └─ b ○
@@ -530,33 +531,36 @@ set(&[Field(1)], imm(2))
 ```
 
 ```
-  ⟨Root: Vec<Pair>⟩ 📦
+  ⟨Root: Vec<Pair>⟩ 📦0
 ▶ └─ 0 → ⟨Child: Pair⟩
       ├─ a ●
       └─ b ● ✨
 ```
 
-In strict mode, once the element is fully initialized, `end()` folds it into
-the list and removes the child node from the tree:
+In strict mode, once the element is fully initialized, `end()` seals the
+element frame and returns to the list. It does **not** push into a live
+`Vec<T>` yet.
 
 ```rust
 end()
 ```
 
 ```
-▶ ⟨Root: Vec<Pair>⟩ 📦
+▶ ⟨Root: Vec<Pair>⟩ 📦0
   └─ 0 ● ✨
 ```
 
-Finalization turns the staged elements into the actual list or set (strict:
-on list/set `end()`, deferred: when exiting deferred mode).
+Finalization turns staged elements into the actual list/set in one shot by
+materializing from the rope (single-buffer fast path, multi-buffer copy/move
+path). Strict mode performs this when ending the list/set node; deferred mode
+does it when exiting deferred mode or at `build()`.
 
 ### Maps
 
-Maps use a direct-fill staging buffer. The map node owns a staging allocation
-(`📦`). `Append` creates a new entry frame containing `key` and `value` slots.
-The caller tracks the entry index (track synthesis) for later re-entry. At
-finalization, **last wins** for duplicate keys.
+Maps use the same stable-staging principle. The map node owns a rope of stable
+entry buffers, and `Append` creates an entry frame with `key` and `value`
+slots in stable memory. The caller tracks the entry index (track synthesis) for
+later re-entry. At materialization, duplicate keys use **last wins**.
 
 Initial state:
 
@@ -583,7 +587,7 @@ set(&[Append], stage())
 ```
 
 ```
-▶ ⟨Root: Map<String, Pair>⟩ 📦 ● ✨
+▶ ⟨Root: Map<String, Pair>⟩ 📦0 ● ✨
   └─ 0 → ⟨Entry: (Key, Value)⟩ ✨
       ├─ key ○
       └─ value ○
@@ -594,7 +598,7 @@ set(&[Field(0)], imm("a"))
 ```
 
 ```
-▶ ⟨Root: Map<String, Pair>⟩ 📦 ●
+▶ ⟨Root: Map<String, Pair>⟩ 📦0 ●
   └─ 0 → ⟨Entry: (Key, Value)⟩
       ├─ key ● ✨
       └─ value ○
@@ -608,7 +612,7 @@ end()
 ```
 
 ```
-▶ ⟨Root: Map<String, Pair>⟩ 📦 ✨
+▶ ⟨Root: Map<String, Pair>⟩ 📦0 ✨
   └─ 0 → ⟨Entry: (Key, Value)⟩
       ├─ key ●
       └─ value ○
@@ -621,7 +625,7 @@ set(&[Field(0)], stage())
 ```
 
 ```
-  ⟨Root: Map<String, Pair>⟩ 📦
+  ⟨Root: Map<String, Pair>⟩ 📦0
 ▶ └─ 0 → ⟨Entry: (Key, Value)⟩
       ├─ key ●
       └─ value ○
@@ -632,21 +636,22 @@ set(&[Field(1)], imm(some_pair))
 ```
 
 ```
-  ⟨Root: Map<String, Pair>⟩ 📦
+  ⟨Root: Map<String, Pair>⟩ 📦0
 ▶ └─ 0 → ⟨Entry: (Key, Value)⟩
       ├─ key ●
       └─ value ● ✨
 ```
 
-In strict mode, once the entry is fully initialized, `end()` folds it into the
-map and removes the entry node from the tree:
+In strict mode, `end()` on a complete entry seals the entry and returns to the
+map node. Materialization into the runtime map occurs when ending the map node
+(or later, in deferred mode).
 
 ```rust
 end()
 ```
 
 ```
-▶ ⟨Root: Map<String, Pair>⟩ 📦
+▶ ⟨Root: Map<String, Pair>⟩ 📦0
   └─ 0 ● ✨
 ```
 
@@ -869,6 +874,11 @@ pointers remain stable.
 Finalization flattens the rope into the actual vector/set in one pass, with a
 preallocated target sized from the total element count.
 
+This means Trame conceptually builds `Vec<T>` (or `Set<T>`/`Map<K,V>`) from
+stable staged `T` values at close/finalize time. It does **not** construct a
+partially initialized `Vec<MaybeUninit<T>>` by repeatedly mutating the live
+container during element construction.
+
 ## Reference Semantics
 
 This section captures the reference API and the formal semantics that the
@@ -978,15 +988,24 @@ Closed containers: setting a whole list/set/map with `Imm` or `Default` closes
 it. Closed containers reject staging and `Append`, but still allow `Imm` or
 `Default` to overwrite the whole container.
 
+`Append` is a staging-only operation. `Set { dst: &[Append], src: Imm }` and
+`Set { dst: &[Append], src: Default }` are invalid for list/set/map.
+
 ### Containers
 
-Lists and sets use staging buffers. `Append` creates a staged element node.
-Elements can be re-entered by index (`Field(n)`), and finalization materializes
-the collection (strict: on `End`, deferred: when exiting deferred mode).
+Lists and sets use rope-backed stable staging buffers. `Append` creates a
+staged element node in a stable slot. Elements can be re-entered by index
+(`Field(n)`), and container materialization happens only when closing/finalizing
+the container (strict: on container `End`, deferred: when exiting deferred mode
+or at `build()`).
 
-Maps use a direct-fill staging buffer. `Append` creates an entry node with
+Maps use rope-backed stable entry staging. `Append` creates an entry node with
 `key` and `value` slots, which can be built in any order. Duplicate keys use
-"last wins" at finalization. `Set { dst: &[Append], src: Imm }` is invalid.
+"last wins" at materialization.
+
+Capacity hints are advisory preallocation inputs for container staging. Correct
+hints should commonly produce a single-buffer rope; inaccurate hints may produce
+multiple buffers but must not change observable semantics.
 
 ### Enums
 
@@ -1067,6 +1086,35 @@ value.
 > `t[state.machine.overwrite]` Applying `Imm` or `Default` over an existing
 > initialized subtree MUST drop the replaced initialized portion before writing
 > replacement bytes.
+
+> `t[state.machine.container-append-stage-only]` `Append` MUST accept only
+> staging sources (`Stage` / deferred-stage variants). `Imm` and `Default` at
+> `Append` MUST fail.
+
+> `t[state.machine.container-stable-staging]` List/set/map incremental
+> construction MUST use stable staging storage for in-progress elements/entries.
+> Staged addresses MUST remain valid across capacity growth.
+
+> `t[state.machine.container-no-live-partial]` Trame MUST NOT expose
+> partially initialized user elements inside the live destination container
+> representation during incremental construction.
+
+> `t[state.machine.container-materialize-on-close]` Container elements/entries
+> staged through `Append` MUST be materialized into the final runtime container
+> only when the container closes/finalizes (strict close or deferred final
+> validation), not per-element during staging.
+
+> `t[state.machine.container-capacity-hint]` Capacity hints for staged
+> containers MUST be semantic no-ops (performance-only): changing hints MUST NOT
+> change accepted/rejected inputs or final value contents.
+
+> `t[state.machine.map-last-wins]` For map materialization, if multiple staged
+> entries resolve to equal keys, the final map MUST contain the value from the
+> latest staged entry for that key ("last wins").
+
+> `t[state.machine.set-uniqueness]` Set materialization MUST enforce set
+> uniqueness. Duplicate staged values MAY appear during staging but MUST collapse
+> according to set semantics in the final set.
 
 > `t[state.machine.enum-select-writes-discriminant]` Selecting enum variant
 > `n` via path navigation MUST perform the enum transition immediately by

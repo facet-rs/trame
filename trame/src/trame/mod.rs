@@ -689,6 +689,7 @@ where
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn apply_set_direct_list(
         &mut self,
         target_idx: NodeIdx<R>,
@@ -1853,6 +1854,7 @@ where
         Ok(())
     }
 
+    #[allow(clippy::manual_find)]
     fn find_list_child_slot(&self, parent_idx: NodeIdx<R>, child_idx: NodeIdx<R>) -> Option<usize> {
         let NodeKind::List { elements, .. } = &self.arena.get(parent_idx).kind else {
             return None;

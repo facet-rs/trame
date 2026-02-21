@@ -9,7 +9,7 @@ partial construction of Rust values using facet reflection.
 ## Conventions
 
 This spec uses **MUST** to indicate normative requirements. Normative
-requirements appear in blockquotes with a rule identifier (e.g. `r[...]`).
+requirements appear in blockquotes with a rule identifier (e.g. `t[...]`).
 All other text is informative. Rule of thumb: if you can't write a test for
 it, it's not a rule.
 
@@ -679,6 +679,11 @@ We model enums as a three-level tree: **Enum → Variant → Payload**. Variant
 selection uses `Field(n)`, and variant payloads are staged (no `Imm` for the
 payload itself).
 
+Selecting a variant is a state transition, not just navigation. When
+`Field(n)` is applied at an enum node, trame must make variant `n` active
+immediately (including writing the enum discriminant/tag in memory) before any
+payload writes for that variant occur.
+
 Example:
 
 ```rust
@@ -709,7 +714,9 @@ set(&[], imm(some_enum))
 ```
 
 If you later stage the enum, re-entering the **same** variant resumes; staging
-a **different** variant replaces the old one and resets its payload.
+a **different** variant replaces the old one and resets its payload. Replacing
+the old variant must drop any initialized bytes owned by the previous payload
+before activating the new variant.
 
 Unit variants are initialized by default and have no payload.
 
@@ -990,6 +997,18 @@ Unit variants are initialized by default and have no payload.
 If a variant is selected again: re-entering the same variant resumes, while a
 different variant replaces the old one and resets its payload.
 
+Variant selection is also a memory update. Applying `Field(n)` at an enum node
+must establish variant `n` as active immediately by writing/updating the
+discriminant/tag before any payload field writes are performed.
+
+If a different variant was active, the previous payload must be dropped (for
+its initialized portion) before switching, then the new payload starts from its
+initial state (unit payload initialized by definition; non-unit payload
+uninitialized until written/defaulted).
+
+For multi-segment paths (for example, `Field(1) / Field(0) / ...`), the enum
+transition for `Field(1)` occurs before descending into payload segments.
+
 ### Node lifecycle
 
 Nodes are created by `Stage`, by `Append`, or by multi-level path segments that
@@ -1031,6 +1050,47 @@ Any error poisons the Trame. After poisoning, all subsequent operations return
 exits a deferred subtree, that subtree is validated in full. If any incomplete
 nodes remain, `build()` errors. On success, it returns the fully constructed
 value.
+
+## Normative State Rules
+
+> `t[state.init.byte-tracking]` Trame MUST track initialization state for each
+> node/slot it manages and MUST only treat a node as complete when all required
+> fields/slots are initialized by value, default, or a finalized child.
+
+> `t[state.machine.strict-end]` In strict mode, `End` on an incomplete node
+> MUST fail and MUST poison the Trame.
+
+> `t[state.machine.deferred-end]` In deferred mode, `End` on an incomplete node
+> MUST return to the parent without folding, and validation MUST be deferred
+> until exiting the deferred subtree or `build()`.
+
+> `t[state.machine.overwrite]` Applying `Imm` or `Default` over an existing
+> initialized subtree MUST drop the replaced initialized portion before writing
+> replacement bytes.
+
+> `t[state.machine.enum-select-writes-discriminant]` Selecting enum variant
+> `n` via path navigation MUST perform the enum transition immediately by
+> establishing discriminant/tag for `n` before payload writes.
+
+> `t[state.machine.enum-switch-drops-previous]` Switching from one active enum
+> variant to another MUST drop the previously active initialized payload before
+> the new payload is constructed.
+
+> `t[state.machine.enum-direct-then-switch]` If enum bytes were established via
+> whole-value direct set (`Set` at root/enum node), a later variant switch MUST
+> first drop the old whole enum value before writing the new variant payload.
+
+> `t[state.machine.poison-cleanup]` Once poisoned, Trame MUST reject further
+> operations and MUST perform cleanup of all tracked initialized data and owned
+> allocations exactly once.
+
+> `t[state.machine.cleanup-no-double-free]` Cleanup traversal MUST NOT recurse
+> into child subtrees that are already semantically owned and dropped by a
+> parent `drop_in_place` path, to avoid double drop/deallocation.
+
+> `t[state.machine.build-finalization]` `build()` MUST be equivalent to
+> repeatedly applying `End` to the root (including deferred-subtree validation),
+> and MUST only succeed when no incomplete tracked nodes remain.
 
 ## Verification Abstractions
 

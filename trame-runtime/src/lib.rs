@@ -113,6 +113,22 @@ pub enum EnumReprKind {
     },
 }
 
+/// In-memory representation of an enum discriminant/tag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnumDiscriminantRepr {
+    RustNpo,
+    U8,
+    U16,
+    U32,
+    U64,
+    Usize,
+    I8,
+    I16,
+    I32,
+    I64,
+    Isize,
+}
+
 /// Interface for enum type information.
 pub trait IEnumType: Copy {
     /// Struct type used for variant payloads.
@@ -182,6 +198,16 @@ pub trait IShape: Copy + PartialEq + IShapeExtra {
 
     /// Enum representation metadata for this shape, if this is an enum.
     fn enum_repr_kind(&self) -> Option<EnumReprKind> {
+        None
+    }
+
+    /// In-memory discriminant representation for this shape, if this is an enum.
+    fn enum_discriminant_repr(&self) -> Option<EnumDiscriminantRepr> {
+        None
+    }
+
+    /// In-memory discriminant value for the given variant, if available.
+    fn enum_variant_discriminant(&self, _variant_idx: usize) -> Option<i64> {
         None
     }
 
@@ -481,6 +507,19 @@ pub trait IHeap<S: IShape> {
         pointer_shape: S,
         src: Self::Ptr,
         pointee_shape: S,
+    ) -> bool;
+
+    /// Select an enum variant by writing/updating its discriminant/tag in memory.
+    ///
+    /// Returns `false` if the enum representation or discriminant metadata is unsupported.
+    ///
+    /// # Safety
+    /// The caller must ensure `dst` points at storage for `enum_shape`.
+    unsafe fn select_enum_variant(
+        &mut self,
+        dst: Self::Ptr,
+        enum_shape: S,
+        variant_idx: usize,
     ) -> bool;
 
     /// Creusot predicate for the state of an allocation.

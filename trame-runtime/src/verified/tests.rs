@@ -243,6 +243,57 @@ fn vshape_option_is_not_struct_or_pointer() {
     }
 }
 
+#[test]
+fn vshape_enum_exposes_variants_and_payload_fields() {
+    let mut store = VShapeStore::new();
+    let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
+
+    let mut payload_fields = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
+    payload_fields[0] = VFieldDef::new(4, u32_h);
+    payload_fields[1] = VFieldDef::new(8, u32_h);
+    let pair_payload = VStructDef {
+        field_count: 2,
+        fields: payload_fields,
+    };
+
+    let variants = [
+        VVariantDef::new("Unit", "Unit", Some(0), VStructDef::empty()),
+        VVariantDef::new("Pair", "Pair", Some(1), pair_payload),
+    ];
+    let enum_h = store.add(VShapeDef::enum_with_variants_and_repr(
+        Layout::from_size_align(16, 4).expect("valid enum layout"),
+        EnumReprKind::ExternallyTagged,
+        EnumDiscriminantRepr::U32,
+        &variants,
+        VTypeOps::pod(),
+    ));
+
+    let shape = store.view(enum_h);
+    assert!(shape.is_enum());
+    assert_eq!(shape.enum_repr_kind(), Some(EnumReprKind::ExternallyTagged));
+
+    let en = shape.as_enum().expect("enum metadata should be present");
+    assert_eq!(en.variant_count(), 2);
+    assert!(en.variant(2).is_none());
+
+    let unit = en.variant(0).expect("unit variant should exist");
+    assert_eq!(unit.name(), "Unit");
+    assert_eq!(unit.effective_name(), "Unit");
+    assert_eq!(unit.data().field_count(), 0);
+
+    let pair = en.variant(1).expect("pair variant should exist");
+    assert_eq!(pair.name(), "Pair");
+    assert_eq!(pair.effective_name(), "Pair");
+    let payload = pair.data();
+    assert_eq!(payload.field_count(), 2);
+    assert_eq!(payload.field(0).unwrap().offset(), 4);
+    assert_eq!(payload.field(1).unwrap().offset(), 8);
+    assert_eq!(
+        payload.field(0).unwrap().shape().layout().unwrap().size(),
+        4
+    );
+}
+
 // Tests for real Shape implementation
 
 #[derive(facet::Facet)]

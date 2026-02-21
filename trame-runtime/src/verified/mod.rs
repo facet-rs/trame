@@ -12,8 +12,8 @@ mod byte_range;
 use byte_range::{ByteRangeError, ByteRangeTracker, Range};
 
 use crate::{
-    CopyDesc, EnumReprKind, IArena, IEnumType, IExecShape, IField, IHeap, IPointerType, IPtr,
-    IRuntime, IShape, IShapeStore, IStructType, IVariantType, Idx,
+    CopyDesc, EnumDiscriminantRepr, EnumReprKind, IArena, IEnumType, IExecShape, IField, IHeap,
+    IPointerType, IPtr, IRuntime, IShape, IShapeStore, IStructType, IVariantType, Idx,
 };
 
 /// A runtime that verifies all operations
@@ -98,6 +98,9 @@ pub const MAX_SHAPES_PER_STORE: usize = 8;
 
 /// Maximum number of fields in a struct (for bounded verification).
 pub const MAX_FIELDS_PER_STRUCT: usize = 8;
+
+/// Maximum number of variants in an enum (for bounded verification).
+pub const MAX_VARIANTS_PER_ENUM: usize = 8;
 
 /// Drop hook used by executable shapes.
 pub type VDropInPlaceFn = unsafe fn(*mut u8);
@@ -215,6 +218,34 @@ pub struct VStructDef {
     pub fields: [VFieldDef; MAX_FIELDS_PER_STRUCT],
 }
 
+/// A synthetic enum variant for verification.
+#[cfg_attr(creusot, derive(DeepModel))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VVariantDef {
+    /// Rust variant name.
+    pub name: &'static str,
+    /// Effective serialized variant name.
+    pub effective_name: &'static str,
+    /// In-memory discriminant value for this variant.
+    pub discriminant: Option<i64>,
+    /// Struct-like payload layout for this variant.
+    pub data: VStructDef,
+}
+
+/// A synthetic enum type for verification.
+#[cfg_attr(creusot, derive(DeepModel))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VEnumDef {
+    /// Number of variants.
+    pub variant_count: u8,
+    /// Enum representation metadata.
+    pub repr_kind: EnumReprKind,
+    /// In-memory discriminant representation.
+    pub discriminant_repr: EnumDiscriminantRepr,
+    /// Variant information (only first `variant_count` entries are valid).
+    pub variants: [VVariantDef; MAX_VARIANTS_PER_ENUM],
+}
+
 /// A bounded shape definition for Kani verification.
 ///
 /// Unlike `facet_core::Shape` which uses static references and can be recursive,
@@ -235,6 +266,7 @@ pub struct VShapeDef {
 
 /// Type-specific definition for verified shapes.
 #[cfg_attr(creusot, derive(DeepModel))]
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VDef {
     /// A scalar type (no internal structure to track).
@@ -243,13 +275,15 @@ pub enum VDef {
     Struct(VStructDef),
     /// A smart pointer with a known pointee shape.
     Pointer(VPointerDef),
+    /// An enum with bounded variants.
+    Enum(VEnumDef),
     /// An `Option<T>`-like sum type.
     ///
     /// This is modeled as a scalar for now (no partial field addressing), but
     /// we track the payload shape explicitly so verified shape stores can
     /// represent optional values without erasing type structure.
     Option(VOptionDef),
-    // TODO: Enum, Result, List, Map, etc.
+    // TODO: Result, List, Map, etc.
 }
 
 /// A synthetic smart-pointer definition for verification.
@@ -396,18 +430,17 @@ pub struct VPointerView<'a> {
 }
 
 /// Enum type view for verified shapes.
-///
-/// Verified shapes currently do not model enums; this exists to satisfy trait
-/// associated types while enum support is added incrementally.
 #[derive(Clone, Copy)]
 pub struct VEnumView<'a> {
     pub store: &'a VShapeStore,
+    pub def: &'a VEnumDef,
 }
 
 /// Enum variant view for verified shapes.
 #[derive(Clone, Copy)]
 pub struct VVariantView<'a> {
     pub store: &'a VShapeStore,
+    pub def: &'a VVariantDef,
 }
 
 impl<'a> PartialEq for VShapeView<'a, VShapeStore> {
@@ -456,12 +489,40 @@ impl<'a> IShape for VShapeView<'a, VShapeStore> {
 
     #[inline]
     fn as_enum(&self) -> Option<Self::EnumType> {
-        None
+        match &self.store.get_def(self.handle).def {
+            VDef::Enum(e) => Some(VEnumView {
+                store: self.store,
+                def: e,
+            }),
+            _ => None,
+        }
     }
 
     #[inline]
     fn enum_repr_kind(&self) -> Option<EnumReprKind> {
-        None
+        match &self.store.get_def(self.handle).def {
+            VDef::Enum(e) => Some(e.repr_kind),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn enum_discriminant_repr(&self) -> Option<EnumDiscriminantRepr> {
+        match &self.store.get_def(self.handle).def {
+            VDef::Enum(e) => Some(e.discriminant_repr),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn enum_variant_discriminant(&self, variant_idx: usize) -> Option<i64> {
+        let VDef::Enum(e) = &self.store.get_def(self.handle).def else {
+            return None;
+        };
+        if variant_idx >= e.variant_count as usize {
+            return None;
+        }
+        e.variants[variant_idx].discriminant
     }
 
     #[inline]
@@ -588,12 +649,19 @@ impl<'a> IEnumType for VEnumView<'a> {
 
     #[inline]
     fn variant_count(&self) -> usize {
-        0
+        self.def.variant_count as usize
     }
 
     #[inline]
-    fn variant(&self, _idx: usize) -> Option<Self::Variant> {
-        None
+    fn variant(&self, idx: usize) -> Option<Self::Variant> {
+        if idx < self.def.variant_count as usize {
+            Some(VVariantView {
+                store: self.store,
+                def: &self.def.variants[idx],
+            })
+        } else {
+            None
+        }
     }
 }
 
@@ -602,17 +670,20 @@ impl<'a> IVariantType for VVariantView<'a> {
 
     #[inline]
     fn name(&self) -> &'static str {
-        ""
+        self.def.name
     }
 
     #[inline]
     fn effective_name(&self) -> &'static str {
-        ""
+        self.def.effective_name
     }
 
     #[inline]
     fn data(&self) -> Self::StructType {
-        panic!("VVariantView::data is unreachable until enum support is implemented")
+        VStructView {
+            store: self.store,
+            def: &self.def.data,
+        }
     }
 }
 
@@ -754,6 +825,67 @@ impl VShapeDef {
             }),
         }
     }
+
+    /// Create an enum shape with the given variants.
+    pub fn enum_with_variants(
+        layout: VLayout,
+        repr_kind: EnumReprKind,
+        variants: &[VVariantDef],
+    ) -> Self {
+        Self::enum_with_variants_and_repr(
+            layout,
+            repr_kind,
+            EnumDiscriminantRepr::U8,
+            variants,
+            VTypeOps::pod(),
+        )
+    }
+
+    /// Create an enum shape with explicit executable operations.
+    pub fn enum_with_variants_and_ops(
+        layout: VLayout,
+        repr_kind: EnumReprKind,
+        variants: &[VVariantDef],
+        type_ops: VTypeOps,
+    ) -> Self {
+        Self::enum_with_variants_and_repr(
+            layout,
+            repr_kind,
+            EnumDiscriminantRepr::U8,
+            variants,
+            type_ops,
+        )
+    }
+
+    /// Create an enum shape with explicit discriminant representation.
+    pub fn enum_with_variants_and_repr(
+        layout: VLayout,
+        repr_kind: EnumReprKind,
+        discriminant_repr: EnumDiscriminantRepr,
+        variants: &[VVariantDef],
+        type_ops: VTypeOps,
+    ) -> Self {
+        assert!(variants.len() <= MAX_VARIANTS_PER_ENUM, "too many variants");
+
+        let mut variant_array = [VVariantDef::unit(""); MAX_VARIANTS_PER_ENUM];
+        for (idx, variant) in variants.iter().copied().enumerate() {
+            variant_array[idx] = VVariantDef {
+                discriminant: variant.discriminant.or(Some(idx as i64)),
+                ..variant
+            };
+        }
+
+        Self {
+            layout,
+            type_ops,
+            def: VDef::Enum(VEnumDef {
+                variant_count: variants.len() as u8,
+                repr_kind,
+                discriminant_repr,
+                variants: variant_array,
+            }),
+        }
+    }
 }
 
 impl VFieldDef {
@@ -763,6 +895,38 @@ impl VFieldDef {
             offset,
             shape_handle,
         }
+    }
+}
+
+impl VStructDef {
+    /// Create an empty struct payload definition.
+    pub const fn empty() -> Self {
+        Self {
+            field_count: 0,
+            fields: [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT],
+        }
+    }
+}
+
+impl VVariantDef {
+    /// Create a variant definition with explicit payload fields.
+    pub const fn new(
+        name: &'static str,
+        effective_name: &'static str,
+        discriminant: Option<i64>,
+        data: VStructDef,
+    ) -> Self {
+        Self {
+            name,
+            effective_name,
+            discriminant,
+            data,
+        }
+    }
+
+    /// Create a unit variant definition.
+    pub const fn unit(name: &'static str) -> Self {
+        Self::new(name, name, None, VStructDef::empty())
     }
 }
 
@@ -1264,23 +1428,44 @@ impl<S: IShape> VHeap<S> {
             return true;
         }
 
-        if !stored.is_struct() {
+        if stored.is_struct() {
+            let st = stored.as_struct().expect("struct shape");
+            let field_count = st.field_count();
+            for i in 0..field_count {
+                let field = st.field(i).expect("field index in range");
+                let field_shape = field.shape();
+                let field_size = field_shape
+                    .layout()
+                    .expect("IShape requires sized types")
+                    .size();
+                let start = field.offset();
+                let end = start + field_size;
+                if offset >= start && offset < end {
+                    return Self::matches_subshape(field_shape, offset - start, target);
+                }
+            }
             return false;
         }
 
-        let st = stored.as_struct().expect("struct shape");
-        let field_count = st.field_count();
-        for i in 0..field_count {
-            let field = st.field(i).expect("field index in range");
-            let field_shape = field.shape();
-            let field_size = field_shape
-                .layout()
-                .expect("IShape requires sized types")
-                .size();
-            let start = field.offset();
-            let end = start + field_size;
-            if offset >= start && offset < end {
-                return Self::matches_subshape(field_shape, offset - start, target);
+        if let Some(en) = stored.as_enum() {
+            let variant_count = en.variant_count();
+            for variant_idx in 0..variant_count {
+                let variant = en.variant(variant_idx).expect("variant index in range");
+                let payload = variant.data();
+                let field_count = payload.field_count();
+                for field_idx in 0..field_count {
+                    let field = payload.field(field_idx).expect("field index in range");
+                    let field_shape = field.shape();
+                    let field_size = field_shape
+                        .layout()
+                        .expect("IShape requires sized types")
+                        .size();
+                    let start = field.offset();
+                    let end = start + field_size;
+                    if offset >= start && offset < end {
+                        return Self::matches_subshape(field_shape, offset - start, target);
+                    }
+                }
             }
         }
 
@@ -1290,6 +1475,19 @@ impl<S: IShape> VHeap<S> {
     #[cfg(creusot)]
     fn matches_subshape(_stored: S, _offset: usize, _target: S) -> bool {
         true
+    }
+
+    fn discriminant_size_bytes(repr: EnumDiscriminantRepr) -> Option<u32> {
+        match repr {
+            EnumDiscriminantRepr::RustNpo => None,
+            EnumDiscriminantRepr::U8 | EnumDiscriminantRepr::I8 => Some(1),
+            EnumDiscriminantRepr::U16 | EnumDiscriminantRepr::I16 => Some(2),
+            EnumDiscriminantRepr::U32 | EnumDiscriminantRepr::I32 => Some(4),
+            EnumDiscriminantRepr::U64
+            | EnumDiscriminantRepr::I64
+            | EnumDiscriminantRepr::Usize
+            | EnumDiscriminantRepr::Isize => Some(8),
+        }
     }
 }
 
@@ -1484,6 +1682,14 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
             return;
         }
 
+        if shape.is_enum() {
+            if let Err(e) = tracker.clear_range(base, end) {
+                self.print_history(alloc_id);
+                panic!("drop_in_place: clear_range failed: {:?}", e);
+            }
+            return;
+        }
+
         if let Err(e) = tracker.mark_uninit(base, end) {
             self.print_history(alloc_id);
             panic!("drop_in_place: range not initialized: {:?}", e);
@@ -1556,6 +1762,43 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
                 "pointer_from_pointee: destination already initialized: {:?}",
                 e
             );
+        }
+        true
+    }
+
+    unsafe fn select_enum_variant(&mut self, dst: VPtr, enum_shape: S, variant_idx: usize) -> bool {
+        let Some(discriminant_repr) = enum_shape.enum_discriminant_repr() else {
+            return false;
+        };
+        let Some(_discriminant) = enum_shape.enum_variant_discriminant(variant_idx) else {
+            return false;
+        };
+        let Some(len) = Self::discriminant_size_bytes(discriminant_repr) else {
+            return false;
+        };
+        if len == 0 {
+            return false;
+        }
+
+        let alloc_id = dst.alloc_id();
+        let end = dst.offset.saturating_add(len);
+        if (end as usize) > dst.alloc_size() {
+            self.print_history(alloc_id);
+            panic!("select_enum_variant: out of bounds");
+        }
+
+        self.record_op(
+            alloc_id,
+            HeapOpKind::Memcpy,
+            Some(Range::new(dst.offset, end)),
+        );
+
+        let (tracker, _) = self.get_tracker_mut(alloc_id);
+        if !tracker.is_init(dst.offset, end) {
+            if let Err(e) = tracker.mark_init(dst.offset, end) {
+                self.print_history(alloc_id);
+                panic!("select_enum_variant: discriminant init failed: {:?}", e);
+            }
         }
         true
     }

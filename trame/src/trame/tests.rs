@@ -2,6 +2,7 @@ use super::*;
 use crate::Path;
 use crate::runtime::live::*;
 use crate::runtime::verified::*;
+use crate::runtime::{EnumDiscriminantRepr, EnumReprKind};
 use crate::vshape_store_reset;
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -48,6 +49,42 @@ unsafe fn trame_live_vshape_copy_new_into(dst: *mut u8, src: *mut u8) {
 }
 
 unsafe fn trame_live_vshape_drop_noop(_ptr: *mut u8) {}
+
+fn register_verified_enum_path_shapes() -> (
+    VShapeView<'static, VShapeStore>,
+    VShapeView<'static, VShapeStore>,
+) {
+    let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
+
+    let mut one_fields = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
+    one_fields[0] = VFieldDef::new(4, u32_h);
+    let one_payload = VStructDef {
+        field_count: 1,
+        fields: one_fields,
+    };
+
+    let mut pair_fields = [VFieldDef::new(0, VShapeHandle(0)); MAX_FIELDS_PER_STRUCT];
+    pair_fields[0] = VFieldDef::new(4, u32_h);
+    pair_fields[1] = VFieldDef::new(8, u32_h);
+    let pair_payload = VStructDef {
+        field_count: 2,
+        fields: pair_fields,
+    };
+
+    let variants = [
+        VVariantDef::new("Unit", "Unit", Some(0), VStructDef::empty()),
+        VVariantDef::new("One", "One", Some(1), one_payload),
+        VVariantDef::new("Pair", "Pair", Some(2), pair_payload),
+    ];
+    let enum_h = vshape_register(VShapeDef::enum_with_variants_and_repr(
+        Layout::from_size_align(16, 4).expect("valid enum layout"),
+        EnumReprKind::ExternallyTagged,
+        EnumDiscriminantRepr::U32,
+        &variants,
+        VTypeOps::pod(),
+    ));
+    (vshape_view(enum_h), vshape_view(u32_h))
+}
 
 #[test]
 fn scalar_lifecycle_verified() {
@@ -941,6 +978,247 @@ fn option_live_imm_builds_some() {
     let hv = trame.build().unwrap();
     let out = hv.materialize::<Option<u32>>().unwrap();
     assert_eq!(out, Some(7));
+}
+
+#[derive(Clone, Debug, PartialEq, facet::Facet)]
+#[repr(u8)]
+enum LiveEnum {
+    Unit,
+    One(u32),
+    Pair(u32, u32),
+}
+
+#[test]
+// t[verify state.machine.enum-switch-drops-previous]
+fn enum_live_stage_switch_variant_builds() {
+    let mut trame = Trame::<LRuntime>::alloc::<LiveEnum>().unwrap();
+
+    let mut a = 7_u32;
+    let mut b = 9_u32;
+    let mut c = 5_u32;
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(2),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::from_ref(&mut a),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(1),
+            src: Source::from_ref(&mut b),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+    trame.apply(Op::End).unwrap();
+    assert!(trame.is_complete());
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(1),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::from_ref(&mut c),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+    trame.apply(Op::End).unwrap();
+
+    let hv = trame.build().unwrap();
+    let out = hv.materialize::<LiveEnum>().unwrap();
+    assert_eq!(out, LiveEnum::One(5));
+}
+
+#[test]
+// t[verify state.machine.enum-direct-then-switch]
+fn enum_verified_direct_set_then_switch_variant() {
+    let _g = FreshStore::new();
+    let (enum_shape, u32_shape) = register_verified_enum_path_shapes();
+
+    let mut heap = VRuntime::heap();
+    let src_enum = unsafe { heap.alloc(enum_shape) };
+    let src_payload = unsafe { heap.alloc(u32_shape) };
+    unsafe { heap.default_in_place(src_enum, enum_shape) };
+    unsafe { heap.default_in_place(src_payload, u32_shape) };
+
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, enum_shape) };
+
+    trame
+        .apply(Op::Set {
+            dst: Path::empty(),
+            src: unsafe { Source::from_vptr(src_enum, enum_shape) },
+        })
+        .unwrap();
+    assert!(trame.is_complete());
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(1),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    assert_eq!(trame.depth(), 1);
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    assert_eq!(trame.depth(), 2);
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: unsafe { Source::from_vptr(src_payload, u32_shape) },
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+    trame.apply(Op::End).unwrap();
+
+    assert_eq!(trame.depth(), 0);
+    assert!(trame.is_complete());
+    let _ = trame.build().unwrap();
+}
+
+#[test]
+// t[verify state.machine.enum-select-writes-discriminant]
+fn enum_verified_switch_to_unit_variant() {
+    let _g = FreshStore::new();
+    let (enum_shape, u32_shape) = register_verified_enum_path_shapes();
+
+    let mut heap = VRuntime::heap();
+    let src0 = unsafe { heap.alloc(u32_shape) };
+    let src1 = unsafe { heap.alloc(u32_shape) };
+    unsafe { heap.default_in_place(src0, u32_shape) };
+    unsafe { heap.default_in_place(src1, u32_shape) };
+
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, enum_shape) };
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(2),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: unsafe { Source::from_vptr(src0, u32_shape) },
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(1),
+            src: unsafe { Source::from_vptr(src1, u32_shape) },
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+    trame.apply(Op::End).unwrap();
+    assert!(trame.is_complete());
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+
+    assert_eq!(trame.depth(), 0);
+    assert!(trame.is_complete());
+    let _ = trame.build().unwrap();
+}
+
+#[test]
+// t[verify state.machine.deferred-end]
+fn enum_verified_deferred_resume_same_variant_payload() {
+    let _g = FreshStore::new();
+    let (enum_shape, u32_shape) = register_verified_enum_path_shapes();
+
+    let mut heap = VRuntime::heap();
+    let src0 = unsafe { heap.alloc(u32_shape) };
+    let src1 = unsafe { heap.alloc(u32_shape) };
+    unsafe { heap.default_in_place(src0, u32_shape) };
+    unsafe { heap.default_in_place(src1, u32_shape) };
+
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, enum_shape) };
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(2),
+            src: Source::stage_deferred(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::stage_deferred(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: unsafe { Source::from_vptr(src0, u32_shape) },
+        })
+        .unwrap();
+
+    trame.apply(Op::End).unwrap();
+    trame.apply(Op::End).unwrap();
+    assert_eq!(trame.depth(), 0);
+    assert!(!trame.is_complete());
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(2),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(1),
+            src: unsafe { Source::from_vptr(src1, u32_shape) },
+        })
+        .unwrap();
+
+    trame.apply(Op::End).unwrap();
+    trame.apply(Op::End).unwrap();
+
+    assert_eq!(trame.depth(), 0);
+    assert!(trame.is_complete());
+    let _ = trame.build().unwrap();
 }
 
 #[test]

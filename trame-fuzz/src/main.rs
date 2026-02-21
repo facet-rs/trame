@@ -463,7 +463,9 @@ fn run_fuzz(input: FuzzInput) {
                             dst: path.clone(),
                             src: unsafe { Source::from_ptr_shape(ptr, shape) },
                         });
-                        core::mem::forget(value);
+                        if result.is_ok() {
+                            core::mem::forget(value);
+                        }
                         result
                     }
                     FuzzSource::Default => trame.apply(Op::Set {

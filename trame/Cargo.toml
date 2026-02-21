@@ -28,6 +28,9 @@ facet-core.workspace = true
 trame-runtime.workspace = true
 smallvec.workspace = true
 
+[dev-dependencies]
+facet.workspace = true
+
 [lints]
 workspace = true
 

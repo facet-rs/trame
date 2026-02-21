@@ -7,7 +7,7 @@ use crate::vshape_store_reset;
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use facet_core::Facet;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Guard that resets the global shape store on creation and drop.
 struct FreshStore;
@@ -1252,6 +1252,134 @@ fn list_live_deferred_reenter_element_by_index() {
     let hv = trame.build().unwrap();
     let out = hv.materialize::<Vec<u32>>().unwrap();
     assert_eq!(out, vec![9]);
+}
+
+#[test]
+fn map_live_append_stage_end_builds() {
+    let mut trame = Trame::<LRuntime>::alloc::<BTreeMap<u32, u32>>().unwrap();
+
+    let mut k0 = 1_u32;
+    let mut v0 = 11_u32;
+    let mut k1 = 2_u32;
+    let mut v1 = 22_u32;
+
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    assert_eq!(trame.depth(), 1);
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::from_ref(&mut k0),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(1),
+            src: Source::from_ref(&mut v0),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+    assert_eq!(trame.depth(), 0);
+
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    assert_eq!(trame.depth(), 1);
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::from_ref(&mut k1),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(1),
+            src: Source::from_ref(&mut v1),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+
+    assert_eq!(trame.depth(), 0);
+    assert!(trame.is_complete());
+
+    let hv = trame.build().unwrap();
+    let out = hv.materialize::<BTreeMap<u32, u32>>().unwrap();
+
+    let mut expected = BTreeMap::new();
+    expected.insert(1, 11);
+    expected.insert(2, 22);
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn map_live_deferred_reenter_entry_by_index() {
+    let mut trame = Trame::<LRuntime>::alloc::<BTreeMap<u32, u32>>().unwrap();
+
+    let mut key = 7_u32;
+    let mut value = 9_u32;
+
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage_deferred(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::from_ref(&mut key),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+    assert_eq!(trame.depth(), 0);
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    assert_eq!(trame.depth(), 1);
+    trame
+        .apply(Op::Set {
+            dst: Path::field(1),
+            src: Source::from_ref(&mut value),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+
+    assert_eq!(trame.depth(), 0);
+    assert!(trame.is_complete());
+
+    let hv = trame.build().unwrap();
+    let out = hv.materialize::<BTreeMap<u32, u32>>().unwrap();
+    assert_eq!(out.get(&7), Some(&9));
+}
+
+#[test]
+fn map_live_direct_whole_map_close_rejects_append() {
+    let mut trame = Trame::<LRuntime>::alloc::<BTreeMap<u32, u32>>().unwrap();
+
+    trame
+        .apply(Op::Set {
+            dst: Path::empty(),
+            src: Source::default_value(),
+        })
+        .unwrap();
+    assert!(trame.is_complete());
+
+    let err = trame.apply(Op::Set {
+        dst: Path::append(),
+        src: Source::stage(None),
+    });
+    assert_eq!(err, Err(TrameError::UnsupportedSource));
 }
 
 #[test]

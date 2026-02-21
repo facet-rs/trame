@@ -9,3 +9,4 @@ Cargo.lock
 verif/
 .why3find/
 rustc-ice-*.txt
+ci-artifacts/

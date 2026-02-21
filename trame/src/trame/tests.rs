@@ -989,6 +989,7 @@ enum LiveEnum {
 }
 
 #[test]
+// t[verify state.machine.enum-switch-drops-previous]
 fn enum_live_stage_switch_variant_builds() {
     let mut trame = Trame::<LRuntime>::alloc::<LiveEnum>().unwrap();
 
@@ -1051,6 +1052,7 @@ fn enum_live_stage_switch_variant_builds() {
 }
 
 #[test]
+// t[verify state.machine.enum-direct-then-switch]
 fn enum_verified_direct_set_then_switch_variant() {
     let _g = FreshStore::new();
     let (enum_shape, u32_shape) = register_verified_enum_path_shapes();
@@ -1100,6 +1102,7 @@ fn enum_verified_direct_set_then_switch_variant() {
 }
 
 #[test]
+// t[verify state.machine.enum-select-writes-discriminant]
 fn enum_verified_switch_to_unit_variant() {
     let _g = FreshStore::new();
     let (enum_shape, u32_shape) = register_verified_enum_path_shapes();
@@ -1154,6 +1157,7 @@ fn enum_verified_switch_to_unit_variant() {
 }
 
 #[test]
+// t[verify state.machine.deferred-end]
 fn enum_verified_deferred_resume_same_variant_payload() {
     let _g = FreshStore::new();
     let (enum_shape, u32_shape) = register_verified_enum_path_shapes();

@@ -601,6 +601,7 @@ where
     where
         Shape<R>: IShape + PartialEq,
     {
+        // t[impl state.machine.overwrite]
         #[cfg(creusot)]
         assume(snapshot! { false });
 
@@ -908,6 +909,9 @@ where
     where
         Shape<R>: IShape + PartialEq,
     {
+        // t[impl state.machine.enum-select-writes-discriminant]
+        // t[impl state.machine.enum-switch-drops-previous]
+        // t[impl state.machine.enum-direct-then-switch]
         let enum_type = Self::enum_type(target_shape)?;
         let variant_count = enum_type.variant_count();
         if field_idx >= variant_count {
@@ -1125,6 +1129,7 @@ where
     where
         Shape<R>: IShape + PartialEq,
     {
+        // t[impl state.machine.overwrite]
         let field_count = fields.len();
         if field_idx >= field_count {
             return Err(TrameError::FieldOutOfBounds {
@@ -1535,6 +1540,9 @@ where
     }
 
     fn finalize_subtree(&mut self, idx: NodeIdx<R>) -> Result<(), TrameError> {
+        // t[impl state.init.byte-tracking]
+        // t[impl state.machine.strict-end]
+        // t[impl state.machine.deferred-end]
         let kind = self.arena.get(idx).kind.clone();
         match kind {
             NodeKind::Scalar { initialized } => {
@@ -1694,6 +1702,7 @@ where
     /// Returns error if not all fields are initialized.
     #[cfg_attr(creusot, trusted)]
     pub fn build(self) -> Result<HeapValue<'facet, R>, TrameError> {
+        // t[impl state.machine.build-finalization]
         let mut this = self;
         this.check_poisoned()?;
         this.current = this.root;
@@ -1718,6 +1727,7 @@ where
 {
     /// Poison the Trame, cleaning up all initialized fields.
     fn poison(&mut self) {
+        // t[impl state.machine.poison-cleanup]
         if self.poisoned {
             return;
         }
@@ -1730,6 +1740,7 @@ where
     /// Recursively clean up a Node and all its children (depth-first).
     #[cfg_attr(creusot, trusted)]
     fn cleanup_node(&mut self, idx: NodeIdx<R>) {
+        // t[impl state.machine.cleanup-no-double-free]
         if !idx.is_valid() {
             return;
         }
@@ -1777,10 +1788,14 @@ where
                 }
                 NodeKind::Pointer {
                     child: Some(child_idx),
+                    initialized: false,
                     ..
                 } => {
                     children.push(*child_idx);
                 }
+                NodeKind::Pointer {
+                    initialized: true, ..
+                } => {}
                 NodeKind::Pointer { child: None, .. } => {}
                 NodeKind::Enum {
                     variant_child: Some(child_idx),

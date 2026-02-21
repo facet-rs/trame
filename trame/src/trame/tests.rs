@@ -1047,6 +1047,95 @@ fn list_live_append_struct_elements_builds() {
 }
 
 #[test]
+fn list_live_stage_capacity_hint_keeps_single_chunk() {
+    let mut trame = Trame::<LRuntime>::alloc::<Vec<u32>>().unwrap();
+
+    let mut v0 = 1_u32;
+    let mut v1 = 2_u32;
+    let mut v2 = 3_u32;
+
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(Some(3)),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::empty(),
+            src: Source::from_ref(&mut v0),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::empty(),
+            src: Source::from_ref(&mut v1),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::empty(),
+            src: Source::from_ref(&mut v2),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+
+    assert_eq!(trame.list_stage_chunk_capacities(trame.root), vec![3]);
+
+    let hv = trame.build().unwrap();
+    let out = hv.materialize::<Vec<u32>>().unwrap();
+    assert_eq!(out, vec![1, 2, 3]);
+}
+
+#[test]
+fn list_live_stage_grows_into_multiple_chunks() {
+    let mut trame = Trame::<LRuntime>::alloc::<Vec<u32>>().unwrap();
+
+    for i in 0..5_u32 {
+        let mut value = i + 1;
+        trame
+            .apply(Op::Set {
+                dst: Path::append(),
+                src: if i == 0 {
+                    Source::stage(Some(2))
+                } else {
+                    Source::stage(None)
+                },
+            })
+            .unwrap();
+        trame
+            .apply(Op::Set {
+                dst: Path::empty(),
+                src: Source::from_ref(&mut value),
+            })
+            .unwrap();
+        trame.apply(Op::End).unwrap();
+    }
+
+    assert_eq!(trame.list_stage_chunk_capacities(trame.root), vec![2, 4]);
+
+    let hv = trame.build().unwrap();
+    let out = hv.materialize::<Vec<u32>>().unwrap();
+    assert_eq!(out, vec![1, 2, 3, 4, 5]);
+}
+
+#[test]
 fn list_live_append_nested_lists_builds() {
     let mut trame = Trame::<LRuntime>::alloc::<Vec<Vec<u32>>>().unwrap();
     let mut v0 = 10_u32;
@@ -1198,6 +1287,47 @@ fn list_verified_append_stage_end_builds() {
     trame.apply(Op::End).unwrap();
 
     assert!(trame.is_complete());
+    let _ = trame.build().unwrap();
+}
+
+#[test]
+fn list_verified_stage_capacity_hint_keeps_single_chunk() {
+    let _g = FreshStore::new();
+    let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
+    let list_h = vshape_register(VShapeDef::list_of(
+        u32_h,
+        Layout::new::<Vec<u32>>(),
+        VTypeOps::pod(),
+    ));
+    let list_shape = vshape_view(list_h);
+    let u32_shape = vshape_view(u32_h);
+
+    let mut heap = VRuntime::heap();
+    let src = unsafe { heap.alloc(u32_shape) };
+    unsafe { heap.default_in_place(src, u32_shape) };
+
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, list_shape) };
+    for i in 0..3 {
+        trame
+            .apply(Op::Set {
+                dst: Path::append(),
+                src: if i == 0 {
+                    Source::stage(Some(3))
+                } else {
+                    Source::stage(None)
+                },
+            })
+            .unwrap();
+        trame
+            .apply(Op::Set {
+                dst: Path::empty(),
+                src: unsafe { Source::from_vptr(src, u32_shape) },
+            })
+            .unwrap();
+        trame.apply(Op::End).unwrap();
+    }
+
+    assert_eq!(trame.list_stage_chunk_capacities(trame.root), vec![3]);
     let _ = trame.build().unwrap();
 }
 

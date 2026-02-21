@@ -1,6 +1,6 @@
 use super::*;
-use crate::IHeap;
 use crate::live::LHeap;
+use crate::{IHeap, IListType, IShape};
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use facet_core::{Facet, Shape};
@@ -244,6 +244,31 @@ fn vshape_option_is_not_struct_or_pointer() {
 }
 
 #[test]
+fn vshape_list_exposes_element_shape() {
+    let mut store = VShapeStore::new();
+    let elem_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
+    let list_h = store.add(VShapeDef::list_of(
+        elem_h,
+        Layout::new::<Vec<u32>>(),
+        VTypeOps::pod(),
+    ));
+
+    let list_shape = store.view(list_h);
+    assert!(list_shape.is_list());
+    assert!(list_shape.as_list().is_some());
+    assert!(!list_shape.is_struct());
+
+    let list_ty = list_shape.as_list().unwrap();
+    let elem_shape = list_ty.element();
+    assert_eq!(elem_shape.layout().unwrap().size(), 4);
+
+    match store.get_def(list_h).def {
+        VDef::List(def) => assert_eq!(def.elem_handle, elem_h),
+        _ => panic!("expected list def"),
+    }
+}
+
+#[test]
 fn vshape_enum_exposes_variants_and_payload_fields() {
     let mut store = VShapeStore::new();
     let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
@@ -332,6 +357,18 @@ fn real_scalar_is_not_struct() {
     let shape: &'static Shape = u32::SHAPE;
     assert!(!shape.is_struct());
     assert!(shape.as_struct().is_none());
+}
+
+#[test]
+fn real_vec_shape_is_list() {
+    let shape: &'static Shape = Vec::<u32>::SHAPE;
+    assert!(shape.is_list());
+    assert!(shape.as_list().is_some());
+    assert!(!shape.is_struct());
+
+    let list = shape.as_list().unwrap();
+    let elem = list.element();
+    assert_eq!(elem.layout().unwrap().size(), 4);
 }
 
 #[derive(facet::Facet)]

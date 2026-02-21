@@ -53,7 +53,7 @@ Run with `just fuzz`.
 
 ## Formal Verification Status
 
-`CRuntime` and `trame-verus` are retired.
+`CRuntime` is retired.
 
 Future Creusot work is expected to resume against the live/verified runtimes
 directly, instead of maintaining a separate logic-only runtime.

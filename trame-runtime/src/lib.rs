@@ -160,6 +160,15 @@ pub trait IVariantType: Copy {
     fn data(&self) -> Self::StructType;
 }
 
+/// Interface for list type information.
+pub trait IListType: Copy {
+    /// The shape type.
+    type Shape: IShape;
+
+    /// Shape of list elements.
+    fn element(&self) -> Self::Shape;
+}
+
 pub trait IShape: Copy + PartialEq + IShapeExtra {
     /// The struct type returned by `as_struct()`.
     type StructType: IStructType<Field = Self::Field>;
@@ -172,6 +181,9 @@ pub trait IShape: Copy + PartialEq + IShapeExtra {
 
     /// The smart-pointer metadata returned by `as_pointer()`.
     type PointerType: IPointerType<Shape = Self>;
+
+    /// The list metadata returned by `as_list()`.
+    type ListType: IListType<Shape = Self>;
 
     /// Get the layout (size and alignment) of this shape.
     ///
@@ -231,6 +243,14 @@ pub trait IShape: Copy + PartialEq + IShapeExtra {
 
     /// Get smart-pointer specific information, if this is a pointer.
     fn as_pointer(&self) -> Option<Self::PointerType>;
+
+    /// Check if this is a list type.
+    fn is_list(&self) -> bool {
+        self.as_list().is_some()
+    }
+
+    /// Get list-specific information, if this is a list.
+    fn as_list(&self) -> Option<Self::ListType>;
 }
 
 /// Shape operations required by executable heaps.

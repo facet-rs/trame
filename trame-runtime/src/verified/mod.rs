@@ -286,7 +286,9 @@ pub enum VDef {
     Option(VOptionDef),
     /// A `List<T>`-like collection.
     List(VListDef),
-    // TODO: Result, Map, Set, etc.
+    /// A `Map<K, V>`-like collection.
+    Map(VMapDef),
+    // TODO: Result, Set, etc.
 }
 
 /// A synthetic smart-pointer definition for verification.
@@ -317,6 +319,16 @@ pub struct VOptionDef {
 pub struct VListDef {
     /// Handle to the element shape `T` for `List<T>`.
     pub elem_handle: VShapeHandle,
+}
+
+/// A synthetic map-like definition for verification.
+#[cfg_attr(creusot, derive(DeepModel))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VMapDef {
+    /// Handle to the key shape `K` for `Map<K, V>`.
+    pub key_handle: VShapeHandle,
+    /// Handle to the value shape `V` for `Map<K, V>`.
+    pub value_handle: VShapeHandle,
 }
 
 /// A store of DynShape definitions.
@@ -447,13 +459,11 @@ pub struct VListView<'a> {
     pub def: &'a VListDef,
 }
 
-/// Map type view placeholder for verified shapes.
-///
-/// Verified shapes currently do not model map defs; this uninhabited type
-/// satisfies trait plumbing until VDef gains map support.
+/// A map type view that borrows from a store.
 #[derive(Clone, Copy)]
 pub struct VMapView<'a> {
-    _marker: core::marker::PhantomData<&'a VShapeStore>,
+    pub store: &'a VShapeStore,
+    pub def: &'a VMapDef,
 }
 
 /// Enum type view for verified shapes.
@@ -596,7 +606,13 @@ impl<'a> IShape for VShapeView<'a, VShapeStore> {
 
     #[inline]
     fn as_map(&self) -> Option<Self::MapType> {
-        None
+        match &self.store.get_def(self.handle).def {
+            VDef::Map(def) => Some(VMapView {
+                store: self.store,
+                def,
+            }),
+            _ => None,
+        }
     }
 }
 
@@ -680,11 +696,11 @@ impl<'a> IMapType for VMapView<'a> {
     type Shape = VShapeView<'a, VShapeStore>;
 
     fn key(&self) -> Self::Shape {
-        panic!("verified map metadata is unavailable")
+        self.store.view(self.def.key_handle)
     }
 
     fn value(&self) -> Self::Shape {
-        panic!("verified map metadata is unavailable")
+        self.store.view(self.def.value_handle)
     }
 }
 
@@ -899,6 +915,23 @@ impl VShapeDef {
             type_ops,
             def: VDef::List(VListDef {
                 elem_handle: element,
+            }),
+        }
+    }
+
+    /// Create a map-like shape with key/value types.
+    pub fn map_of(
+        key: VShapeHandle,
+        value: VShapeHandle,
+        layout: VLayout,
+        type_ops: VTypeOps,
+    ) -> Self {
+        Self {
+            layout,
+            type_ops,
+            def: VDef::Map(VMapDef {
+                key_handle: key,
+                value_handle: value,
             }),
         }
     }

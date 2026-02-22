@@ -31,6 +31,43 @@ impl Drop for FreshStore {
 static TRAME_LIVE_VSHAPE_DEFAULT_CALLS: AtomicUsize = AtomicUsize::new(0);
 static TRAME_LIVE_VSHAPE_POINTER_NEW_INTO_CALLS: AtomicUsize = AtomicUsize::new(0);
 const TRAME_LIVE_VSHAPE_MAGIC: usize = 0xA11C_E555;
+static MAP_OVERWRITE_DROP_PROBE_DROPS: AtomicUsize = AtomicUsize::new(0);
+static MAP_ERROR_DROP_PROBE_DROPS: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Debug, PartialEq, facet::Facet)]
+struct MapHolder {
+    map: BTreeMap<u32, u32>,
+}
+
+#[derive(Debug, PartialEq, facet::Facet)]
+struct MapOverwriteDropProbe(u32);
+
+impl Default for MapOverwriteDropProbe {
+    fn default() -> Self {
+        Self(1)
+    }
+}
+
+impl Drop for MapOverwriteDropProbe {
+    fn drop(&mut self) {
+        MAP_OVERWRITE_DROP_PROBE_DROPS.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[derive(Debug, PartialEq, facet::Facet)]
+struct MapErrorDropProbe(u32);
+
+impl Default for MapErrorDropProbe {
+    fn default() -> Self {
+        Self(1)
+    }
+}
+
+impl Drop for MapErrorDropProbe {
+    fn drop(&mut self) {
+        MAP_ERROR_DROP_PROBE_DROPS.fetch_add(1, Ordering::SeqCst);
+    }
+}
 
 unsafe fn trame_live_vshape_default_magic(ptr: *mut u8) -> bool {
     TRAME_LIVE_VSHAPE_DEFAULT_CALLS.fetch_add(1, Ordering::SeqCst);
@@ -84,6 +121,20 @@ fn register_verified_enum_path_shapes() -> (
         VTypeOps::pod(),
     ));
     (vshape_view(enum_h), vshape_view(u32_h))
+}
+
+fn register_verified_u32_map_shape() -> (
+    VShapeView<'static, VShapeStore>,
+    VShapeView<'static, VShapeStore>,
+) {
+    let u32_h = vshape_register(VShapeDef::scalar(Layout::new::<u32>()));
+    let map_h = vshape_register(VShapeDef::map_of(
+        u32_h,
+        u32_h,
+        Layout::new::<usize>(),
+        VTypeOps::pod(),
+    ));
+    (vshape_view(map_h), vshape_view(u32_h))
 }
 
 #[test]
@@ -1380,6 +1431,296 @@ fn map_live_direct_whole_map_close_rejects_append() {
         src: Source::stage(None),
     });
     assert_eq!(err, Err(TrameError::UnsupportedSource));
+}
+
+#[test]
+// t[verify state.machine.map-last-wins]
+fn map_live_strict_end_materialization_duplicate_key_last_wins() {
+    let mut trame = Trame::<LRuntime>::alloc::<MapHolder>().unwrap();
+
+    let mut key0 = 7_u32;
+    let mut value0 = 11_u32;
+    let mut key1 = 7_u32;
+    let mut value1 = 22_u32;
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    assert_eq!(trame.depth(), 1);
+
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::from_ref(&mut key0),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(1),
+            src: Source::from_ref(&mut value0),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::from_ref(&mut key1),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(1),
+            src: Source::from_ref(&mut value1),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+
+    trame.apply(Op::End).unwrap();
+    assert_eq!(trame.depth(), 0);
+    assert!(trame.is_complete());
+
+    let hv = trame.build().unwrap();
+    let out = hv.materialize::<MapHolder>().unwrap();
+    assert_eq!(out.map.len(), 1);
+    assert_eq!(out.map.get(&7), Some(&22));
+}
+
+#[test]
+// t[verify state.machine.map-last-wins]
+fn map_live_deferred_finalize_duplicate_key_last_wins() {
+    let mut trame = Trame::<LRuntime>::alloc::<MapHolder>().unwrap();
+
+    let mut key0 = 5_u32;
+    let mut value0 = 10_u32;
+    let mut key1 = 5_u32;
+    let mut value1 = 30_u32;
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::stage_deferred(None),
+        })
+        .unwrap();
+    assert_eq!(trame.depth(), 1);
+
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::from_ref(&mut key0),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(1),
+            src: Source::from_ref(&mut value0),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage_deferred(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::from_ref(&mut key1),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(1),
+            src: Source::from_ref(&mut value1),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+
+    trame.apply(Op::End).unwrap();
+    assert_eq!(trame.depth(), 0);
+    assert!(trame.is_complete());
+
+    let hv = trame.build().unwrap();
+    let out = hv.materialize::<MapHolder>().unwrap();
+    assert_eq!(out.map.len(), 1);
+    assert_eq!(out.map.get(&5), Some(&30));
+}
+
+#[test]
+fn map_live_overwrite_drops_staged_entry_values() {
+    let before = MAP_OVERWRITE_DROP_PROBE_DROPS.load(Ordering::SeqCst);
+    {
+        let mut trame = Trame::<LRuntime>::alloc::<BTreeMap<u32, MapOverwriteDropProbe>>().unwrap();
+        let mut key = 1_u32;
+
+        trame
+            .apply(Op::Set {
+                dst: Path::append(),
+                src: Source::stage(None),
+            })
+            .unwrap();
+        trame
+            .apply(Op::Set {
+                dst: Path::field(0),
+                src: Source::from_ref(&mut key),
+            })
+            .unwrap();
+        trame
+            .apply(Op::Set {
+                dst: Path::field(1),
+                src: Source::default_value(),
+            })
+            .unwrap();
+        trame.apply(Op::End).unwrap();
+
+        trame
+            .apply(Op::Set {
+                dst: Path::empty(),
+                src: Source::default_value(),
+            })
+            .unwrap();
+    }
+    let after = MAP_OVERWRITE_DROP_PROBE_DROPS.load(Ordering::SeqCst);
+    assert_eq!(after, before + 1);
+}
+
+#[test]
+fn map_live_early_error_drop_cleans_complete_staged_fields() {
+    let before = MAP_ERROR_DROP_PROBE_DROPS.load(Ordering::SeqCst);
+    {
+        let mut trame = Trame::<LRuntime>::alloc::<BTreeMap<u32, MapErrorDropProbe>>().unwrap();
+
+        trame
+            .apply(Op::Set {
+                dst: Path::append(),
+                src: Source::stage(None),
+            })
+            .unwrap();
+        trame
+            .apply(Op::Set {
+                dst: Path::field(1),
+                src: Source::default_value(),
+            })
+            .unwrap();
+
+        let err = trame.apply(Op::Set {
+            dst: Path::field(2),
+            src: Source::default_value(),
+        });
+        assert_eq!(
+            err,
+            Err(TrameError::FieldOutOfBounds { index: 2, count: 2 })
+        );
+    }
+    let after = MAP_ERROR_DROP_PROBE_DROPS.load(Ordering::SeqCst);
+    assert_eq!(after, before + 1);
+}
+
+#[test]
+fn map_verified_append_stage_end_builds() {
+    let _g = FreshStore::new();
+    let (map_shape, u32_shape) = register_verified_u32_map_shape();
+
+    let mut heap = VRuntime::heap();
+    let key = unsafe { heap.alloc(u32_shape) };
+    let value = unsafe { heap.alloc(u32_shape) };
+    unsafe { heap.default_in_place(key, u32_shape) };
+    unsafe { heap.default_in_place(value, u32_shape) };
+
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, map_shape) };
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: unsafe { Source::from_vptr(key, u32_shape) },
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(1),
+            src: unsafe { Source::from_vptr(value, u32_shape) },
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+
+    assert!(trame.is_complete());
+    let _ = trame.build().unwrap();
+}
+
+#[test]
+fn map_verified_deferred_reenter_entry_by_index() {
+    let _g = FreshStore::new();
+    let (map_shape, u32_shape) = register_verified_u32_map_shape();
+
+    let mut heap = VRuntime::heap();
+    let key = unsafe { heap.alloc(u32_shape) };
+    let value = unsafe { heap.alloc(u32_shape) };
+    unsafe { heap.default_in_place(key, u32_shape) };
+    unsafe { heap.default_in_place(value, u32_shape) };
+
+    let mut trame = unsafe { Trame::<VRuntime>::new(heap, map_shape) };
+
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage_deferred(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: unsafe { Source::from_vptr(key, u32_shape) },
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+    assert_eq!(trame.depth(), 0);
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    assert_eq!(trame.depth(), 1);
+    trame
+        .apply(Op::Set {
+            dst: Path::field(1),
+            src: unsafe { Source::from_vptr(value, u32_shape) },
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+
+    assert_eq!(trame.depth(), 0);
+    assert!(trame.is_complete());
+    let _ = trame.build().unwrap();
 }
 
 #[test]

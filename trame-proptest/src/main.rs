@@ -25,6 +25,7 @@ mod tests {
         Struct { fields: Vec<usize> }, // indices into the shape store (must be < current index)
         Option { some: usize },        // index of payload shape (must be < current index)
         List { elem: usize },          // index of element shape (must be < current index)
+        Map { key: usize, value: usize }, // key/value indices (must be < current index)
     }
 
     fn arb_shape_recipe(max_existing: usize) -> impl Strategy<Value = ShapeRecipe> {
@@ -39,6 +40,8 @@ mod tests {
                         .prop_map(|fields| ShapeRecipe::Struct { fields }),
                     (0..max_existing).prop_map(|some| ShapeRecipe::Option { some }),
                     (0..max_existing).prop_map(|elem| ShapeRecipe::List { elem }),
+                    ((0..max_existing), (0..max_existing))
+                        .prop_map(|(key, value)| ShapeRecipe::Map { key, value }),
                 ]
                 .boxed()
             } else {
@@ -116,6 +119,16 @@ mod tests {
                     vshape_register(VShapeDef::list_of(
                         elem_handle,
                         Layout::new::<Vec<u8>>(),
+                        trame::runtime::verified::VTypeOps::pod(),
+                    ))
+                }
+                ShapeRecipe::Map { key, value } => {
+                    let key_handle = handles[*key];
+                    let value_handle = handles[*value];
+                    vshape_register(VShapeDef::map_of(
+                        key_handle,
+                        value_handle,
+                        Layout::new::<usize>(),
                         trame::runtime::verified::VTypeOps::pod(),
                     ))
                 }
@@ -255,6 +268,38 @@ mod tests {
                 let _ = trame.build();
             }
         });
+    }
+
+    #[test]
+    fn map_shape_append_and_deferred_reentry_do_not_panic() {
+        let recipes = vec![
+            ShapeRecipe::Scalar { size: 4 },
+            ShapeRecipe::Map { key: 0, value: 0 },
+        ];
+        let ops = vec![
+            OpRecipe::SetAppend {
+                src_kind: SrcKind::StageDeferred,
+            },
+            OpRecipe::SetField {
+                field: 0,
+                src_kind: SrcKind::Default,
+            },
+            OpRecipe::End,
+            OpRecipe::SetField {
+                field: 0,
+                src_kind: SrcKind::Stage,
+            },
+            OpRecipe::SetField {
+                field: 1,
+                src_kind: SrcKind::Default,
+            },
+            OpRecipe::End,
+        ];
+
+        let result = catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_test(recipes, 1, ops);
+        }));
+        assert!(result.is_ok());
     }
 
     // ============================================================================

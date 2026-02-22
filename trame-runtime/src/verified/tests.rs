@@ -270,6 +270,87 @@ fn vshape_list_exposes_element_shape() {
 }
 
 #[test]
+fn vshape_map_exposes_key_value_shapes() {
+    let mut store = VShapeStore::new();
+    let key_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
+    let value_h = store.add(VShapeDef::scalar(Layout::new::<u64>()));
+    let map_h = store.add(VShapeDef::map_of(
+        key_h,
+        value_h,
+        Layout::new::<usize>(),
+        VTypeOps::pod(),
+    ));
+
+    let map_shape = store.view(map_h);
+    assert!(map_shape.is_map());
+    assert!(map_shape.as_map().is_some());
+    assert!(!map_shape.is_struct());
+
+    let map_ty = map_shape.as_map().unwrap();
+    let key_shape = map_ty.key();
+    let value_shape = map_ty.value();
+    assert_eq!(key_shape.layout().unwrap().size(), 4);
+    assert_eq!(value_shape.layout().unwrap().size(), 8);
+
+    match store.get_def(map_h).def {
+        VDef::Map(def) => {
+            assert_eq!(def.key_handle, key_h);
+            assert_eq!(def.value_handle, value_h);
+        }
+        _ => panic!("expected map def"),
+    }
+}
+
+#[test]
+fn vheap_map_insert_accepts_matching_vshape_shapes() {
+    let mut store = VShapeStore::new();
+    let key_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
+    let value_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));
+    let map_h = store.add(VShapeDef::map_of(
+        key_h,
+        value_h,
+        Layout::new::<usize>(),
+        VTypeOps::pod(),
+    ));
+
+    let map_shape = store.view(map_h);
+    let key_shape = store.view(key_h);
+    let value_shape = store.view(value_h);
+
+    let mut heap = VHeap::<S<'_>>::new();
+    let map_ptr = unsafe { heap.alloc(map_shape) };
+    let key_ptr = unsafe { heap.alloc(key_shape) };
+    let value_ptr = unsafe { heap.alloc(value_shape) };
+
+    let map_init = unsafe { heap.map_init_in_place_with_capacity(map_ptr, map_shape, 2) };
+    assert!(map_init);
+    assert!(unsafe { heap.default_in_place(key_ptr, key_shape) });
+    assert!(unsafe { heap.default_in_place(value_ptr, value_shape) });
+
+    let inserted = unsafe {
+        heap.map_insert_entry(
+            map_ptr,
+            map_shape,
+            key_ptr,
+            key_shape,
+            value_ptr,
+            value_shape,
+        )
+    };
+    assert!(inserted);
+
+    unsafe {
+        heap.drop_in_place(key_ptr, key_shape);
+        heap.dealloc(key_ptr, key_shape);
+        heap.drop_in_place(value_ptr, value_shape);
+        heap.dealloc(value_ptr, value_shape);
+        heap.drop_in_place(map_ptr, map_shape);
+        heap.dealloc(map_ptr, map_shape);
+    }
+    heap.assert_no_leaks();
+}
+
+#[test]
 fn vshape_enum_exposes_variants_and_payload_fields() {
     let mut store = VShapeStore::new();
     let u32_h = store.add(VShapeDef::scalar(Layout::new::<u32>()));

@@ -15,6 +15,7 @@ pub enum FuzzScenario {
     Pointer,
     Option,
     List,
+    Map,
 }
 
 #[derive(Clone, Copy, Arbitrary)]
@@ -154,6 +155,23 @@ fn build_scenario_shape(scenario: FuzzScenario) -> VShapeView<'static, VShapeSto
                 VTypeOps::pod(),
             ));
             vshape_view(list)
+        }
+        FuzzScenario::Map => {
+            let key = vshape_register(VShapeDef::scalar_with_ops(
+                Layout::new::<usize>(),
+                VTypeOps::new(false, drop_noop, Some(default_magic)),
+            ));
+            let value = vshape_register(VShapeDef::scalar_with_ops(
+                Layout::new::<usize>(),
+                VTypeOps::new(false, drop_noop, Some(default_magic)),
+            ));
+            let map = vshape_register(VShapeDef::map_of(
+                key,
+                value,
+                Layout::new::<usize>(),
+                VTypeOps::pod(),
+            ));
+            vshape_view(map)
         }
     }
 }

@@ -87,6 +87,7 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
             NodeKind::Struct { fields } => field_idx@ < fields.len_logic(),
             NodeKind::EnumPayload { fields, .. } => field_idx@ < fields.len_logic(),
             NodeKind::List { elements, .. } => field_idx@ < elements.len_logic(),
+            NodeKind::MapEntry { fields, .. } => field_idx@ < fields.len_logic(),
             NodeKind::Pointer { .. } => true,
             _ => false,
         }),
@@ -94,6 +95,7 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
             NodeKind::Struct { fields } => fields.slots@[field_idx@] == FieldSlot::Untracked, // TODO: other fields are unchanged
             NodeKind::EnumPayload { fields, .. } => fields.slots@[field_idx@] == FieldSlot::Untracked, // TODO: other fields are unchanged
             NodeKind::List { elements, .. } => elements.slots@[field_idx@] == FieldSlot::Untracked,
+            NodeKind::MapEntry { fields, .. } => fields.slots@[field_idx@] == FieldSlot::Untracked,
             NodeKind::Pointer { initialized, .. } => !initialized,
             _ => true,
         })
@@ -103,6 +105,7 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
             NodeKind::Struct { fields } => fields.mark_not_started(field_idx),
             NodeKind::EnumPayload { fields, .. } => fields.mark_not_started(field_idx),
             NodeKind::List { elements, .. } => elements.mark_not_started(field_idx),
+            NodeKind::MapEntry { fields, .. } => fields.mark_not_started(field_idx),
             NodeKind::Pointer { initialized, .. } => *initialized = false,
             _ => {}
         }
@@ -113,6 +116,7 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
             NodeKind::Struct { fields } => field_idx@ < fields.len_logic(),
             NodeKind::EnumPayload { fields, .. } => field_idx@ < fields.len_logic(),
             NodeKind::List { elements, .. } => field_idx@ < elements.len_logic(),
+            NodeKind::MapEntry { fields, .. } => field_idx@ < fields.len_logic(),
             NodeKind::Pointer { .. } => true,
             _ => false,
         }),
@@ -120,6 +124,7 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
             NodeKind::Struct { fields } => fields.slots@[field_idx@] == FieldSlot::Complete, // TODO: other fields are unchanged
             NodeKind::EnumPayload { fields, .. } => fields.slots@[field_idx@] == FieldSlot::Complete, // TODO: other fields are unchanged
             NodeKind::List { elements, .. } => elements.slots@[field_idx@] == FieldSlot::Complete,
+            NodeKind::MapEntry { fields, .. } => fields.slots@[field_idx@] == FieldSlot::Complete,
             NodeKind::Pointer { initialized, .. } => initialized,
             _ => true,
         })
@@ -129,6 +134,7 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
             NodeKind::Struct { fields } => fields.mark_complete(field_idx),
             NodeKind::EnumPayload { fields, .. } => fields.mark_complete(field_idx),
             NodeKind::List { elements, .. } => elements.mark_complete(field_idx),
+            NodeKind::MapEntry { fields, .. } => fields.mark_complete(field_idx),
             NodeKind::Pointer { initialized, .. } => *initialized = true,
             _ => {}
         }
@@ -269,6 +275,12 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
                 initialized: false,
                 closed: false,
             }
+        } else if shape.is_map() {
+            NodeKind::Map {
+                entries: FieldStates::new(0),
+                initialized: false,
+                closed: false,
+            }
         } else if shape.as_pointer().is_some() {
             NodeKind::Pointer {
                 child: None,
@@ -312,6 +324,17 @@ pub(crate) enum NodeKind<F> {
         initialized: bool,
         closed: bool,
     },
+    /// Map with tracked appended entries.
+    Map {
+        entries: FieldStates<F>,
+        initialized: bool,
+        closed: bool,
+    },
+    /// Map entry with tracked key/value slots and stable staged addresses.
+    MapEntry {
+        fields: FieldStates<F>,
+        entry_idx: usize,
+    },
     /// Enum root with active variant tracking.
     Enum {
         selected_variant: Option<usize>,
@@ -353,6 +376,19 @@ impl<F> Clone for NodeKind<F> {
                 elements: elements.clone(),
                 initialized: *initialized,
                 closed: *closed,
+            },
+            Self::Map {
+                entries,
+                initialized,
+                closed,
+            } => Self::Map {
+                entries: entries.clone(),
+                initialized: *initialized,
+                closed: *closed,
+            },
+            Self::MapEntry { fields, entry_idx } => Self::MapEntry {
+                fields: fields.clone(),
+                entry_idx: *entry_idx,
             },
             Self::Enum {
                 selected_variant,

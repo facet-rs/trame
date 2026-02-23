@@ -13,7 +13,7 @@ use byte_range::{ByteRangeError, ByteRangeTracker, Range};
 
 use crate::{
     CopyDesc, EnumDiscriminantRepr, EnumReprKind, IArena, IEnumType, IExecShape, IField, IHeap,
-    IListType, IMapType, IPointerType, IPtr, IRuntime, IShape, IShapeStore, IStructType,
+    IListType, IMapType, IPointerType, IPtr, IRuntime, ISetType, IShape, IShapeStore, IStructType,
     IVariantType, Idx,
 };
 
@@ -466,6 +466,13 @@ pub struct VMapView<'a> {
     pub def: &'a VMapDef,
 }
 
+/// A set type view that borrows from a store.
+#[derive(Clone, Copy)]
+pub struct VSetView<'a> {
+    pub store: &'a VShapeStore,
+    pub elem_handle: VShapeHandle,
+}
+
 /// Enum type view for verified shapes.
 #[derive(Clone, Copy)]
 pub struct VEnumView<'a> {
@@ -496,6 +503,7 @@ impl<'a> IShape for VShapeView<'a, VShapeStore> {
     type EnumType = VEnumView<'a>;
     type PointerType = VPointerView<'a>;
     type ListType = VListView<'a>;
+    type SetType = VSetView<'a>;
     type MapType = VMapView<'a>;
 
     #[inline]
@@ -605,6 +613,11 @@ impl<'a> IShape for VShapeView<'a, VShapeStore> {
     }
 
     #[inline]
+    fn as_set(&self) -> Option<Self::SetType> {
+        None
+    }
+
+    #[inline]
     fn as_map(&self) -> Option<Self::MapType> {
         match &self.store.get_def(self.handle).def {
             VDef::Map(def) => Some(VMapView {
@@ -701,6 +714,15 @@ impl<'a> IMapType for VMapView<'a> {
 
     fn value(&self) -> Self::Shape {
         self.store.view(self.def.value_handle)
+    }
+}
+
+impl<'a> ISetType for VSetView<'a> {
+    type Shape = VShapeView<'a, VShapeStore>;
+
+    #[inline]
+    fn element(&self) -> Self::Shape {
+        self.store.view(self.elem_handle)
     }
 }
 
@@ -2166,6 +2188,28 @@ impl<S: IShape> IHeap<S> for VHeap<S> {
             }
         }
         true
+    }
+
+    unsafe fn set_init_in_place_with_capacity(
+        &mut self,
+        _dst: VPtr,
+        set_shape: S,
+        _capacity: usize,
+    ) -> bool {
+        set_shape.as_set().is_some()
+    }
+
+    unsafe fn set_insert_element(
+        &mut self,
+        _set_ptr: VPtr,
+        set_shape: S,
+        _elem_ptr: VPtr,
+        elem_shape: S,
+    ) -> bool {
+        let Some(set) = set_shape.as_set() else {
+            return false;
+        };
+        set.element() == elem_shape
     }
 
     unsafe fn map_init_in_place_with_capacity(

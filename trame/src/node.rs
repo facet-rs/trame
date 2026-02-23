@@ -87,6 +87,7 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
             NodeKind::Struct { fields } => field_idx@ < fields.len_logic(),
             NodeKind::EnumPayload { fields, .. } => field_idx@ < fields.len_logic(),
             NodeKind::List { elements, .. } => field_idx@ < elements.len_logic(),
+            NodeKind::PointerSlice { elements, .. } => field_idx@ < elements.len_logic(),
             NodeKind::MapEntry { fields, .. } => field_idx@ < fields.len_logic(),
             NodeKind::Pointer { .. } => true,
             _ => false,
@@ -95,6 +96,7 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
             NodeKind::Struct { fields } => fields.slots@[field_idx@] == FieldSlot::Untracked, // TODO: other fields are unchanged
             NodeKind::EnumPayload { fields, .. } => fields.slots@[field_idx@] == FieldSlot::Untracked, // TODO: other fields are unchanged
             NodeKind::List { elements, .. } => elements.slots@[field_idx@] == FieldSlot::Untracked,
+            NodeKind::PointerSlice { elements, .. } => elements.slots@[field_idx@] == FieldSlot::Untracked,
             NodeKind::MapEntry { fields, .. } => fields.slots@[field_idx@] == FieldSlot::Untracked,
             NodeKind::Pointer { initialized, .. } => !initialized,
             _ => true,
@@ -105,6 +107,7 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
             NodeKind::Struct { fields } => fields.mark_not_started(field_idx),
             NodeKind::EnumPayload { fields, .. } => fields.mark_not_started(field_idx),
             NodeKind::List { elements, .. } => elements.mark_not_started(field_idx),
+            NodeKind::PointerSlice { elements, .. } => elements.mark_not_started(field_idx),
             NodeKind::MapEntry { fields, .. } => fields.mark_not_started(field_idx),
             NodeKind::Pointer { initialized, .. } => *initialized = false,
             _ => {}
@@ -116,6 +119,7 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
             NodeKind::Struct { fields } => field_idx@ < fields.len_logic(),
             NodeKind::EnumPayload { fields, .. } => field_idx@ < fields.len_logic(),
             NodeKind::List { elements, .. } => field_idx@ < elements.len_logic(),
+            NodeKind::PointerSlice { elements, .. } => field_idx@ < elements.len_logic(),
             NodeKind::MapEntry { fields, .. } => field_idx@ < fields.len_logic(),
             NodeKind::Pointer { .. } => true,
             _ => false,
@@ -124,6 +128,7 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
             NodeKind::Struct { fields } => fields.slots@[field_idx@] == FieldSlot::Complete, // TODO: other fields are unchanged
             NodeKind::EnumPayload { fields, .. } => fields.slots@[field_idx@] == FieldSlot::Complete, // TODO: other fields are unchanged
             NodeKind::List { elements, .. } => elements.slots@[field_idx@] == FieldSlot::Complete,
+            NodeKind::PointerSlice { elements, .. } => elements.slots@[field_idx@] == FieldSlot::Complete,
             NodeKind::MapEntry { fields, .. } => fields.slots@[field_idx@] == FieldSlot::Complete,
             NodeKind::Pointer { initialized, .. } => initialized,
             _ => true,
@@ -134,6 +139,7 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
             NodeKind::Struct { fields } => fields.mark_complete(field_idx),
             NodeKind::EnumPayload { fields, .. } => fields.mark_complete(field_idx),
             NodeKind::List { elements, .. } => elements.mark_complete(field_idx),
+            NodeKind::PointerSlice { elements, .. } => elements.mark_complete(field_idx),
             NodeKind::MapEntry { fields, .. } => fields.mark_complete(field_idx),
             NodeKind::Pointer { initialized, .. } => *initialized = true,
             _ => {}
@@ -269,7 +275,7 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
             NodeKind::Struct {
                 fields: FieldStates::new(st.field_count()),
             }
-        } else if shape.is_list() {
+        } else if shape.is_list() || shape.is_set() {
             NodeKind::List {
                 elements: FieldStates::new(0),
                 initialized: false,
@@ -317,6 +323,11 @@ pub(crate) enum NodeKind<F> {
     Pointer {
         child: Option<Idx<F>>,
         initialized: bool,
+    },
+    /// Unsized smart-pointer slice payload staged through a slice builder.
+    PointerSlice {
+        elements: FieldStates<F>,
+        closed: bool,
     },
     /// List with tracked appended elements.
     List {
@@ -367,6 +378,10 @@ impl<F> Clone for NodeKind<F> {
             Self::Pointer { child, initialized } => Self::Pointer {
                 child: *child,
                 initialized: *initialized,
+            },
+            Self::PointerSlice { elements, closed } => Self::PointerSlice {
+                elements: elements.clone(),
+                closed: *closed,
             },
             Self::List {
                 elements,

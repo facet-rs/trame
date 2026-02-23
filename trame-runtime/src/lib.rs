@@ -190,6 +190,36 @@ pub trait IListType: Copy {
     }
 }
 
+/// Interface for set type information.
+pub trait ISetType: Copy {
+    /// The shape type.
+    type Shape: IShape;
+
+    /// Shape of set elements.
+    fn element(&self) -> Self::Shape;
+
+    /// Initialize the set in place with a capacity hint.
+    ///
+    /// Returns `false` when unsupported.
+    ///
+    /// # Safety
+    /// `dst` must point at storage for this set type.
+    unsafe fn init_in_place_with_capacity(&self, _dst: *mut u8, _capacity: usize) -> bool {
+        false
+    }
+
+    /// Insert one element into this set.
+    ///
+    /// Returns `false` when unsupported.
+    ///
+    /// # Safety
+    /// `set_ptr` must point to an initialized set and `elem_ptr` to an
+    /// initialized element matching `element()`.
+    unsafe fn insert_element(&self, _set_ptr: *mut u8, _elem_ptr: *mut u8) -> bool {
+        false
+    }
+}
+
 /// Interface for map type information.
 pub trait IMapType: Copy {
     /// The shape type.
@@ -243,6 +273,9 @@ pub trait IShape: Copy + PartialEq + IShapeExtra {
 
     /// The list metadata returned by `as_list()`.
     type ListType: IListType<Shape = Self>;
+
+    /// The set metadata returned by `as_set()`.
+    type SetType: ISetType<Shape = Self>;
 
     /// The map metadata returned by `as_map()`.
     type MapType: IMapType<Shape = Self>;
@@ -314,6 +347,22 @@ pub trait IShape: Copy + PartialEq + IShapeExtra {
     /// Get list-specific information, if this is a list.
     fn as_list(&self) -> Option<Self::ListType>;
 
+    /// Element shape for sequence-like types, when available.
+    ///
+    /// By default this mirrors `as_list()`, but runtimes may override to
+    /// expose unsized slice-like element types as well.
+    fn sequence_element(&self) -> Option<Self> {
+        self.as_list().map(|list| list.element())
+    }
+
+    /// Check if this is a set type.
+    fn is_set(&self) -> bool {
+        self.as_set().is_some()
+    }
+
+    /// Get set-specific information, if this is a set.
+    fn as_set(&self) -> Option<Self::SetType>;
+
     /// Check if this is a map type.
     fn is_map(&self) -> bool {
         self.as_map().is_some()
@@ -365,6 +414,49 @@ pub trait IPointerType: Copy {
 
     /// Whether this pointer can be constructed from a pointee value.
     fn constructible_from_pointee(&self) -> bool;
+
+    /// Whether this pointer supports slice-builder based construction for unsized payloads.
+    fn supports_slice_builder(&self) -> bool {
+        false
+    }
+
+    /// Create a new pointer slice builder.
+    ///
+    /// Returns `None` if slice builders are unsupported.
+    ///
+    /// # Safety
+    /// The returned pointer must be managed according to the corresponding
+    /// `slice_builder_*` operations.
+    unsafe fn slice_builder_new(&self) -> Option<*mut u8> {
+        None
+    }
+
+    /// Push one initialized item into a pointer slice builder.
+    ///
+    /// Returns `false` if unsupported.
+    ///
+    /// # Safety
+    /// `builder_ptr` must be a live builder previously returned by
+    /// `slice_builder_new`; `item_ptr` must point to an initialized item.
+    unsafe fn slice_builder_push(&self, _builder_ptr: *mut u8, _item_ptr: *mut u8) -> bool {
+        false
+    }
+
+    /// Convert a pointer slice builder into an allocated pointer value blob.
+    ///
+    /// Returns `None` if unsupported.
+    ///
+    /// # Safety
+    /// `builder_ptr` must be a live builder and is consumed by this call.
+    unsafe fn slice_builder_convert(&self, _builder_ptr: *mut u8) -> Option<*mut u8> {
+        None
+    }
+
+    /// Free a pointer slice builder without converting it.
+    ///
+    /// # Safety
+    /// `builder_ptr` must be a live builder and is consumed by this call.
+    unsafe fn slice_builder_free(&self, _builder_ptr: *mut u8) {}
 
     /// Whether this pointer is specifically `Box<T>`.
     fn is_known_box(&self) -> bool;
@@ -620,6 +712,55 @@ pub trait IHeap<S: IShape> {
         pointee_shape: S,
     ) -> bool;
 
+    /// Create a slice builder for an unsized pointer payload (for example `Arc<[T]>`).
+    ///
+    /// Returns `None` if unsupported for this pointer shape.
+    ///
+    /// # Safety
+    /// The caller must ensure `pointer_shape` is a valid pointer shape for this runtime.
+    unsafe fn pointer_slice_builder_new(&mut self, _pointer_shape: S) -> Option<Self::Ptr> {
+        None
+    }
+
+    /// Push one initialized element into a pointer slice builder.
+    ///
+    /// Returns `false` if unsupported or if the shapes are incompatible.
+    ///
+    /// # Safety
+    /// The caller must ensure `builder_ptr` is a live builder for `pointer_shape` and
+    /// `item_ptr` points at an initialized value of `item_shape`.
+    unsafe fn pointer_slice_builder_push(
+        &mut self,
+        _builder_ptr: Self::Ptr,
+        _pointer_shape: S,
+        _item_ptr: Self::Ptr,
+        _item_shape: S,
+    ) -> bool {
+        false
+    }
+
+    /// Convert a pointer slice builder into a final pointer value written to `dst`.
+    ///
+    /// Returns `false` if unsupported.
+    ///
+    /// # Safety
+    /// The caller must ensure `dst` points at uninitialized storage for `pointer_shape`
+    /// and `builder_ptr` is a live builder for `pointer_shape`.
+    unsafe fn pointer_slice_builder_convert_into(
+        &mut self,
+        _dst: Self::Ptr,
+        _pointer_shape: S,
+        _builder_ptr: Self::Ptr,
+    ) -> bool {
+        false
+    }
+
+    /// Free a pointer slice builder without converting it.
+    ///
+    /// # Safety
+    /// The caller must ensure `builder_ptr` is a live builder for `pointer_shape`.
+    unsafe fn pointer_slice_builder_free(&mut self, _pointer_shape: S, _builder_ptr: Self::Ptr) {}
+
     /// Select an enum variant by writing/updating its discriminant/tag in memory.
     ///
     /// Returns `false` if the enum representation or discriminant metadata is unsupported.
@@ -658,6 +799,35 @@ pub trait IHeap<S: IShape> {
         &mut self,
         list_ptr: Self::Ptr,
         list_shape: S,
+        elem_ptr: Self::Ptr,
+        elem_shape: S,
+    ) -> bool;
+
+    /// Initialize a set value in place, optionally with a capacity hint.
+    ///
+    /// Returns `false` if this shape is not a set, or if set initialization
+    /// is unsupported for this runtime/shape combination.
+    ///
+    /// # Safety
+    /// The caller must ensure `dst` points at storage for `set_shape`.
+    unsafe fn set_init_in_place_with_capacity(
+        &mut self,
+        dst: Self::Ptr,
+        set_shape: S,
+        capacity: usize,
+    ) -> bool;
+
+    /// Insert one initialized element into a set value.
+    ///
+    /// Returns `false` if shapes are incompatible, or if set insert is unsupported.
+    ///
+    /// # Safety
+    /// The caller must ensure `set_ptr` points at an initialized set of shape
+    /// `set_shape`, and `elem_ptr` points at an initialized value of `elem_shape`.
+    unsafe fn set_insert_element(
+        &mut self,
+        set_ptr: Self::Ptr,
+        set_shape: S,
         elem_ptr: Self::Ptr,
         elem_shape: S,
     ) -> bool;

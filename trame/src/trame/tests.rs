@@ -8,6 +8,8 @@ use core::alloc::Layout;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use facet_core::Facet;
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
+use std::sync::Arc;
 
 /// Guard that resets the global shape store on creation and drop.
 struct FreshStore;
@@ -37,6 +39,11 @@ static MAP_ERROR_DROP_PROBE_DROPS: AtomicUsize = AtomicUsize::new(0);
 #[derive(Debug, PartialEq, facet::Facet)]
 struct MapHolder {
     map: BTreeMap<u32, u32>,
+}
+
+#[derive(Debug, PartialEq, facet::Facet)]
+struct ArcSliceHolder {
+    values: Arc<[u32]>,
 }
 
 #[derive(Debug, PartialEq, facet::Facet)]
@@ -972,6 +979,214 @@ fn box_live_stage_end_builds() {
 }
 
 #[test]
+fn arc_slice_live_stage_end_builds() {
+    let mut trame = Trame::<LRuntime>::alloc::<Arc<[u32]>>().unwrap();
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    assert_eq!(trame.depth(), 1);
+
+    let mut v0 = 11_u32;
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::empty(),
+            src: Source::from_ref(&mut v0),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+
+    let mut v1 = 22_u32;
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::empty(),
+            src: Source::from_ref(&mut v1),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+
+    trame.apply(Op::End).unwrap();
+    assert_eq!(trame.depth(), 0);
+    assert!(trame.is_complete());
+
+    let hv = trame.build().unwrap();
+    let value = hv.materialize::<Arc<[u32]>>().unwrap();
+    assert_eq!(&*value, &[11, 22]);
+}
+
+#[test]
+fn box_slice_live_deferred_finalizes_at_build() {
+    let mut trame = Trame::<LRuntime>::alloc::<Box<[u32]>>().unwrap();
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::stage_deferred(None),
+        })
+        .unwrap();
+
+    let mut v = 7_u32;
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage_deferred(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::empty(),
+            src: Source::from_ref(&mut v),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+    trame.apply(Op::End).unwrap();
+
+    let hv = trame.build().unwrap();
+    let value = hv.materialize::<Box<[u32]>>().unwrap();
+    assert_eq!(&*value, &[7]);
+}
+
+#[test]
+fn arc_slice_nested_in_struct_builds() {
+    let mut trame = Trame::<LRuntime>::alloc::<ArcSliceHolder>().unwrap();
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::stage(None),
+        })
+        .unwrap();
+
+    let mut v = 5_u32;
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::empty(),
+            src: Source::from_ref(&mut v),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+    trame.apply(Op::End).unwrap();
+    trame.apply(Op::End).unwrap();
+
+    assert!(trame.is_complete());
+    let hv = trame.build().unwrap();
+    let out = hv.materialize::<ArcSliceHolder>().unwrap();
+    assert_eq!(&*out.values, &[5]);
+}
+
+#[test]
+fn rc_slice_live_stage_end_builds() {
+    let mut trame = Trame::<LRuntime>::alloc::<Rc<[u32]>>().unwrap();
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::stage(None),
+        })
+        .unwrap();
+
+    let mut v = 9_u32;
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::empty(),
+            src: Source::from_ref(&mut v),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+    trame.apply(Op::End).unwrap();
+
+    let hv = trame.build().unwrap();
+    let out = hv.materialize::<Rc<[u32]>>().unwrap();
+    assert_eq!(&*out, &[9]);
+}
+
+#[test]
+fn arc_slice_stage_reentry_overwrites_previous_value() {
+    let mut trame = Trame::<LRuntime>::alloc::<Arc<[u32]>>().unwrap();
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    let mut first = 1_u32;
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::empty(),
+            src: Source::from_ref(&mut first),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+    trame.apply(Op::End).unwrap();
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    let mut second = 2_u32;
+    trame
+        .apply(Op::Set {
+            dst: Path::append(),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::empty(),
+            src: Source::from_ref(&mut second),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+    trame.apply(Op::End).unwrap();
+
+    let hv = trame.build().unwrap();
+    let out = hv.materialize::<Arc<[u32]>>().unwrap();
+    assert_eq!(&*out, &[2]);
+}
+
+#[test]
 fn box_live_imm_whole_value() {
     let mut trame = Trame::<LRuntime>::alloc::<Box<u32>>().unwrap();
     let mut boxed = Box::new(9_u32);
@@ -1098,6 +1313,7 @@ fn list_live_append_struct_elements_builds() {
 }
 
 #[test]
+// t[verify state.machine.container-capacity-hint]
 fn list_live_stage_capacity_hint_keeps_single_chunk() {
     let mut trame = Trame::<LRuntime>::alloc::<Vec<u32>>().unwrap();
 
@@ -1155,6 +1371,7 @@ fn list_live_stage_capacity_hint_keeps_single_chunk() {
 }
 
 #[test]
+// t[verify state.machine.container-stable-staging]
 fn list_live_stage_grows_into_multiple_chunks() {
     let mut trame = Trame::<LRuntime>::alloc::<Vec<u32>>().unwrap();
 
@@ -1187,6 +1404,7 @@ fn list_live_stage_grows_into_multiple_chunks() {
 }
 
 #[test]
+// t[verify state.machine.container-materialize-on-close]
 fn list_live_append_nested_lists_builds() {
     let mut trame = Trame::<LRuntime>::alloc::<Vec<Vec<u32>>>().unwrap();
     let mut v0 = 10_u32;
@@ -1306,6 +1524,7 @@ fn list_live_deferred_reenter_element_by_index() {
 }
 
 #[test]
+// t[verify state.machine.container-materialize-on-close]
 fn map_live_append_stage_end_builds() {
     let mut trame = Trame::<LRuntime>::alloc::<BTreeMap<u32, u32>>().unwrap();
 
@@ -1370,6 +1589,38 @@ fn map_live_append_stage_end_builds() {
 }
 
 #[test]
+// t[verify state.machine.container-append-stage-only]
+fn container_append_rejects_imm_and_default_sources() {
+    let mut list_trame = Trame::<LRuntime>::alloc::<Vec<u32>>().unwrap();
+    let mut scalar_src = 7_u32;
+
+    let list_default_err = list_trame.apply(Op::Set {
+        dst: Path::append(),
+        src: Source::default_value(),
+    });
+    assert_eq!(list_default_err, Err(TrameError::UnsupportedSource));
+
+    let list_imm_err = list_trame.apply(Op::Set {
+        dst: Path::append(),
+        src: Source::from_ref(&mut scalar_src),
+    });
+    assert_eq!(list_imm_err, Err(TrameError::UnsupportedSource));
+
+    let mut map_trame = Trame::<LRuntime>::alloc::<BTreeMap<u32, u32>>().unwrap();
+    let map_default_err = map_trame.apply(Op::Set {
+        dst: Path::append(),
+        src: Source::default_value(),
+    });
+    assert_eq!(map_default_err, Err(TrameError::UnsupportedSource));
+
+    let map_imm_err = map_trame.apply(Op::Set {
+        dst: Path::append(),
+        src: Source::from_ref(&mut scalar_src),
+    });
+    assert_eq!(map_imm_err, Err(TrameError::UnsupportedSource));
+}
+
+#[test]
 fn map_live_deferred_reenter_entry_by_index() {
     let mut trame = Trame::<LRuntime>::alloc::<BTreeMap<u32, u32>>().unwrap();
 
@@ -1412,6 +1663,37 @@ fn map_live_deferred_reenter_entry_by_index() {
     let hv = trame.build().unwrap();
     let out = hv.materialize::<BTreeMap<u32, u32>>().unwrap();
     assert_eq!(out.get(&7), Some(&9));
+}
+
+#[test]
+// t[verify state.machine.set-uniqueness]
+fn set_live_duplicate_staged_values_collapse_on_materialize() {
+    let mut trame = Trame::<LRuntime>::alloc::<BTreeSet<u32>>().unwrap();
+
+    for value in [7_u32, 7_u32, 9_u32, 7_u32] {
+        let mut value = value;
+        trame
+            .apply(Op::Set {
+                dst: Path::append(),
+                src: Source::stage(None),
+            })
+            .unwrap();
+        trame
+            .apply(Op::Set {
+                dst: Path::empty(),
+                src: Source::from_ref(&mut value),
+            })
+            .unwrap();
+        trame.apply(Op::End).unwrap();
+    }
+
+    assert!(trame.is_complete());
+    let hv = trame.build().unwrap();
+    let out = hv.materialize::<BTreeSet<u32>>().unwrap();
+
+    assert_eq!(out.len(), 2);
+    assert!(out.contains(&7));
+    assert!(out.contains(&9));
 }
 
 #[test]

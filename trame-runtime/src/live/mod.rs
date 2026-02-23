@@ -5,15 +5,15 @@
 use crate::MemState;
 use crate::{
     CopyDesc, EnumDiscriminantRepr, EnumReprKind, IArena, IEnumType, IExecShape, IField, IHeap,
-    IListType, IMapType, IPointerType, IRuntime, IShape, IShapeStore, IStructType, IVariantType,
-    Idx,
+    IListType, IMapType, IPointerType, IRuntime, ISetType, IShape, IShapeStore, IStructType,
+    IVariantType, Idx,
 };
 use core::marker::PhantomData;
 #[cfg(creusot)]
 use creusot_std::macros::{logic, trusted};
 use facet_core::{
-    Def, EnumRepr, EnumType, Field, KnownPointer, ListDef, MapDef, PointerDef, PtrMut, PtrUninit,
-    Shape, StructType, Type, UserType, Variant,
+    Def, EnumRepr, EnumType, Field, KnownPointer, ListDef, MapDef, PointerDef, PtrConst, PtrMut,
+    PtrUninit, SetDef, Shape, StructType, Type, UserType, Variant,
 };
 
 #[cfg(creusot)]
@@ -92,6 +92,7 @@ impl IShape for &'static Shape {
     type EnumType = &'static EnumType;
     type PointerType = PointerDef;
     type ListType = ListDef;
+    type SetType = SetDef;
     type MapType = MapDef;
 
     #[inline]
@@ -200,6 +201,23 @@ impl IShape for &'static Shape {
     }
 
     #[inline]
+    fn sequence_element(&self) -> Option<Self> {
+        match self.def {
+            Def::List(def) => Some(def.t()),
+            Def::Slice(def) => Some(def.t()),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn as_set(&self) -> Option<Self::SetType> {
+        match self.def {
+            Def::Set(def) => Some(def),
+            _ => None,
+        }
+    }
+
+    #[inline]
     fn as_map(&self) -> Option<Self::MapType> {
         match self.def {
             Def::Map(def) => Some(def),
@@ -273,6 +291,31 @@ impl IMapType for MapDef {
     }
 }
 
+impl ISetType for SetDef {
+    type Shape = &'static Shape;
+
+    #[inline]
+    fn element(&self) -> Self::Shape {
+        self.t()
+    }
+
+    #[inline]
+    unsafe fn init_in_place_with_capacity(&self, dst: *mut u8, capacity: usize) -> bool {
+        unsafe {
+            (self.vtable.init_in_place_with_capacity)(PtrUninit::new(dst), capacity);
+        }
+        true
+    }
+
+    #[inline]
+    unsafe fn insert_element(&self, set_ptr: *mut u8, elem_ptr: *mut u8) -> bool {
+        unsafe {
+            let _ = (self.vtable.insert)(PtrMut::new(set_ptr), PtrMut::new(elem_ptr));
+        }
+        true
+    }
+}
+
 impl IPointerType for PointerDef {
     type Shape = &'static Shape;
 
@@ -284,6 +327,45 @@ impl IPointerType for PointerDef {
     #[inline]
     fn constructible_from_pointee(&self) -> bool {
         self.constructible_from_pointee()
+    }
+
+    #[inline]
+    fn supports_slice_builder(&self) -> bool {
+        self.vtable.slice_builder_vtable.is_some()
+    }
+
+    #[inline]
+    unsafe fn slice_builder_new(&self) -> Option<*mut u8> {
+        let slice_builder = self.vtable.slice_builder_vtable?;
+        Some(unsafe { (slice_builder.new_fn)().as_ptr::<u8>() as *mut u8 })
+    }
+
+    #[inline]
+    unsafe fn slice_builder_push(&self, builder_ptr: *mut u8, item_ptr: *mut u8) -> bool {
+        let Some(slice_builder) = self.vtable.slice_builder_vtable else {
+            return false;
+        };
+        unsafe {
+            (slice_builder.push_fn)(PtrMut::new(builder_ptr), PtrConst::new(item_ptr));
+        }
+        true
+    }
+
+    #[inline]
+    unsafe fn slice_builder_convert(&self, builder_ptr: *mut u8) -> Option<*mut u8> {
+        let slice_builder = self.vtable.slice_builder_vtable?;
+        let out = unsafe { (slice_builder.convert_fn)(PtrMut::new(builder_ptr)) };
+        Some(unsafe { out.as_ptr::<u8>() as *mut u8 })
+    }
+
+    #[inline]
+    unsafe fn slice_builder_free(&self, builder_ptr: *mut u8) {
+        let Some(slice_builder) = self.vtable.slice_builder_vtable else {
+            return;
+        };
+        unsafe {
+            (slice_builder.free_fn)(PtrMut::new(builder_ptr));
+        }
     }
 
     #[inline]
@@ -563,6 +645,64 @@ impl<S: IExecShape<*mut u8>> IHeap<S> for LHeap {
         unsafe { pointer_shape.pointer_from_pointee(dst, src, pointee_shape) }
     }
 
+    unsafe fn pointer_slice_builder_new(&mut self, pointer_shape: S) -> Option<*mut u8> {
+        let pointer = pointer_shape.as_pointer()?;
+        unsafe { pointer.slice_builder_new() }
+    }
+
+    unsafe fn pointer_slice_builder_push(
+        &mut self,
+        builder_ptr: *mut u8,
+        pointer_shape: S,
+        item_ptr: *mut u8,
+        item_shape: S,
+    ) -> bool {
+        let Some(pointer) = pointer_shape.as_pointer() else {
+            return false;
+        };
+        let Some(pointee) = pointer.pointee() else {
+            return false;
+        };
+        let Some(expected_item_shape) = pointee.sequence_element() else {
+            return false;
+        };
+        if expected_item_shape != item_shape {
+            return false;
+        }
+        unsafe { pointer.slice_builder_push(builder_ptr, item_ptr) }
+    }
+
+    unsafe fn pointer_slice_builder_convert_into(
+        &mut self,
+        dst: *mut u8,
+        pointer_shape: S,
+        builder_ptr: *mut u8,
+    ) -> bool {
+        let Some(pointer) = pointer_shape.as_pointer() else {
+            return false;
+        };
+        let Some(layout) = pointer_shape.layout() else {
+            return false;
+        };
+        let Some(src_ptr) = (unsafe { pointer.slice_builder_convert(builder_ptr) }) else {
+            return false;
+        };
+        unsafe {
+            if layout.size() > 0 {
+                core::ptr::copy_nonoverlapping(src_ptr, dst, layout.size());
+                std::alloc::dealloc(src_ptr, layout);
+            }
+        }
+        true
+    }
+
+    unsafe fn pointer_slice_builder_free(&mut self, pointer_shape: S, builder_ptr: *mut u8) {
+        let Some(pointer) = pointer_shape.as_pointer() else {
+            return;
+        };
+        unsafe { pointer.slice_builder_free(builder_ptr) }
+    }
+
     unsafe fn select_enum_variant(
         &mut self,
         dst: *mut u8,
@@ -621,6 +761,34 @@ impl<S: IExecShape<*mut u8>> IHeap<S> for LHeap {
             return false;
         }
         unsafe { list.push_element(list_ptr, elem_ptr) }
+    }
+
+    unsafe fn set_init_in_place_with_capacity(
+        &mut self,
+        dst: *mut u8,
+        set_shape: S,
+        capacity: usize,
+    ) -> bool {
+        let Some(set) = set_shape.as_set() else {
+            return false;
+        };
+        unsafe { set.init_in_place_with_capacity(dst, capacity) }
+    }
+
+    unsafe fn set_insert_element(
+        &mut self,
+        set_ptr: *mut u8,
+        set_shape: S,
+        elem_ptr: *mut u8,
+        elem_shape: S,
+    ) -> bool {
+        let Some(set) = set_shape.as_set() else {
+            return false;
+        };
+        if set.element() != elem_shape {
+            return false;
+        }
+        unsafe { set.insert_element(set_ptr, elem_ptr) }
     }
 
     unsafe fn map_init_in_place_with_capacity(

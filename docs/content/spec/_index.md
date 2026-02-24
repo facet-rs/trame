@@ -4,13 +4,13 @@ insert_anchor_links = "heading"
 weight = 10
 +++
 
+# Specification Overview
+
 This specification is split into focused sections:
 
 - `ops.md`: Trame operation/state-machine semantics.
-- `format-ir.md`: serialization IR contract (`SerProgram`) and compiler/executor
-  split.
+- `vm-ir.md`: generic format VM IR contract for both encoding and decoding.
 - `exec-jit.md`: execution engine and JIT semantics.
-- `parse-ir.md`: deserialization-side parse/build IR semantics.
 
 Conventions:
 

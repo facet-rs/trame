@@ -4,6 +4,8 @@ insert_anchor_links = "heading"
 weight = 20
 +++
 
+# Ops Semantics
+
 This document specifies the behavior of trame, a library for safe, verified
 partial construction of Rust values using facet reflection.
 

@@ -8,6 +8,8 @@ weight = 10
 
 This specification is split into focused sections:
 
+- `trame-source.md`: human-authored `.trame` source language and lowering
+  contract.
 - `ops.md`: Trame operation/state-machine semantics.
 - `vm-ir.md`: generic format VM IR contract for both encoding and decoding.
 - `exec-jit.md`: execution engine and JIT semantics.

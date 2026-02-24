@@ -46,6 +46,16 @@ pub enum ScalarKind {
     Bool,
 }
 
+impl ScalarKind {
+    fn as_symbol(self) -> &'static str {
+        match self {
+            ScalarKind::U32 => "u32",
+            ScalarKind::String => "string",
+            ScalarKind::Bool => "bool",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodeInstr {
     ReadScalar { kind: ScalarKind, dst: u8 },
@@ -57,6 +67,42 @@ pub enum DecodeInstr {
 pub struct PostcardDecodeProgram {
     pub register_count: usize,
     pub instructions: Vec<DecodeInstr>,
+}
+
+impl PostcardDecodeProgram {
+    pub fn to_sexp(&self) -> String {
+        use core::fmt::Write as _;
+
+        let mut out = String::new();
+        let _ = writeln!(&mut out, "(postcard-decode-program");
+        let _ = writeln!(&mut out, "  (register-count {})", self.register_count);
+        let _ = writeln!(&mut out, "  (instructions");
+        for instr in &self.instructions {
+            match *instr {
+                DecodeInstr::ReadScalar { kind, dst } => {
+                    let _ = writeln!(
+                        &mut out,
+                        "    (read-scalar (kind {}) (dst r{}))",
+                        kind.as_symbol(),
+                        dst
+                    );
+                }
+                DecodeInstr::WriteFieldFromReg { field, src } => {
+                    let _ = writeln!(
+                        &mut out,
+                        "    (write-field-from-reg (field {}) (src r{}))",
+                        field, src
+                    );
+                }
+                DecodeInstr::RequireEof => {
+                    let _ = writeln!(&mut out, "    (require-eof)");
+                }
+            }
+        }
+        let _ = writeln!(&mut out, "  )");
+        let _ = write!(&mut out, ")");
+        out
+    }
 }
 
 /// Compile-time validated decode plan for postcard struct slices.
@@ -300,6 +346,7 @@ fn scalar_kind_for_shape(shape: &'static Shape) -> Option<ScalarKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use insta::assert_snapshot;
 
     #[derive(Debug, PartialEq, facet::Facet)]
     struct Demo {
@@ -380,51 +427,13 @@ mod tests {
     #[test]
     fn compile_emits_program() {
         let plan = compile::<Demo>().expect("compile should succeed");
-        let program = plan.program();
-        assert_eq!(
-            program.instructions,
-            vec![
-                DecodeInstr::ReadScalar {
-                    kind: ScalarKind::U32,
-                    dst: 0,
-                },
-                DecodeInstr::WriteFieldFromReg { field: 0, src: 0 },
-                DecodeInstr::ReadScalar {
-                    kind: ScalarKind::String,
-                    dst: 1,
-                },
-                DecodeInstr::WriteFieldFromReg { field: 1, src: 1 },
-                DecodeInstr::RequireEof,
-            ]
-        );
+        assert_snapshot!("compile_demo_program_sexp", plan.program().to_sexp());
     }
 
     #[test]
     fn compile_is_shape_driven_for_multiple_fields() {
         let plan = compile::<Demo3>().expect("compile should succeed");
-        let program = plan.program();
-        assert_eq!(program.register_count, 3);
-        assert_eq!(
-            program.instructions,
-            vec![
-                DecodeInstr::ReadScalar {
-                    kind: ScalarKind::U32,
-                    dst: 0,
-                },
-                DecodeInstr::WriteFieldFromReg { field: 0, src: 0 },
-                DecodeInstr::ReadScalar {
-                    kind: ScalarKind::String,
-                    dst: 1,
-                },
-                DecodeInstr::WriteFieldFromReg { field: 1, src: 1 },
-                DecodeInstr::ReadScalar {
-                    kind: ScalarKind::Bool,
-                    dst: 2,
-                },
-                DecodeInstr::WriteFieldFromReg { field: 2, src: 2 },
-                DecodeInstr::RequireEof,
-            ]
-        );
+        assert_snapshot!("compile_demo3_program_sexp", plan.program().to_sexp());
     }
 
     #[test]

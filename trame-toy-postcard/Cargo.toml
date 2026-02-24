@@ -18,6 +18,7 @@ facet-core.workspace = true
 
 [dev-dependencies]
 facet.workspace = true
+insta = "1"
 
 [lints]
 workspace = true

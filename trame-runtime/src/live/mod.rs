@@ -12,8 +12,8 @@ use core::marker::PhantomData;
 #[cfg(creusot)]
 use creusot_std::macros::{logic, trusted};
 use facet_core::{
-    Def, EnumRepr, EnumType, Field, KnownPointer, ListDef, MapDef, PointerDef, PtrConst, PtrMut,
-    PtrUninit, SetDef, Shape, StructType, Type, UserType, Variant,
+    Def, EnumRepr, EnumType, Field, KnownPointer, ListDef, MapDef, PointerDef, PtrMut, PtrUninit,
+    SetDef, Shape, StructType, Type, UserType, Variant,
 };
 
 #[cfg(creusot)]
@@ -363,7 +363,7 @@ impl IPointerType for PointerDef {
             return false;
         };
         unsafe {
-            (slice_builder.push_fn)(PtrMut::new(builder_ptr), PtrConst::new(item_ptr));
+            (slice_builder.push_fn)(PtrMut::new(builder_ptr), PtrMut::new(item_ptr).into());
         }
         true
     }

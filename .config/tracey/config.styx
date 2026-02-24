@@ -3,7 +3,7 @@
 specs (
     {
         name trame
-        include (docs/content/**/*.md)
+        include (docs/content/spec/*.md)
         impls (
             {
                 name rust

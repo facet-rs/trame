@@ -85,6 +85,7 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
     #[cfg_attr(creusot,
         requires(match self.kind {
             NodeKind::Struct { fields } => field_idx@ < fields.len_logic(),
+            NodeKind::Array { elements } => field_idx@ < elements.len_logic(),
             NodeKind::EnumPayload { fields, .. } => field_idx@ < fields.len_logic(),
             NodeKind::List { elements, .. } => field_idx@ < elements.len_logic(),
             NodeKind::PointerSlice { elements, .. } => field_idx@ < elements.len_logic(),
@@ -94,6 +95,7 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
         }),
         ensures(match (^self).kind {
             NodeKind::Struct { fields } => fields.slots@[field_idx@] == FieldSlot::Untracked, // TODO: other fields are unchanged
+            NodeKind::Array { elements } => elements.slots@[field_idx@] == FieldSlot::Untracked,
             NodeKind::EnumPayload { fields, .. } => fields.slots@[field_idx@] == FieldSlot::Untracked, // TODO: other fields are unchanged
             NodeKind::List { elements, .. } => elements.slots@[field_idx@] == FieldSlot::Untracked,
             NodeKind::PointerSlice { elements, .. } => elements.slots@[field_idx@] == FieldSlot::Untracked,
@@ -105,6 +107,7 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
     pub(crate) fn mark_field_not_started(&mut self, field_idx: usize) {
         match &mut self.kind {
             NodeKind::Struct { fields } => fields.mark_not_started(field_idx),
+            NodeKind::Array { elements } => elements.mark_not_started(field_idx),
             NodeKind::EnumPayload { fields, .. } => fields.mark_not_started(field_idx),
             NodeKind::List { elements, .. } => elements.mark_not_started(field_idx),
             NodeKind::PointerSlice { elements, .. } => elements.mark_not_started(field_idx),
@@ -117,6 +120,7 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
     #[cfg_attr(creusot,
         requires(match self.kind {
             NodeKind::Struct { fields } => field_idx@ < fields.len_logic(),
+            NodeKind::Array { elements } => field_idx@ < elements.len_logic(),
             NodeKind::EnumPayload { fields, .. } => field_idx@ < fields.len_logic(),
             NodeKind::List { elements, .. } => field_idx@ < elements.len_logic(),
             NodeKind::PointerSlice { elements, .. } => field_idx@ < elements.len_logic(),
@@ -126,6 +130,7 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
         }),
         ensures(match (^self).kind {
             NodeKind::Struct { fields } => fields.slots@[field_idx@] == FieldSlot::Complete, // TODO: other fields are unchanged
+            NodeKind::Array { elements } => elements.slots@[field_idx@] == FieldSlot::Complete,
             NodeKind::EnumPayload { fields, .. } => fields.slots@[field_idx@] == FieldSlot::Complete, // TODO: other fields are unchanged
             NodeKind::List { elements, .. } => elements.slots@[field_idx@] == FieldSlot::Complete,
             NodeKind::PointerSlice { elements, .. } => elements.slots@[field_idx@] == FieldSlot::Complete,
@@ -137,6 +142,7 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
     pub(crate) fn mark_field_complete(&mut self, field_idx: usize) {
         match &mut self.kind {
             NodeKind::Struct { fields } => fields.mark_complete(field_idx),
+            NodeKind::Array { elements } => elements.mark_complete(field_idx),
             NodeKind::EnumPayload { fields, .. } => fields.mark_complete(field_idx),
             NodeKind::List { elements, .. } => elements.mark_complete(field_idx),
             NodeKind::PointerSlice { elements, .. } => elements.mark_complete(field_idx),
@@ -275,6 +281,10 @@ impl<H: IHeap<S>, S: IShape> Node<H, S> {
             NodeKind::Struct {
                 fields: FieldStates::new(st.field_count()),
             }
+        } else if let Some(array_len) = shape.array_len() {
+            NodeKind::Array {
+                elements: FieldStates::new(array_len),
+            }
         } else if shape.is_list() || shape.is_set() {
             NodeKind::List {
                 elements: FieldStates::new(0),
@@ -319,6 +329,8 @@ pub(crate) enum NodeKind<F> {
     Scalar { initialized: bool },
     /// Struct with tracked fields.
     Struct { fields: FieldStates<F> },
+    /// Fixed-size array with tracked indexed elements.
+    Array { elements: FieldStates<F> },
     /// Smart pointer (`Box<T>`/etc) with one staged pointee child.
     Pointer {
         child: Option<Idx<F>>,
@@ -374,6 +386,9 @@ impl<F> Clone for NodeKind<F> {
             },
             Self::Struct { fields } => Self::Struct {
                 fields: fields.clone(),
+            },
+            Self::Array { elements } => Self::Array {
+                elements: elements.clone(),
             },
             Self::Pointer { child, initialized } => Self::Pointer {
                 child: *child,

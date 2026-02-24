@@ -120,6 +120,7 @@ where
                         },
                     NodeKind::PointerSlice { .. } => true,
                     NodeKind::Struct { .. } => true,
+                    NodeKind::Array { .. } => true,
                     NodeKind::List { .. } => true,
                     NodeKind::Map { .. } => true,
                     NodeKind::MapEntry { .. } => true,
@@ -625,6 +626,52 @@ where
         ))
     }
 
+    fn array_meta(shape: Shape<R>, field_idx: usize) -> Result<FieldMeta<Shape<R>>, TrameError> {
+        let elem_shape = shape.array_element().ok_or(TrameError::NotAStruct)?;
+        let count = shape.array_len().ok_or(TrameError::NotAStruct)?;
+        if field_idx >= count {
+            return Err(TrameError::FieldOutOfBounds {
+                index: field_idx,
+                count,
+            });
+        }
+
+        let elem_layout = layout_expect(elem_shape.layout());
+        let elem_stride = elem_layout.pad_to_align().size();
+        let offset = elem_stride
+            .checked_mul(field_idx)
+            .expect("array element offset overflow");
+        let layout = vlayout_from_layout(elem_layout);
+        Ok(FieldMeta {
+            shape: elem_shape,
+            offset,
+            layout,
+        })
+    }
+
+    fn array_element_ptr(
+        node: &Node<Heap<R>, Shape<R>>,
+        field_idx: usize,
+    ) -> Result<(Shape<R>, Ptr<R>, usize), TrameError> {
+        let meta = Self::array_meta(node.shape, field_idx)?;
+        let node_size = layout_size(vlayout_from_layout(layout_expect(node.shape.layout())));
+        #[cfg(creusot)]
+        assume_field_ptr_in_bounds(&meta, node_size);
+        #[cfg(not(creusot))]
+        assert!(
+            meta.offset + layout_size(meta.layout) <= node_size,
+            "array element out of bounds: {} + {} > {}",
+            meta.offset,
+            layout_size(meta.layout),
+            node_size
+        );
+        Ok((
+            meta.shape,
+            unsafe { node.data.byte_add(meta.offset) },
+            layout_size(meta.layout),
+        ))
+    }
+
     fn enum_payload_ptr(
         node: &Node<Heap<R>, Shape<R>>,
         variant_idx: usize,
@@ -765,7 +812,9 @@ where
                 NodeKind::EnumVariant { .. } | NodeKind::EnumPayload { .. } => {
                     Err(TrameError::NotAStruct)
                 }
-                NodeKind::Struct { .. } | NodeKind::MapEntry { .. } => Err(TrameError::NotAStruct),
+                NodeKind::Struct { .. } | NodeKind::Array { .. } | NodeKind::MapEntry { .. } => {
+                    Err(TrameError::NotAStruct)
+                }
                 NodeKind::PointerSlice { .. } => Err(TrameError::UnsupportedSource),
                 NodeKind::List {
                     initialized,
@@ -1432,6 +1481,27 @@ where
                         });
                     }
                 }
+                NodeKind::Array { elements } => {
+                    let field_count = elements.len();
+                    if field_idx < field_count {
+                        #[cfg(creusot)]
+                        {
+                            prove_field_idx_in_bounds(elements, field_idx)?;
+                        }
+                        (
+                            elements.get_child(field_idx),
+                            elements.is_init(field_idx),
+                            false,
+                            false,
+                            false,
+                        )
+                    } else {
+                        return Err(TrameError::FieldOutOfBounds {
+                            index: field_idx,
+                            count: field_count,
+                        });
+                    }
+                }
                 NodeKind::Pointer {
                     child, initialized, ..
                 } => {
@@ -1604,7 +1674,11 @@ where
             #[cfg(creusot)]
             assume(snapshot! { false });
             let node_ref = self.arena.get(target_idx);
-            let (field_shape, dst, _size) = Self::field_ptr(node_ref, field_idx)?;
+            let (field_shape, dst, _size) = if matches!(target_kind, NodeKind::Array { .. }) {
+                Self::array_element_ptr(node_ref, field_idx)?
+            } else {
+                Self::field_ptr(node_ref, field_idx)?
+            };
             (field_shape, dst)
         };
 
@@ -2165,6 +2239,7 @@ where
             && !is_list_parent
             && !is_map_parent
             && !field_shape.is_struct()
+            && !field_shape.is_array()
             && !field_shape.is_list()
             && !field_shape.is_set()
             && !field_shape.is_map()
@@ -2238,6 +2313,13 @@ where
                     prove_field_idx_in_bounds(fields, field_idx)?;
                 }
                 fields.set_child(field_idx, child_idx);
+            }
+            NodeKind::Array { elements } => {
+                #[cfg(creusot)]
+                {
+                    prove_field_idx_in_bounds(elements, field_idx)?;
+                }
+                elements.set_child(field_idx, child_idx);
             }
             NodeKind::EnumPayload { fields, .. } => {
                 #[cfg(creusot)]
@@ -2429,6 +2511,28 @@ where
                         fields.prove_idx_in_bounds(i, field_count);
                     }
                     match fields.slot(i) {
+                        FieldSlot::Untracked => return false,
+                        FieldSlot::Complete => {}
+                        FieldSlot::Child(child) => {
+                            let child_node = self.arena.get(child);
+                            if child_node.state != NodeState::Sealed {
+                                return false;
+                            }
+                        }
+                    }
+                    i += 1;
+                }
+                true
+            }
+            NodeKind::Array { elements } => {
+                let element_count = elements.len();
+                let mut i = 0;
+                while i < element_count {
+                    #[cfg(creusot)]
+                    {
+                        elements.prove_idx_in_bounds(i, element_count);
+                    }
+                    match elements.slot(i) {
                         FieldSlot::Untracked => return false,
                         FieldSlot::Complete => {}
                         FieldSlot::Child(child) => {
@@ -3053,6 +3157,29 @@ where
                 self.arena.get_mut(idx).state = NodeState::Sealed;
                 Ok(())
             }
+            NodeKind::Array { elements } => {
+                let element_count = elements.len();
+                let mut i = 0;
+                while i < element_count {
+                    #[cfg(creusot)]
+                    {
+                        elements.prove_idx_in_bounds(i, element_count);
+                    }
+                    match elements.slot(i) {
+                        FieldSlot::Untracked => return Err(TrameError::Incomplete),
+                        FieldSlot::Complete => {}
+                        FieldSlot::Child(child_idx) => {
+                            self.finalize_subtree(child_idx)?;
+                            if self.arena.get(child_idx).state != NodeState::Sealed {
+                                return Err(TrameError::Incomplete);
+                            }
+                        }
+                    }
+                    i += 1;
+                }
+                self.arena.get_mut(idx).state = NodeState::Sealed;
+                Ok(())
+            }
             NodeKind::List { elements, .. } => {
                 let element_count = elements.len();
                 let mut i = 0;
@@ -3371,6 +3498,20 @@ where
                         i += 1;
                     }
                 }
+                NodeKind::Array { elements } => {
+                    let element_count = elements.len();
+                    let mut i = 0;
+                    while i < element_count {
+                        #[cfg(creusot)]
+                        {
+                            elements.prove_idx_in_bounds(i, element_count);
+                        }
+                        if let Some(child_idx) = elements.get_child(i) {
+                            children.push(child_idx);
+                        }
+                        i += 1;
+                    }
+                }
                 NodeKind::List { elements, .. } => {
                     let element_count = elements.len();
                     let mut i = 0;
@@ -3518,6 +3659,29 @@ where
                                 assume(snapshot! {self.heap.is_init(node_data, node_shape)});
                                 unsafe {
                                     self.heap.drop_in_place(ptr, field_shape);
+                                }
+                            }
+                        }
+                        i += 1;
+                    }
+                }
+                NodeKind::Array { elements } => {
+                    let node = self.arena.get(idx);
+                    let element_count = elements.len();
+                    let mut i = 0;
+                    while i < element_count {
+                        #[cfg(creusot)]
+                        {
+                            elements.prove_idx_in_bounds(i, element_count);
+                        }
+                        if matches!(elements.slot(i), FieldSlot::Complete) {
+                            if let Ok((element_shape, ptr, _size)) =
+                                Self::array_element_ptr(node, i)
+                            {
+                                #[cfg(creusot)]
+                                assume(snapshot! {self.heap.is_init(node_data, node_shape)});
+                                unsafe {
+                                    self.heap.drop_in_place(ptr, element_shape);
                                 }
                             }
                         }
@@ -3694,12 +3858,14 @@ where
                 | NodeKind::Map { .. } => Ok(target_shape),
                 NodeKind::PointerSlice { .. } => Err(TrameError::UnsupportedSource),
                 NodeKind::Struct { .. }
+                | NodeKind::Array { .. }
                 | NodeKind::MapEntry { .. }
                 | NodeKind::EnumVariant { .. }
                 | NodeKind::EnumPayload { .. } => Err(TrameError::NotAStruct),
             },
             PathTarget::Field(field_idx) => match &node.kind {
                 NodeKind::Struct { .. } => Ok(Self::field_meta(target_shape, field_idx)?.shape),
+                NodeKind::Array { .. } => Ok(Self::array_meta(target_shape, field_idx)?.shape),
                 NodeKind::MapEntry { .. } => {
                     let map_idx = node.parent;
                     if !map_idx.is_valid() {

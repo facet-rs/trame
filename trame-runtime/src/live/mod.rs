@@ -201,9 +201,26 @@ impl IShape for &'static Shape {
     }
 
     #[inline]
+    fn array_len(&self) -> Option<usize> {
+        match self.def {
+            Def::Array(def) => Some(def.n),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn array_element(&self) -> Option<Self> {
+        match self.def {
+            Def::Array(def) => Some(def.t()),
+            _ => None,
+        }
+    }
+
+    #[inline]
     fn sequence_element(&self) -> Option<Self> {
         match self.def {
             Def::List(def) => Some(def.t()),
+            Def::Array(def) => Some(def.t()),
             Def::Slice(def) => Some(def.t()),
             _ => None,
         }

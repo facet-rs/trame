@@ -1,0 +1,10 @@
+# trame-toy-postcard
+
+Toy postcard deserializer built on trame primitives.
+
+This crate exists as a vertical slice for the first `trame` format pipeline
+deliverable:
+
+- compile a shape into an input-independent decode program;
+- interpret that program over postcard bytes;
+- build values through `trame` operations/runtime.

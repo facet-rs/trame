@@ -36,7 +36,7 @@ Execution uses tiers:
 > execution MUST remain fully functional via interpreter.
 
 > t[format.exec.state-model-shared] Interpreter and JIT MUST implement the same
-> logical VM state model (pc, call stack, path stack, token register, and
+> logical VM state model (pc, call stack, path stack, decode registers, and
 > source/sink state handles).
 
 ## Hotness and Promotion
@@ -84,7 +84,9 @@ Deopt transfer state uses a versioned snapshot.
   (pc (proc f0) (block b3) (ip 2))
   (call-stack ((proc f0) (block b1) (ip 5)))
   (path-stack ((field 1)))
-  (token-reg (valid true) (kind key) (payload "name"))
+  (byte-reg (valid true) (value #x22))
+  (key-reg (valid true) (payload "name"))
+  (scalar-reg (valid false))
   (cand-mask #x03)
   (locals
     (slot-count 2)
@@ -115,7 +117,7 @@ Deopt transfer state uses a versioned snapshot.
 > t[format.exec.deopt-stack-complete] Snapshot MUST include complete call-stack
 > and path-stack state.
 
-> t[format.exec.deopt-token-state-complete] Snapshot MUST include token-register
+> t[format.exec.deopt-token-state-complete] Snapshot MUST include decode-register
 > validity and payload reference/state required by resume.
 
 > t[format.exec.deopt-candidate-state-complete] Snapshot MUST include candidate
@@ -131,7 +133,7 @@ Deopt transfer state uses a versioned snapshot.
 > encode side effects are resumable at the deopt boundary.
 
 > t[format.exec.deopt-cursor-replay-safe] Snapshot MUST include source-cursor
-> state sufficient to continue token consumption without duplication or loss.
+> state sufficient to continue byte consumption without duplication or loss.
 
 ### Deopt Payload Encoding (v1)
 
@@ -227,7 +229,8 @@ JIT backends maintain side metadata to translate machine execution state into
 Required metadata classes:
 
 - machine-pc -> VM `pc` map at deoptable instruction boundaries;
-- spill/register map for VM-visible state (`%tok`, `%cand-mask`, locals);
+- spill/register map for VM-visible state (`%byte`, `%key`, `%scalar`,
+  `%cand-mask`, locals);
 - source/sink side-effect boundary markers;
 - save-stack materialization metadata when replay is active.
 
@@ -268,7 +271,7 @@ Implementation may choose a concrete ABI, but it MUST satisfy:
 > context sufficient for safe traversal.
 
 > t[format.exec.abi-source-context] Decode execution entry MUST accept
-> mutable source context for token operations.
+> mutable source context for byte/parse operations.
 
 > t[format.exec.abi-sink-context] Execution entry MUST accept mutable sink
 > context/writer state.
@@ -292,7 +295,7 @@ v0 implementation order is constrained:
 
 1. VM verifier and loader for text/binary `Program`.
 2. Interpreter coverage for all ABI-v1 opcodes used by target workloads.
-3. Decode source adapter (`source-v1`) with save/restore and skip support.
+3. Decode source adapter (`source`) with save/restore support.
 4. Differential validation (interpreter vs reference backend) over corpus/fuzz.
 5. Baseline JIT enablement behind hotness thresholds.
 
@@ -300,7 +303,7 @@ v0 implementation order is constrained:
 > executable path; interpreter support MUST exist first for all targeted opcodes.
 
 > t[format.exec.v0-json-source-before-jit] Fully JIT-targeted JSON decode MUST
-> have a conforming `source-v1` adapter (including save/restore) before JIT is
+> have a conforming `source` adapter (including save/restore) before JIT is
 > considered complete.
 
 > t[format.exec.v0-diff-gate-before-default-jit] JIT MUST NOT become default for
@@ -319,7 +322,8 @@ For v0, "fully JIT'd JSON decode" means:
 > satisfy the definition above.
 
 > t[format.exec.v0-fully-jitted-json-no-hidden-interpreter] Steady-state JIT
-> decode paths MUST NOT perform hidden per-token fallbacks into interpreter.
+> decode paths MUST NOT perform hidden per-byte/per-parse fallbacks into
+> interpreter.
 
 ## Testing and Hardening
 

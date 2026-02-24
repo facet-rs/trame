@@ -179,7 +179,7 @@ VM execution is split into two phases:
    executable `Program`
 2. execute (`trame`): `(ptr, shape, program, io-context)` where:
    - encode direction emits sink events
-   - decode direction consumes source tokens and applies build actions
+   - decode direction consumes source bytes/code-units and applies build actions
 
 `Program` is an internal executable IR; it is not a wire format.
 
@@ -355,7 +355,7 @@ VM execution is split into two phases:
 
 Decode direction compiles into one executable `Program`:
 
-1. compile format token semantics and shape-aware build semantics into one CFG
+1. compile format lexical+parse semantics and shape-aware build semantics into one CFG
 2. execute through engine; all writes happen under trame safety rules
 
 > t[format.parse.program-self-contained] A decode-direction `Program` MUST be
@@ -365,7 +365,10 @@ Decode direction compiles into one executable `Program`:
 > t[format.parse.program-abi-version] A decode-direction `Program` MUST carry an
 > ABI version and MUST be rejected by incompatible executors.
 
-> t[format.parse.single-program-token-and-build] Decode token dispatch and build
+> t[format.parse.single-program-token-and-build] Decode lexical/parse dispatch and build
+> actions MUST be expressed in one executable program.
+
+> t[format.parse.single-program-lex-and-build] Decode lexical/parsing and build
 > actions MUST be expressed in one executable program.
 
 > t[format.parse.build-ops-equivalence] Decode build semantics MUST be
@@ -400,7 +403,7 @@ Decode direction compiles into one executable `Program`:
 
 ### Error Semantics
 
-> t[format.parse.error-token-context] Decode errors MUST include source token
+> t[format.parse.error-token-context] Decode errors MUST include source position
 > context when available.
 
 > t[format.parse.error-build-context] Build failures MUST include value-path
@@ -412,7 +415,7 @@ Decode direction compiles into one executable `Program`:
 ### Performance
 
 > t[format.parse.batch-friendly-execution] Engine execution MUST support
-> batching/chunked processing to reduce per-token/per-op overhead.
+> batching/chunked processing to reduce per-byte/per-op overhead.
 
 > t[format.parse.hotpath-jit-eligibility] Hot decode programs MAY be JIT
 > compiled under the same safety and equivalence constraints as interpreter
@@ -429,7 +432,9 @@ Programs execute against explicit VM state:
 - `pc`: `(proc-id, block-id, instr-index)`.
 - `call-stack`: return addresses for `call`/`ret`.
 - `path-stack`: current logical value path.
-- `%tok`: current token register for decode control flow.
+- `%byte`: current input byte/code-unit register for decode lexical control.
+- `%scalar`: current decoded scalar register for decode/build actions.
+- `%key`: current decoded object-key register for key matching.
 - `%cand-mask`: active candidate-set bitmask for decode disambiguation.
 - `locals`: typed local/register slots for temporary decode state.
 - `source-cursor`: decode input cursor.
@@ -485,8 +490,8 @@ Families:
   - `enter-field`, `enter-index`, `enter-key`, `enter-value`, `enter-variant`, `leave`
 - Encode emission:
   - `emit-begin-*`, `emit-field-name`, `emit-scalar`, `emit-null`, `emit-end`
-- Decode token/control:
-  - `read-token`, `expect-token`, `match-token`, `match-key`, `skip-value`, `source-save`, `source-restore`
+- Decode lexical/parse control:
+  - `read-byte`, `peek-byte`, `expect-byte`, `match-byte`, `match-byte-class`, `skip-byte-class`, `scan-json-string`, `scan-json-number`, `scan-json-literal`, `json-skip-value`, `match-key`, `source-save`, `source-restore`
 - Decode disambiguation:
   - `cand-init`, `cand-key`, `cand-tag-eq`, `cand-dispatch`
 - Build actions:
@@ -552,15 +557,21 @@ Families:
 | `emit-null` | none | Emit explicit null/unit sink event. | Sink error. |
 | `emit-end` | none | Emit structural end sink event. | Structural imbalance, sink error. |
 
-#### Decode Token and Dispatch
+#### Decode Lexical/Parse Control
 
 | Opcode | Operands | Effect | Failure |
 | --- | --- | --- | --- |
-| `read-token` | none | Consume next token from source into `%tok`. | Source error, unexpected EOF. |
-| `expect-token` | `(kind K)` | Consume next token; fail unless `kind == K`; store in `%tok`. | Kind mismatch, source error. |
-| `match-token` | `(kind K) (then bN) (else bN)` | Branch by `%tok.kind` without consuming additional input. | `%tok` unset. |
-| `match-key` | `(string u32) (then bN) (else bN)` | Branch by key equality between `%tok` key and `strings[idx]`. | `%tok` not key, invalid string id. |
-| `skip-value` | none | Consume exactly one full decode value (including nested structure). | Source error, malformed input. |
+| `read-byte` | none | Consume next source byte/code-unit into `%byte`. | Source error. |
+| `peek-byte` | none | Load next source byte/code-unit into `%byte` without consuming. | Source error. |
+| `expect-byte` | `(byte u8)` | Consume next byte; fail unless byte equals operand; store in `%byte`. | Byte mismatch, source error. |
+| `match-byte` | `(byte u8) (then bN) (else bN)` | Branch by equality between `%byte` and operand byte. | `%byte` unset. |
+| `match-byte-class` | `(class C) (then bN) (else bN)` | Branch by whether `%byte` belongs to class `C`. | `%byte` unset, invalid class id. |
+| `skip-byte-class` | `(class C)` | Consume zero or more consecutive bytes in class `C`. | Invalid class id, source error. |
+| `scan-json-string` | none | Consume one JSON string literal, decode escapes/UTF-8, store in `%scalar` (string) and `%key` when in key position. | Malformed string, source error. |
+| `scan-json-number` | none | Consume one JSON number literal and store in `%scalar` (`int`/`uint`/`float`). | Malformed number, overflow policy error, source error. |
+| `scan-json-literal` | `(kind true\|false\|null)` | Consume exact JSON literal and store corresponding `%scalar` value. | Literal mismatch, source error. |
+| `json-skip-value` | none | Consume exactly one JSON value subtree from source bytes. | Malformed input, source error. |
+| `match-key` | `(string u32) (then bN) (else bN)` | Branch by equality between `%key` and `strings[idx]`. | `%key` unset, invalid string id. |
 | `source-save` | none | Push current `source-cursor` onto `source-save-stack`. | Source does not support save, source error. |
 | `source-restore` | none | Pop save point and restore `source-cursor`. | Empty save stack, invalid save point, source error. |
 
@@ -570,14 +581,14 @@ Families:
 | --- | --- | --- | --- |
 | `cand-init` | `(mask #x...)` | Initialize `%cand-mask` with candidate bitmask. | Empty/invalid mask for current program. |
 | `cand-key` | `(keep #x...)` | Narrow candidates: `%cand-mask &= keep`. | `%cand-mask` unset. |
-| `cand-tag-eq` | `(string u32) (then-keep #x...) (else-keep #x...)` | Read `%tok` scalar string and narrow `%cand-mask` with `then-keep` or `else-keep`. | `%tok` not scalar string, invalid string id, `%cand-mask` unset. |
+| `cand-tag-eq` | `(string u32) (then-keep #x...) (else-keep #x...)` | Compare `%scalar` string with `strings[idx]` and narrow `%cand-mask` with `then-keep` or `else-keep`. | `%scalar` not string, invalid string id, `%cand-mask` unset. |
 | `cand-dispatch` | `(case N bN)... (ambiguous bN) (none bN)` | If exactly one candidate remains, jump to its case; else jump `ambiguous` or `none`. | `%cand-mask` unset, dangling case target. |
 
 #### Build Actions
 
 | Opcode | Operands | Effect | Failure |
 | --- | --- | --- | --- |
-| `build-set-imm` | none | Convert `%tok` scalar payload to destination type and set current path. | `%tok` unset/non-scalar, conversion error, build error. |
+| `build-set-imm` | none | Convert `%scalar` payload to destination type and set current path. | `%scalar` unset/non-scalar, conversion error, build error. |
 | `build-default` | none | Apply default at current path. | Build error. |
 | `build-stage` | `(capacity u32\|unknown)` | Stage node at current path with optional capacity hint. | Build error. |
 | `build-end` | none | Close current staged node (equivalent to `End`). | Build error, structural imbalance. |
@@ -586,19 +597,35 @@ Families:
 
 ### Selected Opcode Semantics (Normative Details)
 
-#### `match-token`
+#### `match-byte` / `match-byte-class`
 
-`match-token` compares `%tok.kind` against exactly one `kind` operand and does
-not consume source input.
+`match-byte` and `match-byte-class` branch on `%byte` without consuming further
+input.
 
-Multi-way token dispatch is represented by explicit chains/trees of
-`match-token` blocks.
+Multi-way lexical dispatch is represented by explicit CFG chains/trees.
 
-> t[format.vm.match-token-single-kind] `match-token` MUST test exactly one token
-> kind per instruction.
+> t[format.vm.match-byte-single-test] `match-byte` MUST test exactly one byte
+> value per instruction.
 
-> t[format.vm.match-token-multiway-by-cfg] Multi-way token dispatch MUST be
+> t[format.vm.match-byte-class-known] `match-byte-class` MUST reference a known
+> class id in the active ABI.
+
+> t[format.vm.match-byte-multiway-by-cfg] Multi-way lexical dispatch MUST be
 > represented via explicit CFG composition, not hidden switch semantics.
+
+#### Lex Builtins
+
+`scan-json-string`, `scan-json-number`, `scan-json-literal`, and
+`json-skip-value` are semantic builtins in the shared VM dialect.
+
+They are optimization helpers only: each builtin MUST be observationally
+equivalent to an explicit byte-level parser lowering in the same VM.
+
+> t[format.vm.lex-builtin-semantic-equivalence] Lex builtins MUST be
+> observationally equivalent to explicit byte-level IR lowering.
+
+> t[format.vm.lex-builtin-optional-in-compiler] Compilers MAY choose builtins or
+> fully expanded byte-level CFG, but resulting semantics MUST match.
 
 #### `emit-scalar`
 
@@ -639,34 +666,35 @@ variant solving; solver/disambiguation logic remains ordinary CFG instructions.
 
 ## Decode Instruction Semantics
 
-Decode programs consume a token stream and drive build actions.
+Decode programs consume source bytes/code-units and drive build actions.
 
-### Token Interaction
+### Lexical and Parse Interaction
 
-> t[format.parse.token-read-explicit] Token consumption MUST happen only through
-> explicit token-read/match/expect instructions.
+> t[format.parse.byte-read-explicit] Source-byte consumption MUST happen only
+> through explicit lexical/parse instructions.
 
-> t[format.parse.token-kind-checked] `expect-token` MUST fail if the next token
-> kind does not match expectation.
+> t[format.parse.expect-byte-checked] `expect-byte` MUST fail if the next input
+> byte does not match expectation.
 
 > t[format.parse.key-match-deterministic] `match-key` dispatch MUST be
-> deterministic for a given key table and input token.
+> deterministic for a given key table and decoded key value.
 
 > t[format.parse.unknown-field-policy-explicit] Unknown-field behavior MUST be
 > encoded explicitly in decode control flow (reject, skip, or collect).
 
-> t[format.parse.token-match-no-implicit-read] `match-token` and `match-key`
-> MUST NOT consume additional input beyond what `read-token`/`expect-token`
-> consumed.
+> t[format.parse.byte-match-no-implicit-read] `match-byte`,
+> `match-byte-class`, and `match-key` MUST NOT consume additional input beyond
+> explicit consuming instructions.
 
-> t[format.parse.skip-value-single-tree] `skip-value` MUST consume exactly one
-> syntactic value subtree and leave the source cursor at the next sibling token.
+> t[format.parse.skip-value-single-tree] `json-skip-value` MUST consume exactly
+> one syntactic JSON value subtree and leave source cursor at the next sibling
+> position.
 
 > t[format.parse.source-save-restore-explicit] Decode replay MUST use explicit
 > `source-save`/`source-restore` instructions.
 
 > t[format.parse.source-restore-exactness] `source-restore` MUST restore cursor
-> state so replay observes the same token sequence from the saved point.
+> state so replay observes the same input-byte sequence from the saved point.
 
 > t[format.parse.source-save-stack-balance] `source-save`/`source-restore` MUST
 > be stack-balanced in all successful control-flow paths.
@@ -675,11 +703,11 @@ Decode programs consume a token stream and drive build actions.
 > LIFO behavior.
 
 > t[format.parse.source-restore-invalidates-token] `source-restore` MUST
-> invalidate `%tok` and any parser peek buffer state.
+> invalidate `%byte`, `%key`, `%scalar`, and any parser lookahead state.
 
 > t[format.parse.source-restore-span-deterministic] Replay after
-> `source-restore` MUST reproduce token spans/locations as well as token kinds
-> and payloads when source locations are available.
+> `source-restore` MUST reproduce byte offsets/spans and decoded values
+> deterministically when source locations are available.
 
 ### Disambiguation
 
@@ -735,7 +763,7 @@ Decode programs consume a token stream and drive build actions.
 
 ### Scalar Conversion (`build-set-imm`)
 
-`build-set-imm` consumes `%tok` scalar payload and converts it using the target
+`build-set-imm` consumes `%scalar` payload and converts it using the target
 shape at `current_path`.
 
 v1 scalar source kinds:
@@ -746,6 +774,7 @@ v1 scalar source kinds:
 - `float`
 - `string`
 - `bytes`
+- `null`
 
 v1 conversion rules:
 
@@ -754,21 +783,21 @@ v1 conversion rules:
 - target signed integer:
   - accepts source `int` if in-range;
   - accepts source `uint` if in-range;
-  - rejects source `float`, `string`, `bytes`, `bool`, and token-kind `null`.
+  - rejects source `float`, `string`, `bytes`, `bool`, and `null`.
 - target unsigned integer:
   - accepts source `uint` if in-range;
-  - rejects source `int`, `float`, `string`, `bytes`, `bool`, and token-kind `null`.
+  - rejects source `int`, `float`, `string`, `bytes`, `bool`, and `null`.
 - target float:
   - accepts source `float`;
   - accepts source `int`/`uint` using IEEE-754 round-to-nearest-ties-to-even;
   - rejects if result would be non-finite from finite input;
-  - rejects source `string`, `bytes`, `bool`, and token-kind `null`.
+  - rejects source `string`, `bytes`, `bool`, and `null`.
 - target string:
   - accepts only source `string`.
 - target bytes:
   - accepts only source `bytes`.
 - target null/unit:
-  - accepts only token-kind `null`.
+  - accepts only source `null`.
 
 > t[format.parse.scalar-source-kinds-v1] `build-set-imm` conversion MUST use
 > the scalar source kinds above in v1.
@@ -786,7 +815,8 @@ v1 conversion rules:
 ### Decode Action Semantics
 
 > t[format.parse.single-flow-token-and-build] Decode control flow MUST directly
-> interleave token operations and build actions in one instruction stream.
+> interleave lexical/parse operations and build actions in one instruction
+> stream.
 
 > t[format.parse.build-stream-order] Build action order MUST match decode
 > control flow order and MUST preserve exactly-once action delivery.
@@ -830,12 +860,12 @@ Unknown fields are not implicit behavior. Compiler policy must lower to one of:
 - reject:
   - emit `fail` with unknown-field error code.
 - skip:
-  - execute `skip-value` and continue.
+  - execute `json-skip-value` and continue.
 - collect:
   - navigate to catch-all destination and execute explicit build actions.
 
 > t[format.parse.unknown-field-no-implicit-default] Unknown field policy MUST
-> NOT be hidden in source/token adapters.
+> NOT be hidden in source adapters.
 
 ## VM-to-Op Bridge
 
@@ -921,53 +951,42 @@ Canonical sink event interface:
 
 ### Decode Source
 
-> t[format.source.token-interface-stable] Decode source token interface MUST be
+> t[format.source.byte-interface-stable] Decode source byte interface MUST be
 > explicitly versioned by ABI.
-
-> t[format.source.token-kinds-minimum] Token interface MUST provide at least:
-> object start/end, array start/end, key, scalar, null, eof.
 
 > t[format.source-location-optional] Source location/span metadata MAY be
 > provided; if provided, decode errors MUST preserve it.
 
-Canonical source token interface:
+Canonical source byte interface:
 
 ```lisp
-(source-v1
-  (next-token -> token)
-  (peek-token -> token|none)
-  (skip-value)
+(source
+  (next-byte -> u8|eof)
+  (peek-byte -> u8|eof)
   (save -> save-point)
   (restore (save-point))
-  (scalar
-    (kind bool|int|uint|float|string|bytes)
-    (payload ...))
-  (token
-    (kind object-start|object-end|array-start|array-end|key|scalar|null|eof)
-    (payload ...)
-    (location optional)))
+  (slice (start u64) (end u64) -> bytes optional)
+  (location optional))
 ```
 
-> t[format.source.peek-optional] `peek-token` MAY be absent; runtimes MUST be
-> able to emulate it with a one-token buffer.
-
-> t[format.source.skip-optional] `skip-value` MAY be absent; runtimes MUST be
-> able to emulate it via token stepping.
+> t[format.source.peek-optional] `peek-byte` MAY be absent; runtimes MUST be
+> able to emulate it with a one-byte buffer.
 
 > t[format.source.save-restore-required] Source interface MUST support
 > save/restore for decode replay-capable programs.
 
 > t[format.source.save-restore-deterministic] Restoring a save point MUST make
-> subsequent token reads deterministic with respect to the original read stream.
+> subsequent byte reads deterministic with respect to the original read stream.
 
-> t[format.source.scalar-kind-tagged] Scalar tokens MUST carry an explicit
-> scalar kind tag (`bool|int|uint|float|string|bytes`).
+> t[format.source.no-host-tokenization] Source interface MUST provide raw
+> bytes/code-units to IR; host-side structural tokenization MUST NOT be required
+> for decode execution.
 
 > t[format.source.save-restore-capability-guarded] Program loading/execution
 > MUST fail if a decode program uses `source-save`/`source-restore` and the
 > source backend does not provide save/restore capability.
 
-### Save-Point Contract (v1)
+### Save-Point Contract
 
 `save-point` is runtime-scoped state produced by `save` and consumed by
 `restore`.
@@ -975,7 +994,7 @@ Canonical source token interface:
 Canonical logical save-point fields:
 
 ```lisp
-(save-point-v1
+(save-point
   (source-instance-id u64)
   (cursor-offset u64)
   (epoch u32))
@@ -984,11 +1003,11 @@ Canonical logical save-point fields:
 Field meaning:
 
 - `source-instance-id`: stable id of the live source instance.
-- `cursor-offset`: logical token-stream position for replay.
+- `cursor-offset`: logical byte-stream position for replay.
 - `epoch`: monotonic invalidation generation for this source instance.
 
-> t[format.source.save-point-shape-v1] `save-point` MUST be representable by the
-> `save-point-v1` logical fields above.
+> t[format.source.save-point-shape] `save-point` MUST be representable by the
+> logical fields above.
 
 > t[format.source.save-point-instance-scoped] `restore` MUST reject save points
 > whose `source-instance-id` does not match the current source instance.
@@ -1002,15 +1021,16 @@ Field meaning:
 > t[format.source.save-point-deopt-serializable] Save points MUST be
 > serializable/reconstructable for deopt snapshot transfer.
 
-> t[format.source.payload-valid-until-next-read] Token payload borrows (for
-> string/bytes) MUST remain valid until the next token-consuming operation or
+> t[format.source.payload-valid-until-next-read] Decoded payload borrows (for
+> `%key`/`%scalar` string/bytes values) MUST remain valid until the next
+> byte-consuming operation or
 > `source-restore`, whichever happens first.
 
 > t[format.source.payload-invalidated-on-restore] `source-restore` MUST
-> invalidate previously observed token payload borrows.
+> invalidate previously observed decoded payload borrows.
 
 > t[format.source.payload-owned-copy-required] If build semantics require owning
-> string/bytes data beyond token payload validity, runtime MUST copy into owned
+> string/bytes data beyond decoded payload validity, runtime MUST copy into owned
 > storage before payload invalidation.
 
 > t[format.source.payload-no-borrow-leak] Executors and backends MUST NOT retain
@@ -1046,7 +1066,7 @@ Canonical forms:
 > compatibility checks and capability checks.
 
 > t[format.pred.arg-model-explicit] Predicate argument model MUST be explicit in
-> IR (path references, constants, or token/value registers).
+> IR (path references, constants, or decode registers).
 
 > t[format.pred.host-signature-stable] Host predicate callbacks MUST use a
 > versioned ABI-stable signature that returns `bool` or structured error.
@@ -1071,30 +1091,52 @@ Unknown fields are skipped.
         (blocks
           ((b0
             (build-stage (capacity 2))
-            (expect-token (kind object-start))
+            (skip-byte-class (class ws))
+            (expect-byte (byte #x7b)) ; {
             (jump b1))
            (b1
-            (read-token)
-            (match-token (kind object-end) (then b9) (else b2)))
+            (skip-byte-class (class ws))
+            (peek-byte)
+            (match-byte (byte #x7d) (then b9e) (else b2)))
            (b2
+            (scan-json-string)
             (match-key (string 0) (then b3) (else b4)))
            (b3
+            (skip-byte-class (class ws))
+            (expect-byte (byte #x3a)) ; :
+            (skip-byte-class (class ws))
+            (scan-json-number)
             (enter-field (index 0))
-            (expect-token (kind scalar))
             (build-set-imm)
             (leave)
-            (jump b1))
+            (jump b7))
            (b4
             (match-key (string 1) (then b5) (else b6)))
            (b5
+            (skip-byte-class (class ws))
+            (expect-byte (byte #x3a)) ; :
+            (skip-byte-class (class ws))
+            (scan-json-string)
             (enter-field (index 1))
-            (expect-token (kind scalar))
             (build-set-imm)
             (leave)
-            (jump b1))
+            (jump b7))
            (b6
-            (skip-value)
+            (skip-byte-class (class ws))
+            (expect-byte (byte #x3a)) ; :
+            (skip-byte-class (class ws))
+            (json-skip-value)
+            (jump b7))
+           (b7
+            (skip-byte-class (class ws))
+            (peek-byte)
+            (match-byte (byte #x2c) (then b8) (else b9e)))
+           (b8
+            (read-byte) ; consume comma
             (jump b1))
+           (b9e
+            (expect-byte (byte #x7d)) ; }
+            (jump b9))
            (b9
             (build-end)
             (halt)))))))
@@ -1103,11 +1145,7 @@ Unknown fields are skipped.
 
 ## Worked Decode Example (Probe + Replay for Flatten/Untagged)
 
-This example shows one decode `Program` with:
-
-- probe blocks (`b0..b13`): save, inspect keys, narrow candidates, restore, dispatch
-- replay blocks for candidate 0 (`b20..b29`): route `{ id, x }` (variant `A`)
-- replay blocks for candidate 1 (`b30..b39`): route `{ id, y }` (variant `B`)
+This example shows one decode `Program` with byte-level probing and replay:
 
 Equivalent high-level shape:
 
@@ -1140,109 +1178,94 @@ enum Kind {
           ((b0
             (source-save)
             (cand-init (mask #x03))
-            (expect-token (kind object-start))
+            (skip-byte-class (class ws))
+            (expect-byte (byte #x7b)) ; {
             (jump b1))
            (b1
-            (read-token)
-            (match-token (kind object-end) (then b9) (else b2)))
+            (skip-byte-class (class ws))
+            (peek-byte)
+            (match-byte (byte #x7d) (then b9) (else b2)))
            (b2
+            (scan-json-string)
             (match-key (string 0) (then b3) (else b4)))
            (b3
+            (skip-byte-class (class ws))
+            (expect-byte (byte #x3a))
+            (skip-byte-class (class ws))
             (cand-key (keep #x03))
-            (skip-value)
-            (jump b1))
+            (json-skip-value)
+            (jump b7))
            (b4
             (match-key (string 3) (then btag) (else b5)))
            (btag
-            (expect-token (kind scalar))
+            (skip-byte-class (class ws))
+            (expect-byte (byte #x3a))
+            (skip-byte-class (class ws))
+            (scan-json-string)
             (cand-tag-eq (string 4) (then-keep #x01) (else-keep #x02))
-            (jump b1))
+            (jump b7))
            (b5
             (match-key (string 1) (then b6) (else b7)))
            (b6
+            (skip-byte-class (class ws))
+            (expect-byte (byte #x3a))
+            (skip-byte-class (class ws))
             (cand-key (keep #x01))
-            (skip-value)
-            (jump b1))
+            (json-skip-value)
+            (jump b7c))
            (b7
             (match-key (string 2) (then b8) (else b8u)))
            (b8
+            (skip-byte-class (class ws))
+            (expect-byte (byte #x3a))
+            (skip-byte-class (class ws))
             (cand-key (keep #x02))
-            (skip-value)
-            (jump b1))
+            (json-skip-value)
+            (jump b7c))
            (b8u
-            (skip-value)
+            (skip-byte-class (class ws))
+            (expect-byte (byte #x3a))
+            (skip-byte-class (class ws))
+            (json-skip-value)
+            (jump b7c))
+           (b7c
+            (skip-byte-class (class ws))
+            (peek-byte)
+            (match-byte (byte #x2c) (then b7d) (else b1)))
+           (b7d
+            (read-byte)
             (jump b1))
            (b9
             (source-restore)
             (cand-dispatch
-              (case 0 b20)
-              (case 1 b30)
+              (case 0 b20) ; replay route {id,x}
+              (case 1 b30) ; replay route {id,y}
               (ambiguous b12)
               (none b13)))
            (b12 (fail (code decode-ambiguous)))
            (b13 (fail (code decode-no-match)))
-           (b20
+           (b20 (call f1) (halt))
+           (b30 (call f2) (halt)))))
+       (f1
+        (entry ba0)
+        (blocks
+          ((ba0
             (build-begin-deferred)
             (build-stage (capacity 2))
-            (expect-token (kind object-start))
-            (jump b21))
-           (b21
-            (read-token)
-            (match-token (kind object-end) (then b29) (else b22)))
-           (b22
-            (match-key (string 0) (then b23) (else b24)))
-           (b23
-            (enter-field (index 0))
-            (expect-token (kind scalar))
-            (build-set-imm)
-            (leave)
-            (jump b21))
-           (b24
-            (match-key (string 1) (then b25) (else b26)))
-           (b25
-            (enter-field (index 1))
-            (expect-token (kind scalar))
-            (build-set-imm)
-            (leave)
-            (jump b21))
-           (b26
-            (skip-value)
-            (jump b21))
-           (b29
+            ; byte-level replay parse with route {id,x}
             (build-end)
             (build-finish-deferred)
-            (halt))
-           (b30
+            (ret)))))
+       (f2
+        (entry bb0)
+        (blocks
+          ((bb0
             (build-begin-deferred)
             (build-stage (capacity 2))
-            (expect-token (kind object-start))
-            (jump b31))
-           (b31
-            (read-token)
-            (match-token (kind object-end) (then b39) (else b32)))
-           (b32
-            (match-key (string 0) (then b33) (else b34)))
-           (b33
-            (enter-field (index 0))
-            (expect-token (kind scalar))
-            (build-set-imm)
-            (leave)
-            (jump b31))
-           (b34
-            (match-key (string 2) (then b35) (else b36)))
-           (b35
-            (enter-field (index 1))
-            (expect-token (kind scalar))
-            (build-set-imm)
-            (leave)
-            (jump b31))
-           (b36
-            (skip-value)
-            (jump b31))
-           (b39
+            ; byte-level replay parse with route {id,y}
             (build-end)
             (build-finish-deferred)
-            (halt)))))))
+            (ret)))))))
     (entry-proc f0)))
 ```
 
@@ -1274,56 +1297,86 @@ replay/buffering lowering per enum-tag ordering rules.
         (blocks
           ((b0
             (build-stage (capacity 1))
-            (expect-token (kind object-start))
-            (expect-token (kind key))
+            (skip-byte-class (class ws))
+            (expect-byte (byte #x7b))
+            (skip-byte-class (class ws))
+            (scan-json-string)
             (match-key (string 0) (then b1) (else b97)))
            (b1
-            (expect-token (kind scalar))
+            (skip-byte-class (class ws))
+            (expect-byte (byte #x3a))
+            (skip-byte-class (class ws))
+            (scan-json-string)
             (cand-init (mask #x03))
             (cand-tag-eq (string 2) (then-keep #x01) (else-keep #x02))
-            (expect-token (kind key))
+            (skip-byte-class (class ws))
+            (expect-byte (byte #x2c))
+            (skip-byte-class (class ws))
+            (scan-json-string)
             (match-key (string 1) (then b2) (else b97)))
            (b2
-            (expect-token (kind object-start))
+            (skip-byte-class (class ws))
+            (expect-byte (byte #x3a))
+            (skip-byte-class (class ws))
+            (expect-byte (byte #x7b))
             (cand-dispatch
               (case 0 b10)
               (case 1 b20)
               (ambiguous b98)
               (none b99)))
            (b10
-            (read-token)
-            (match-token (kind object-end) (then b19) (else b11)))
+            (skip-byte-class (class ws))
+            (peek-byte)
+            (match-byte (byte #x7d) (then b19) (else b11)))
            (b11
+            (scan-json-string)
             (match-key (string 3) (then b12) (else b13)))
            (b12
             (enter-variant (index 0))
             (enter-field (index 0))
-            (expect-token (kind scalar))
+            (skip-byte-class (class ws))
+            (expect-byte (byte #x3a))
+            (skip-byte-class (class ws))
+            (scan-json-number)
             (build-set-imm)
             (leave)
             (leave)
-            (jump b10))
+            (jump b17))
            (b13
+            (scan-json-string)
             (match-key (string 4) (then b14) (else b15)))
            (b14
             (enter-variant (index 0))
             (enter-field (index 1))
-            (expect-token (kind scalar))
+            (skip-byte-class (class ws))
+            (expect-byte (byte #x3a))
+            (skip-byte-class (class ws))
+            (scan-json-number)
             (build-set-imm)
             (leave)
             (leave)
-            (jump b10))
+            (jump b17))
            (b15 (fail (code decode-unknown-field)))
+           (b17
+            (skip-byte-class (class ws))
+            (peek-byte)
+            (match-byte (byte #x2c) (then b18) (else b10)))
+           (b18
+            (read-byte)
+            (jump b10))
            (b19
-            (expect-token (kind object-end))
+            (expect-byte (byte #x7d))
+            (skip-byte-class (class ws))
+            (expect-byte (byte #x7d))
             (build-end)
             (halt))
            (b20
-            (expect-token (kind object-end))
+            (expect-byte (byte #x7d))
             (enter-variant (index 1))
             (build-default)
             (leave)
-            (expect-token (kind object-end))
+            (skip-byte-class (class ws))
+            (expect-byte (byte #x7d))
             (build-end)
             (halt))
            (b97 (fail (code decode-expected-tag-content)))
@@ -1400,7 +1453,7 @@ Predicate table section:
   - `pred_symbol_or_id` (canonical varint `u32`)
   - `arg_count` (canonical varint `u32`)
   - repeated args:
-    - `arg_kind` (`u8`; `0=path`, `1=const-bool`, `2=const-int`, `3=const-string-id`, `4=token-reg`)
+    - `arg_kind` (`u8`; `0=path`, `1=const-bool`, `2=const-int`, `3=const-string-id`, `4=decode-reg`)
     - `arg_payload` (kind-specific bytes, canonical varint forms where integer ids appear)
 
 Procedure table section:
@@ -1448,13 +1501,19 @@ Entry section:
 - `0x24 emit-scalar`
 - `0x25 emit-null`
 - `0x26 emit-end`
-- `0x30 read-token`
-- `0x31 expect-token`
-- `0x32 match-token`
-- `0x33 match-key`
-- `0x34 skip-value`
-- `0x35 source-save`
-- `0x36 source-restore`
+- `0x30 read-byte`
+- `0x31 peek-byte`
+- `0x32 expect-byte`
+- `0x33 match-byte`
+- `0x34 match-byte-class`
+- `0x35 skip-byte-class`
+- `0x36 scan-json-string`
+- `0x37 scan-json-number`
+- `0x38 scan-json-literal`
+- `0x39 json-skip-value`
+- `0x3a match-key`
+- `0x3b source-save`
+- `0x3c source-restore`
 - `0x40 cand-init`
 - `0x41 cand-key`
 - `0x42 cand-tag-eq`
@@ -1477,8 +1536,8 @@ Entry section:
 Operand bytes are opcode-specific and use:
 
 - ids/indexes/counts as canonical varint `u32`
-- token kind as `u8` (`0=object-start`, `1=object-end`, `2=array-start`,
-  `3=array-end`, `4=key`, `5=scalar`, `6=null`, `7=eof`)
+- literal kind as `u8` (`0=true`, `1=false`, `2=null`)
+- byte class as `u8` (`0=ws`, `1=digit`, `2=hex`, `3=quote`)
 - bitmask as `mask_len(varint u32)` + raw bytes (little-endian bit order)
 - length mode as `u8` (`0=unknown`, `1=known`) followed by optional varint len
 
@@ -1495,8 +1554,11 @@ Per-op operand payloads:
 - `emit-begin-struct`: `field_count`
 - `emit-begin-seq` / `emit-begin-map`: `len_mode [len_if_known]`
 - `emit-field-name`: `string_id`
-- `expect-token`: `token_kind`
-- `match-token`: `token_kind then_block_id else_block_id`
+- `expect-byte`: `byte`
+- `match-byte`: `byte then_block_id else_block_id`
+- `match-byte-class`: `class_id then_block_id else_block_id`
+- `skip-byte-class`: `class_id`
+- `scan-json-literal`: `literal_kind`
 - `match-key`: `string_id then_block_id else_block_id`
 - `cand-init`: `mask_bytes`
 - `cand-key`: `mask_bytes`
@@ -1540,8 +1602,8 @@ Per-op operand payloads:
   - signed canonical zigzag varint (`i64` domain)
 - `arg_kind=3` (`const-string-id`):
   - `string_id` (canonical varint `u32`)
-- `arg_kind=4` (`token-reg`):
-  - `token_view` (`u8`; `0=kind`, `1=scalar-payload`)
+- `arg_kind=4` (`decode-reg`):
+  - `decode_view` (`u8`; `0=byte`, `1=key`, `2=scalar`)
 
 > t[format.bin.pred-arg-kind-known] Unknown predicate `arg_kind` values MUST be
 > rejected by binary verifier for ABI v1.
@@ -1555,7 +1617,7 @@ Per-op operand payloads:
 > t[format.bin.pred-arg-variant-index-in-range] Predicate path `variant` segment
 > indexes MUST be valid for the referenced enum shape context.
 
-> t[format.bin.pred-arg-token-view-known] Unknown `token_view` values MUST be
+> t[format.bin.pred-arg-decode-view-known] Unknown `decode_view` values MUST be
 > rejected by binary verifier for ABI v1.
 
 ### Binary Verifier Requirements (v1)
@@ -1568,7 +1630,7 @@ Before execution, verifier MUST validate:
 - opcode/operand validity:
   - opcode byte known for ABI v1.
   - operand payload length matches opcode schema.
-  - enum-like operand tags (token kinds, segment kinds, token views) are known.
+  - enum-like operand tags (literal kinds, byte classes, segment kinds, decode views) are known.
 - decode candidate invariants:
   - candidate mask widths are consistent within program.
   - candidate ids in `cand-dispatch` are unique and in range.

@@ -1072,71 +1072,71 @@ value.
 
 ## Normative State Rules
 
-> `t[state.init.byte-tracking]` Trame MUST track initialization state for each
+> t[state.init.byte-tracking] Trame MUST track initialization state for each
 > node/slot it manages and MUST only treat a node as complete when all required
 > fields/slots are initialized by value, default, or a finalized child.
 
-> `t[state.machine.strict-end]` In strict mode, `End` on an incomplete node
+> t[state.machine.strict-end] In strict mode, `End` on an incomplete node
 > MUST fail and MUST poison the Trame.
 
-> `t[state.machine.deferred-end]` In deferred mode, `End` on an incomplete node
+> t[state.machine.deferred-end] In deferred mode, `End` on an incomplete node
 > MUST return to the parent without folding, and validation MUST be deferred
 > until exiting the deferred subtree or `build()`.
 
-> `t[state.machine.overwrite]` Applying `Imm` or `Default` over an existing
+> t[state.machine.overwrite] Applying `Imm` or `Default` over an existing
 > initialized subtree MUST drop the replaced initialized portion before writing
 > replacement bytes.
 
-> `t[state.machine.container-append-stage-only]` `Append` MUST accept only
+> t[state.machine.container-append-stage-only] `Append` MUST accept only
 > staging sources (`Stage` / deferred-stage variants). `Imm` and `Default` at
 > `Append` MUST fail.
 
-> `t[state.machine.container-stable-staging]` List/set/map incremental
+> t[state.machine.container-stable-staging] List/set/map incremental
 > construction MUST use stable staging storage for in-progress elements/entries.
 > Staged addresses MUST remain valid across capacity growth.
 
-> `t[state.machine.container-no-live-partial]` Trame MUST NOT expose
+> t[state.machine.container-no-live-partial] Trame MUST NOT expose
 > partially initialized user elements inside the live destination container
 > representation during incremental construction.
 
-> `t[state.machine.container-materialize-on-close]` Container elements/entries
+> t[state.machine.container-materialize-on-close] Container elements/entries
 > staged through `Append` MUST be materialized into the final runtime container
 > only when the container closes/finalizes (strict close or deferred final
 > validation), not per-element during staging.
 
-> `t[state.machine.container-capacity-hint]` Capacity hints for staged
+> t[state.machine.container-capacity-hint] Capacity hints for staged
 > containers MUST be semantic no-ops (performance-only): changing hints MUST NOT
 > change accepted/rejected inputs or final value contents.
 
-> `t[state.machine.map-last-wins]` For map materialization, if multiple staged
+> t[state.machine.map-last-wins] For map materialization, if multiple staged
 > entries resolve to equal keys, the final map MUST contain the value from the
 > latest staged entry for that key ("last wins").
 
-> `t[state.machine.set-uniqueness]` Set materialization MUST enforce set
+> t[state.machine.set-uniqueness] Set materialization MUST enforce set
 > uniqueness. Duplicate staged values MAY appear during staging but MUST collapse
 > according to set semantics in the final set.
 
-> `t[state.machine.enum-select-writes-discriminant]` Selecting enum variant
+> t[state.machine.enum-select-writes-discriminant] Selecting enum variant
 > `n` via path navigation MUST perform the enum transition immediately by
 > establishing discriminant/tag for `n` before payload writes.
 
-> `t[state.machine.enum-switch-drops-previous]` Switching from one active enum
+> t[state.machine.enum-switch-drops-previous] Switching from one active enum
 > variant to another MUST drop the previously active initialized payload before
 > the new payload is constructed.
 
-> `t[state.machine.enum-direct-then-switch]` If enum bytes were established via
+> t[state.machine.enum-direct-then-switch] If enum bytes were established via
 > whole-value direct set (`Set` at root/enum node), a later variant switch MUST
 > first drop the old whole enum value before writing the new variant payload.
 
-> `t[state.machine.poison-cleanup]` Once poisoned, Trame MUST reject further
+> t[state.machine.poison-cleanup] Once poisoned, Trame MUST reject further
 > operations and MUST perform cleanup of all tracked initialized data and owned
 > allocations exactly once.
 
-> `t[state.machine.cleanup-no-double-free]` Cleanup traversal MUST NOT recurse
+> t[state.machine.cleanup-no-double-free] Cleanup traversal MUST NOT recurse
 > into child subtrees that are already semantically owned and dropped by a
 > parent `drop_in_place` path, to avoid double drop/deallocation.
 
-> `t[state.machine.build-finalization]` `build()` MUST be equivalent to
+> t[state.machine.build-finalization] `build()` MUST be equivalent to
 > repeatedly applying `End` to the root (including deferred-subtree validation),
 > and MUST only succeed when no incomplete tracked nodes remain.
 

@@ -347,12 +347,29 @@ pub trait IShape: Copy + PartialEq + IShapeExtra {
     /// Get list-specific information, if this is a list.
     fn as_list(&self) -> Option<Self::ListType>;
 
+    /// Length of this shape when it is a fixed-size array.
+    fn array_len(&self) -> Option<usize> {
+        None
+    }
+
+    /// Element shape when this shape is a fixed-size array.
+    fn array_element(&self) -> Option<Self> {
+        None
+    }
+
+    /// Check if this is a fixed-size array type.
+    fn is_array(&self) -> bool {
+        self.array_len().is_some()
+    }
+
     /// Element shape for sequence-like types, when available.
     ///
     /// By default this mirrors `as_list()`, but runtimes may override to
     /// expose unsized slice-like element types as well.
     fn sequence_element(&self) -> Option<Self> {
-        self.as_list().map(|list| list.element())
+        self.as_list()
+            .map(|list| list.element())
+            .or_else(|| self.array_element())
     }
 
     /// Check if this is a set type.

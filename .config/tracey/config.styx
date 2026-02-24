@@ -3,7 +3,6 @@
 specs (
     {
         name trame
-        prefix t
         include (docs/content/**/*.md)
         impls (
             {

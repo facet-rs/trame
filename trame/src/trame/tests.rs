@@ -35,6 +35,7 @@ static TRAME_LIVE_VSHAPE_POINTER_NEW_INTO_CALLS: AtomicUsize = AtomicUsize::new(
 const TRAME_LIVE_VSHAPE_MAGIC: usize = 0xA11C_E555;
 static MAP_OVERWRITE_DROP_PROBE_DROPS: AtomicUsize = AtomicUsize::new(0);
 static MAP_ERROR_DROP_PROBE_DROPS: AtomicUsize = AtomicUsize::new(0);
+static ARRAY_DROP_PROBE_DROPS: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, PartialEq, facet::Facet)]
 struct MapHolder {
@@ -78,6 +79,21 @@ impl Default for MapErrorDropProbe {
 impl Drop for MapErrorDropProbe {
     fn drop(&mut self) {
         MAP_ERROR_DROP_PROBE_DROPS.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[derive(Debug, PartialEq, facet::Facet)]
+struct ArrayDropProbe(u32);
+
+impl Default for ArrayDropProbe {
+    fn default() -> Self {
+        Self(7)
+    }
+}
+
+impl Drop for ArrayDropProbe {
+    fn drop(&mut self) {
+        ARRAY_DROP_PROBE_DROPS.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -2591,6 +2607,153 @@ fn option_verified_default_builds() {
         .unwrap();
     assert!(trame.is_complete());
     let _ = trame.build().unwrap();
+}
+
+#[test]
+fn array_live_scalar_fields_build() {
+    let mut trame = Trame::<LRuntime>::alloc::<[u32; 3]>().unwrap();
+
+    let mut first = 11_u32;
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::from_ref(&mut first),
+        })
+        .unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(1),
+            src: Source::default_value(),
+        })
+        .unwrap();
+    let mut third = 33_u32;
+    trame
+        .apply(Op::Set {
+            dst: Path::field(2),
+            src: Source::from_ref(&mut third),
+        })
+        .unwrap();
+
+    assert!(trame.is_complete());
+    let out = trame.build().unwrap().materialize::<[u32; 3]>().unwrap();
+    assert_eq!(out, [11, 0, 33]);
+}
+
+#[test]
+fn array_live_nested_stage_builds() {
+    let mut trame = Trame::<LRuntime>::alloc::<[[u32; 2]; 2]>().unwrap();
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    assert_eq!(trame.depth(), 1);
+
+    let mut a = 1_u32;
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::from_ref(&mut a),
+        })
+        .unwrap();
+    let mut b = 2_u32;
+    trame
+        .apply(Op::Set {
+            dst: Path::field(1),
+            src: Source::from_ref(&mut b),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+
+    let mut second = [3_u32, 4_u32];
+    trame
+        .apply(Op::Set {
+            dst: Path::field(1),
+            src: Source::from_ref(&mut second),
+        })
+        .unwrap();
+
+    assert!(trame.is_complete());
+    let out = trame
+        .build()
+        .unwrap()
+        .materialize::<[[u32; 2]; 2]>()
+        .unwrap();
+    assert_eq!(out, [[1, 2], [3, 4]]);
+}
+
+#[test]
+// t[verify state.machine.deferred-end]
+fn array_live_deferred_resume_builds() {
+    let mut trame = Trame::<LRuntime>::alloc::<[[u32; 2]; 2]>().unwrap();
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::stage_deferred(None),
+        })
+        .unwrap();
+    let mut first0 = 5_u32;
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::from_ref(&mut first0),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+    assert_eq!(trame.depth(), 0);
+    assert!(!trame.is_complete());
+
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::stage(None),
+        })
+        .unwrap();
+    let mut first1 = 6_u32;
+    trame
+        .apply(Op::Set {
+            dst: Path::field(1),
+            src: Source::from_ref(&mut first1),
+        })
+        .unwrap();
+    trame.apply(Op::End).unwrap();
+
+    let mut second = [7_u32, 8_u32];
+    trame
+        .apply(Op::Set {
+            dst: Path::field(1),
+            src: Source::from_ref(&mut second),
+        })
+        .unwrap();
+
+    assert!(trame.is_complete());
+    let out = trame
+        .build()
+        .unwrap()
+        .materialize::<[[u32; 2]; 2]>()
+        .unwrap();
+    assert_eq!(out, [[5, 6], [7, 8]]);
+}
+
+#[test]
+// t[verify state.machine.cleanup-no-double-free]
+fn array_live_drop_cleans_partial_elements() {
+    ARRAY_DROP_PROBE_DROPS.store(0, Ordering::SeqCst);
+
+    let mut trame = Trame::<LRuntime>::alloc::<[ArrayDropProbe; 2]>().unwrap();
+    trame
+        .apply(Op::Set {
+            dst: Path::field(0),
+            src: Source::default_value(),
+        })
+        .unwrap();
+    assert!(!trame.is_complete());
+
+    drop(trame);
+    assert_eq!(ARRAY_DROP_PROBE_DROPS.load(Ordering::SeqCst), 1);
 }
 
 #[test]

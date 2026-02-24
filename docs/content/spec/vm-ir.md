@@ -19,24 +19,31 @@ This section defines:
 
 Machine-code generation is specified in `exec-jit.md`.
 
-## Generic VM Requirement
+## Dialect Invariants
 
-All formats target one VM dialect.
+This section is verifier-facing: each invariant is checkable on a concrete
+`Program`.
 
-> t[format.vm.single-vm-dialect] All supported formats MUST compile to one
-> shared IR instruction dialect for encoding and decoding.
+> t[format.vm.dialect-schema-fixed] Program root schema MUST contain only the
+> canonical keys (`abi`, `kind`, `shape-id`, `consts`, `code`); unknown root
+> keys MUST be rejected.
 
-> t[format.vm.no-format-specific-ir] The system MUST NOT define per-format IR
-> dialects.
+> t[format.vm.dialect-no-runtime-format-tag] Program representations MUST NOT
+> carry a runtime `format`/`profile` selector that changes VM execution
+> semantics.
 
-> t[format.vm.format-is-compile-time-input] Format differences MUST be
-> represented as compile-time lowering choices into the shared dialect.
+> t[format.vm.dialect-opcode-space-shared] For one ABI version, the opcode
+> inventory and binary opcode map define one shared executable dialect for all
+> formats; unknown opcode ids MUST be rejected.
 
-> t[format.vm.delimiters-are-ir] Structural delimiters/separators (object,
-> array, map, sequence boundaries) MUST be represented in IR control/data flow.
+> t[format.vm.dialect-structural-work-explicit] Delimiter/separator handling
+> and structural control (object/map/sequence boundaries) MUST be represented by
+> explicit IR control flow plus lexical/emission opcodes; runtimes MUST NOT
+> inject implicit parser events.
 
-> t[format.vm.builtins-extension-point] Format-specific behavior MAY be exposed
-> only through a constrained builtin set callable from the shared IR.
+> t[format.vm.dialect-builtins-closed-v1] ABI v1 builtin behavior is limited to
+> the builtin opcodes in this spec; host-defined per-format opcode extensions
+> MUST be rejected.
 
 ## IR Representations
 

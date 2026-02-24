@@ -268,7 +268,7 @@ impl IListType for ListDef {
             return false;
         };
         unsafe {
-            push(PtrMut::new(list_ptr), PtrMut::new(elem_ptr).into());
+            push(PtrMut::new(list_ptr), PtrMut::new(elem_ptr));
         }
         true
     }
@@ -363,7 +363,7 @@ impl IPointerType for PointerDef {
             return false;
         };
         unsafe {
-            (slice_builder.push_fn)(PtrMut::new(builder_ptr), PtrMut::new(item_ptr).into());
+            (slice_builder.push_fn)(PtrMut::new(builder_ptr), PtrMut::new(item_ptr));
         }
         true
     }

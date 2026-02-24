@@ -802,6 +802,27 @@ v1 conversion rules:
 > t[format.parse.replay-after-dispatch] Replay/build phase MUST begin only after
 > candidate dispatch resolves to a single candidate.
 
+### Enum Tag Handling
+
+Tag interpretation policy is compiler-owned and must be lowered explicitly in
+decode CFG.
+
+> t[format.parse.enum-tag-policy-explicit] Enum tag strategy (external/internal/
+> adjacent/untagged) MUST be explicit in compiled decode control flow.
+
+> t[format.parse.enum-tag-unknown-explicit] Unknown tag handling MUST be
+> explicit in decode control flow (reject, fallback, or collect); it MUST NOT be
+> implicit backend behavior.
+
+> t[format.parse.enum-tag-order-explicit] For tag strategies with separate
+> payload fields (for example adjacent tag/content), handling of field-order
+> permutations MUST be explicit in decode control flow.
+
+> t[format.parse.enum-tag-order-replay-required] If accepted input allows payload
+> before tag and variant is required to route payload writes, decode control flow
+> MUST use replay/buffering semantics (`source-save`/`source-restore` or
+> equivalent) before committing variant-dependent build actions.
+
 ### Unknown Field Handling
 
 Unknown fields are not implicit behavior. Compiler policy must lower to one of:
@@ -1200,6 +1221,8 @@ This example decodes:
   - `Unit`
 
 This minimal example assumes tags lower to `Pair` or `Unit`.
+It also enforces `type` before `content`; alternate field order requires
+replay/buffering lowering per enum-tag ordering rules.
 
 ```lisp
 (vmir

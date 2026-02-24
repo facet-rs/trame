@@ -967,6 +967,41 @@ Canonical source token interface:
 > MUST fail if a decode program uses `source-save`/`source-restore` and the
 > source backend does not provide save/restore capability.
 
+### Save-Point Contract (v1)
+
+`save-point` is runtime-scoped state produced by `save` and consumed by
+`restore`.
+
+Canonical logical save-point fields:
+
+```lisp
+(save-point-v1
+  (source-instance-id u64)
+  (cursor-offset u64)
+  (epoch u32))
+```
+
+Field meaning:
+
+- `source-instance-id`: stable id of the live source instance.
+- `cursor-offset`: logical token-stream position for replay.
+- `epoch`: monotonic invalidation generation for this source instance.
+
+> t[format.source.save-point-shape-v1] `save-point` MUST be representable by the
+> `save-point-v1` logical fields above.
+
+> t[format.source.save-point-instance-scoped] `restore` MUST reject save points
+> whose `source-instance-id` does not match the current source instance.
+
+> t[format.source.save-point-epoch-checked] `restore` MUST reject stale save
+> points whose `epoch` is no longer valid for the source instance.
+
+> t[format.source.save-point-offset-deterministic] Restoring a valid save point
+> MUST place source cursor at exactly `cursor-offset` logical position.
+
+> t[format.source.save-point-deopt-serializable] Save points MUST be
+> serializable/reconstructable for deopt snapshot transfer.
+
 > t[format.source.payload-valid-until-next-read] Token payload borrows (for
 > string/bytes) MUST remain valid until the next token-consuming operation or
 > `source-restore`, whichever happens first.

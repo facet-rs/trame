@@ -86,11 +86,21 @@ Deopt transfer state uses a versioned snapshot.
   (path-stack ((field 1)))
   (token-reg (valid true) (kind key) (payload "name"))
   (cand-mask #x03)
-  (locals (opaque ...))
+  (locals
+    (slot-count 2)
+    (slots
+      ((slot 0 (kind u64) (value 1))
+       (slot 1 (kind bool) (value true)))))
   (source-cursor (opaque ...))
-  (source-save-stack ((opaque-save-point ...)))
+  (source-save-stack
+    ((save-point
+       (source-instance-id 7)
+       (cursor-offset 1234)
+       (epoch 1))))
   (sink-state (opaque ...))
-  (scratch (opaque ...))
+  (scratch
+    (chunks
+      ((chunk 0 (bytes #x01020304)))))
   (runtime
     (shape-id 42)
     (mode strict|deferred)))
@@ -122,6 +132,72 @@ Deopt transfer state uses a versioned snapshot.
 
 > t[format.exec.deopt-cursor-replay-safe] Snapshot MUST include source-cursor
 > state sufficient to continue token consumption without duplication or loss.
+
+### Deopt Payload Encoding (v1)
+
+When `deopt-v1` snapshots are serialized, locals/scratch/save-stack payloads use
+canonical tagged encodings.
+
+Local slot encoding:
+
+- `slot_count` (canonical varint `u32`)
+- repeated slots:
+  - `slot_id` (canonical varint `u32`)
+  - `slot_kind` (`u8`)
+    - `0=bool`, `1=u64`, `2=i64`, `3=f64`, `4=bytes`, `5=mask`
+  - `slot_payload` (kind-specific canonical bytes)
+
+Kind payload forms:
+
+- `bool`: one byte (`0` or `1`)
+- `u64`: canonical varint `u64`
+- `i64`: canonical zigzag varint `i64`
+- `f64`: IEEE-754 little-endian 8 bytes
+- `bytes`/`mask`: `len` (canonical varint `u32`) + raw bytes
+
+Scratch chunk encoding:
+
+- `chunk_count` (canonical varint `u32`)
+- repeated chunks:
+  - `chunk_id` (canonical varint `u32`)
+  - `len` (canonical varint `u32`)
+  - `bytes[len]`
+
+Source save-point encoding:
+
+- `save_count` (canonical varint `u32`)
+- repeated save points in stack order:
+  - `source_instance_id` (`u64`, little-endian fixed width)
+  - `cursor_offset` (`u64`, little-endian fixed width)
+  - `epoch` (`u32`, little-endian fixed width)
+
+> t[format.exec.deopt-locals-encoding-canonical] Serialized `locals` payload
+> MUST use the canonical slot encoding above.
+
+> t[format.exec.deopt-locals-slot-id-unique] Local `slot_id` values MUST be
+> unique within one snapshot.
+
+> t[format.exec.deopt-locals-slot-kind-known] Unknown `slot_kind` values MUST be
+> rejected for ABI v1.
+
+> t[format.exec.deopt-scratch-encoding-canonical] Serialized `scratch` payload
+> MUST use the canonical chunk encoding above.
+
+> t[format.exec.deopt-save-stack-encoding-canonical] Serialized
+> `source-save-stack` payload MUST use the canonical save-point encoding above.
+
+> t[format.exec.deopt-save-stack-order-preserved] Deopt transfer MUST preserve
+> save-point stack order exactly.
+
+> t[format.exec.deopt-save-point-instance-match] Restored save points whose
+> `source_instance_id` does not match the active source MUST be rejected.
+
+> t[format.exec.deopt-payload-size-bounded] Serialized deopt payload sections
+> (`locals`, `scratch`, `source-save-stack`) MUST be bounded by configured
+> runtime limits.
+
+> t[format.exec.deopt-snapshot-verify-before-resume] Serialized snapshots MUST be
+> structurally validated before interpreter resume.
 
 ### Deopt Protocol
 

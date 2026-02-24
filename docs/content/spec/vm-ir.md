@@ -63,23 +63,44 @@ Top-level program root:
 (vmir
   (abi 1)
   (kind encode|decode|fused)
-  (profile json|postcard|toml|yaml|...)
+  (profile-id pr0)
   (shape-id 1234567890)
-  (strings (...))
-  (predicates (...))
-  (plans (...))
-  (blocks (...))
-  (entry b0))
+  (consts
+    (strings (...))
+    (predicates (...))
+    (plans (...)))
+  (code
+    (blocks (...))
+    (entry b0)))
 ```
 
 > t[format.vm.sexp-root-tag] Program text form MUST use `vmir` as the root tag.
 
 > t[format.vm.sexp-key-order] Root keys MUST be emitted in canonical order:
-> `abi`, `kind`, `profile`, `shape-id`, `strings`, `predicates`, `plans`,
-> `blocks`, `entry`.
+> `abi`, `kind`, `profile-id`, `shape-id`, `consts`, `code`.
+
+> t[format.vm.sexp-profile-id-opaque] `profile-id` MUST be an opaque identifier
+> chosen by compile phase; the IR text grammar MUST NOT hardcode format names.
 
 > t[format.vm.sexp-canonical-print] Canonical printer output MUST be
 > deterministic (byte-identical for semantically identical programs).
+
+### Program Components
+
+`vmir` is logic plus constant tables:
+
+- `strings`: interned UTF-8 literals referenced by code (field names, tag keys,
+  fixed symbols).
+- `predicates`: symbolic predicate descriptors used by conditional branches.
+- `plans`: reusable structural traversal templates (for example field plans).
+- `blocks`: executable logic blocks (the control-flow program).
+- `entry`: entry block label.
+
+> t[format.vm.sexp-consts-not-logic] `strings`, `predicates`, and `plans` are
+> constant tables and MUST NOT contain executable control-flow instructions.
+
+> t[format.vm.sexp-code-is-logic] Executable logic MUST be represented in
+> `code.blocks` with explicit control flow.
 
 ### Atoms and Literals
 
@@ -124,27 +145,29 @@ Top-level program root:
 (vmir
   (abi 1)
   (kind encode)
-  (profile json)
+  (profile-id pr0)
   (shape-id 42)
-  (strings ("id" "name"))
-  (predicates ())
-  (plans
-    ((fp0
-      (emit-field (field 0) (name 0))
-      (emit-field (field 1) (name 1)))))
-  (blocks
-    ((b0
-      (emit-begin-struct (fields 2))
-      (for-each-struct-field (plan fp0) (body b1) (after b2)))
-     (b1
-      (emit-field-name (string 0))
-      (emit-scalar)
-      (next-field)
-      (jump b1))
-     (b2
-      (emit-end)
-      (halt))))
-  (entry b0))
+  (consts
+    (strings ("id" "name"))
+    (predicates ())
+    (plans
+      ((fp0
+        (emit-field (field 0) (name 0))
+        (emit-field (field 1) (name 1))))))
+  (code
+    (blocks
+      ((b0
+        (emit-begin-struct (fields 2))
+        (for-each-struct-field (plan fp0) (body b1) (after b2)))
+       (b1
+        (emit-field-name (string 0))
+        (emit-scalar)
+        (next-field)
+        (jump b1))
+       (b2
+        (emit-end)
+        (halt))))
+    (entry b0)))
 ```
 
 ## Encoding IR (`SerProgram`)
@@ -167,7 +190,8 @@ Serialization is split into two phases:
 > version and MUST be rejected by executors with a mismatched ABI version.
 
 > t[format.ir.program-profile] A `SerProgram` MUST encode exactly one format
-> profile and execution MUST NOT reinterpret a program under another profile.
+> profile id and execution MUST NOT reinterpret a program under another profile
+> id.
 
 > t[format.ir.program-immutable] A compiled `SerProgram` MUST be immutable
 > during execution.
@@ -177,7 +201,7 @@ Serialization is split into two phases:
 ```rust
 pub struct SerProgram {
     pub abi_version: u16,
-    pub profile: SerProfile,
+    pub profile_id: ProfileId,
     pub root_shape_id: ConstTypeId,
     pub flags: SerProgramFlags,
     pub strings: Vec<StringAtom>,

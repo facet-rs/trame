@@ -26,6 +26,28 @@ Serialization is split into two phases:
 
 `SerProgram` is an internal executable IR; it is not a wire format.
 
+## Generic VM Requirement
+
+This architecture uses one generic format-encoding VM.
+
+> t[format.ir.single-vm-dialect] All supported formats MUST compile to the same
+> IR instruction dialect for encoding.
+
+> t[format.ir.no-format-specific-ir] The system MUST NOT define per-format IR
+> dialects (for example "JSON IR" as a distinct opcode language).
+
+> t[format.ir.format-is-compile-time-input] Format differences MUST be expressed
+> as compile-time lowering choices into generic IR, not by changing VM
+> instruction semantics at runtime.
+
+> t[format.ir.delimiters-are-ir] Structural delimiters and separators (object /
+> array / map / sequence boundaries and separators) MUST be represented in IR
+> control/data flow, not hard-coded in backend-specific executors.
+
+> t[format.ir.builtins-extension-point] Format-specific special behavior MAY be
+> provided through a constrained builtin set (for example escaped-string
+> emission), but builtins MUST be callable from the same generic IR.
+
 ## Conventions
 
 This section uses **MUST** for normative requirements.

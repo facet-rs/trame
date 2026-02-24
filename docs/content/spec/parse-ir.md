@@ -24,6 +24,23 @@ Deserialization is split into phases:
 3. optionally fuse into one executable program
 4. execute through engine; all writes happen under trame safety rules
 
+## Generic VM Requirement
+
+This architecture uses one generic format-decoding VM.
+
+> t[format.parse.single-vm-dialect] All supported input formats MUST compile to
+> the same IR instruction dialect for decoding.
+
+> t[format.parse.no-format-specific-ir] The system MUST NOT define per-format
+> decode IR dialects.
+
+> t[format.parse.format-is-compile-time-input] Format differences MUST be
+> represented by compile-time lowering into generic decode/build IR.
+
+> t[format.parse.builtins-extension-point] Format-specific special decoding
+> behavior MAY be provided through a constrained builtin set, but builtins MUST
+> be invoked from the same generic IR dialect.
+
 ## Parse Program
 
 `ParseProgram` describes format token handling, structural expectations, and

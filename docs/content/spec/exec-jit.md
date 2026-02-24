@@ -199,6 +199,13 @@ Source save-point encoding:
 > t[format.exec.deopt-snapshot-verify-before-resume] Serialized snapshots MUST be
 > structurally validated before interpreter resume.
 
+> t[format.exec.deopt-snapshot-inprocess-v0] v0 deopt snapshot transfer MUST be
+> in-process only.
+
+> t[format.exec.deopt-source-sink-codec-guarded] If `source-cursor` or
+> `sink-state` are serialized across components, backends MUST provide an
+> explicit versioned codec and capability guard.
+
 ### Deopt Protocol
 
 1. Detect guard failure or unsupported fast-path condition.
@@ -323,6 +330,29 @@ For v0, "fully JIT'd JSON decode" means:
 
 > t[format.exec.test-deopt-coverage] Test suites MUST cover deopt transitions
 > from each guard class and verify resumed equivalence.
+
+### JSON JIT Gate (v0)
+
+Before claiming v0 "fully JIT'd JSON decode", differential tests MUST include
+at least:
+
+- flat struct object decoding with unknown-field skip/reject modes;
+- flatten + untagged disambiguation with probe/replay paths;
+- tagged enum decoding (adjacent and internal tag strategies);
+- field-order permutations that require replay/buffering when policy allows;
+- error-path equivalence (ambiguous candidate, no-match, type mismatch).
+
+> t[format.exec.v0-json-gate-corpus-minimum] v0 JSON JIT readiness MUST be
+> gated by the minimum scenario corpus above.
+
+> t[format.exec.v0-json-gate-flatten-untagged] Readiness corpus MUST include
+> flatten+untagged cases that exercise `source-save`/`source-restore`.
+
+> t[format.exec.v0-json-gate-tag-order] Readiness corpus MUST include tag/content
+> ordering permutations for supported tagged-enum policies.
+
+> t[format.exec.v0-json-gate-error-equivalence] Readiness corpus MUST assert
+> interpreter/JIT equivalence on structured decode errors.
 
 ### Robustness
 

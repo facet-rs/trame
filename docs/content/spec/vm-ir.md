@@ -63,7 +63,6 @@ Top-level program root:
 (vmir
   (abi 1)
   (kind encode|decode|fused)
-  (profile-id pr0)
   (shape-id 1234567890)
   (consts
     (strings (...))
@@ -77,10 +76,10 @@ Top-level program root:
 > t[format.vm.sexp-root-tag] Program text form MUST use `vmir` as the root tag.
 
 > t[format.vm.sexp-key-order] Root keys MUST be emitted in canonical order:
-> `abi`, `kind`, `profile-id`, `shape-id`, `consts`, `code`.
+> `abi`, `kind`, `shape-id`, `consts`, `code`.
 
-> t[format.vm.sexp-profile-id-opaque] `profile-id` MUST be an opaque identifier
-> chosen by compile phase; the IR text grammar MUST NOT hardcode format names.
+> t[format.vm.execution-profile-free] VM execution semantics MUST NOT depend on a
+> profile field in program representation.
 
 > t[format.vm.sexp-canonical-print] Canonical printer output MUST be
 > deterministic (byte-identical for semantically identical programs).
@@ -145,7 +144,6 @@ Top-level program root:
 (vmir
   (abi 1)
   (kind encode)
-  (profile-id pr0)
   (shape-id 42)
   (consts
     (strings ("id" "name"))
@@ -176,7 +174,7 @@ Top-level program root:
 
 Serialization is split into two phases:
 
-1. compile (`facet-format`): `Shape` + profile/options -> `SerProgram`
+1. compile (`facet-format`): `Shape` + compiler options -> `SerProgram`
 2. execute (`trame`): `(ptr, shape, program)` -> sink events
 
 `SerProgram` is an internal executable IR; it is not a wire format.
@@ -189,27 +187,27 @@ Serialization is split into two phases:
 > t[format.ir.program-abi-version] A `SerProgram` MUST carry an explicit ABI
 > version and MUST be rejected by executors with a mismatched ABI version.
 
-> t[format.ir.program-profile] A `SerProgram` MUST encode exactly one format
-> profile id and execution MUST NOT reinterpret a program under another profile
-> id.
+> t[format.ir.program-self-contained] A `SerProgram` MUST be self-contained for
+> execution semantics; executor behavior MUST be determined by program contents
+> plus ABI/runtime capability checks.
 
 > t[format.ir.program-immutable] A compiled `SerProgram` MUST be immutable
 > during execution.
 
-#### Informative Layout
+#### Program Layout (S-expression)
 
-```rust
-pub struct SerProgram {
-    pub abi_version: u16,
-    pub profile_id: ProfileId,
-    pub root_shape_id: ConstTypeId,
-    pub flags: SerProgramFlags,
-    pub strings: Vec<StringAtom>,
-    pub predicates: Vec<PredicateSpec>,
-    pub field_plans: Vec<FieldPlan>,
-    pub blocks: Vec<SerBlock>,
-    pub entry_block: BlockId,
-}
+```lisp
+(vmir
+  (abi 1)
+  (kind encode)
+  (shape-id 1234567890)
+  (consts
+    (strings (...))
+    (predicates (...))
+    (plans (...)))
+  (code
+    (blocks (...))
+    (entry b0)))
 ```
 
 ### Compiler Ownership
@@ -231,8 +229,8 @@ pub struct SerProgram {
 > t[format.ir.compile-predicate-binding] Dynamic skip predicates (for example
 > `skip_serializing_if`) MUST be represented as predicate table entries.
 
-> t[format.ir.compile-profile-selection] Compile phase MUST encode
-> profile-specific behavior explicitly in instructions or plan entries.
+> t[format.ir.compile-lowering-selection] Compile phase MUST encode lowering
+> policy choices explicitly in instructions/plan entries before execution.
 
 > t[format.ir.compile-validate-block-targets] Compile phase MUST reject programs
 > with dangling block references.
@@ -319,8 +317,8 @@ pub struct SerProgram {
 
 ### Caching
 
-> t[format.ir.cache-key-shape-profile-options] Program caches MUST key at least
-> by `(shape.id, profile, compile options, abi_version)`.
+> t[format.ir.cache-key-shape-options] Program caches MUST key at least
+> by `(shape.id, compile options, abi_version)`.
 
 > t[format.ir.cache-in-process-v0] v0 caches MUST be in-process only.
 
@@ -343,8 +341,9 @@ Deserialization is split into phases:
 `ParseProgram` describes token handling, structural expectations, and decode
 branching.
 
-> t[format.parse.program-profile-bound] A `ParseProgram` MUST be bound to one
-> format profile and MUST NOT be reused across incompatible profiles.
+> t[format.parse.program-self-contained] A `ParseProgram` MUST be self-contained
+> for execution semantics; executor behavior MUST be determined by program
+> contents plus ABI/runtime capability checks.
 
 > t[format.parse.program-abi-version] A `ParseProgram` MUST carry an ABI
 > version and MUST be rejected by incompatible executors.

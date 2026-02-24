@@ -1103,7 +1103,7 @@ Canonical forms:
 
 ## Worked Decode Example
 
-This example decodes a JSON object into shape `{ id: u32, name: string }`.
+This example decodes a keyed object into shape `{ id: u32, name: string }`.
 Unknown fields are skipped.
 
 ```lisp

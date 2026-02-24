@@ -31,6 +31,14 @@ pub enum TrameError {
     UnsupportedSource,
     /// Default not available for this shape.
     DefaultUnavailable,
+    /// Shape has no parse hook for string input.
+    ParseFromStrUnsupported { type_name: &'static str },
+    /// String parse hook failed.
+    ParseFromStrFailed { type_name: &'static str },
+    /// Shape has no parse hook for byte input.
+    ParseFromBytesUnsupported { type_name: &'static str },
+    /// Byte parse hook failed.
+    ParseFromBytesFailed { type_name: &'static str },
 }
 
 impl PartialEq for TrameError {
@@ -54,6 +62,22 @@ impl PartialEq for TrameError {
             (Self::UnsupportedPath { segment: a }, Self::UnsupportedPath { segment: b }) => a == b,
             (Self::UnsupportedSource, Self::UnsupportedSource) => true,
             (Self::DefaultUnavailable, Self::DefaultUnavailable) => true,
+            (
+                Self::ParseFromStrUnsupported { type_name: a },
+                Self::ParseFromStrUnsupported { type_name: b },
+            ) => a == b,
+            (
+                Self::ParseFromStrFailed { type_name: a },
+                Self::ParseFromStrFailed { type_name: b },
+            ) => a == b,
+            (
+                Self::ParseFromBytesUnsupported { type_name: a },
+                Self::ParseFromBytesUnsupported { type_name: b },
+            ) => a == b,
+            (
+                Self::ParseFromBytesFailed { type_name: a },
+                Self::ParseFromBytesFailed { type_name: b },
+            ) => a == b,
             _ => false,
         }
     }

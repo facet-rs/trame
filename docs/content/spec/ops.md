@@ -382,8 +382,8 @@ end()
 ▶ ⟨Root: Outer⟩ ✨
   ├─ inner → ⟨Child: Pair⟩
   │         ├─ a ●
-  │         └─ b ○
-  └─ c ○
+  │         └─ b ●
+  └─ c ●
 ```
 
 ### Box
@@ -832,6 +832,34 @@ set(&[Field(1)], imm(2))
         └─ 1 ● ✨
 ```
 
+Return from payload to variant:
+
+```rust
+end()
+```
+
+```
+  ⟨Root: E⟩
+▶ └─ variant 1 → ⟨Variant: Pair⟩
+      └─ payload → ⟨Child: (u32, u32)⟩
+        ├─ 0 ●
+        └─ 1 ●
+```
+
+Return from variant to enum root:
+
+```rust
+end()
+```
+
+```
+▶ ⟨Root: E⟩
+  └─ variant 1 → ⟨Variant: Pair⟩
+      └─ payload → ⟨Child: (u32, u32)⟩
+        ├─ 0 ●
+        └─ 1 ●
+```
+
 ### Stable addresses
 
 Each element frame points into the list's staging allocation. If we used a
@@ -952,7 +980,8 @@ Operations are stored in a queue and consumed from the front as they are
 applied. After `apply_batch` returns:
 - Consumed operations have been removed from the batch. Callers must forget
   any source values they moved into those ops.
-- Remaining operations were not consumed and should be dropped normally.
+- Remaining operations were not applied due to an error and should be dropped
+  normally.
 
 ### Paths
 
@@ -961,6 +990,13 @@ Paths are relative to the current node.
 `Field(n)` selects field/element `n` of the current node. `Append` creates a new
 list/set element or map entry. `Root` jumps to the root node and is only legal
 as the first segment.
+
+Enum paths are encoded with `Field` only:
+- at an enum node, `Field(n)` selects variant `n`;
+- at a variant node, `Field(0)` selects the payload root.
+
+The "Variant" and "Payload" labels in diagrams are semantic tree labels, not
+additional `PathSegment` variants.
 
 Multi-level paths are allowed. Intermediate segments implicitly create nodes
 as if `Stage` had been applied at each step. The cursor ends at the deepest
@@ -1049,6 +1085,16 @@ Deferred mode allows `End` on incomplete nodes; the node remains in the tree
 for later re-entry, and validation is postponed until exiting the deferred
 subtree or at `build()`.
 
+### Deferred mode control
+
+Deferred mode is entered and exited via explicit runtime controls
+(`begin_deferred` / `finish_deferred`).
+
+- `begin_deferred` enters deferred mode for the current subtree.
+- `finish_deferred` exits the most recent deferred scope and validates that
+  deferred subtree.
+- Deferred scopes are nested and closed in LIFO order.
+
 ### Validation and defaults
 
 Validation timing:
@@ -1086,6 +1132,16 @@ value.
 > MUST return to the parent without folding, and validation MUST be deferred
 > until exiting the deferred subtree or `build()`.
 
+> t[state.machine.deferred-enter-explicit] Deferred mode MUST be entered only
+> via explicit runtime deferred-entry control (`begin_deferred` equivalent).
+
+> t[state.machine.deferred-exit-validates] Exiting deferred mode
+> (`finish_deferred` equivalent) MUST validate the deferred subtree before
+> returning success.
+
+> t[state.machine.deferred-scope-lifo] Nested deferred scopes MUST close in
+> strict LIFO order.
+
 > t[state.machine.overwrite] Applying `Imm` or `Default` over an existing
 > initialized subtree MUST drop the replaced initialized portion before writing
 > replacement bytes.
@@ -1111,6 +1167,10 @@ value.
 > containers MUST be semantic no-ops (performance-only): changing hints MUST NOT
 > change accepted/rejected inputs or final value contents.
 
+> t[state.machine.path-root-climb-equivalent-end] `Root` path navigation MUST be
+> equivalent to repeated `End` climbing from current node to root; when crossing
+> a deferred boundary it MUST trigger deferred-subtree validation semantics.
+
 > t[state.machine.map-last-wins] For map materialization, if multiple staged
 > entries resolve to equal keys, the final map MUST contain the value from the
 > latest staged entry for that key ("last wins").
@@ -1122,6 +1182,10 @@ value.
 > t[state.machine.enum-select-writes-discriminant] Selecting enum variant
 > `n` via path navigation MUST perform the enum transition immediately by
 > establishing discriminant/tag for `n` before payload writes.
+
+> t[state.machine.enum-path-field-mapping] Enum/variant navigation MUST use
+> `Field` path segments only: at enum node `Field(n)` selects variant `n`, and
+> at variant node `Field(0)` selects payload root.
 
 > t[state.machine.enum-switch-drops-previous] Switching from one active enum
 > variant to another MUST drop the previously active initialized payload before

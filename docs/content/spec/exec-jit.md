@@ -140,6 +140,14 @@ Deopt transfer state uses a versioned snapshot.
 When `deopt-v1` snapshots are serialized, locals/scratch/save-stack payloads use
 canonical tagged encodings.
 
+`canonical varint` and `canonical zigzag varint` in this section reuse the VM
+binary encoding definition from `vm-ir.md` (ULEB128 shortest form + canonical
+zigzag transform).
+
+> t[format.exec.deopt.varint-shared-definition] Deopt payload integer fields
+> labeled canonical varint/zigzag varint MUST use the same encoding and
+> canonicality rules as VM binary encoding.
+
 Local slot encoding:
 
 - `slot_count` (canonical varint `u32`)
@@ -284,7 +292,11 @@ Implementation may choose a concrete ABI, but it MUST satisfy:
 > t[format.exec.backend-interface-stable] Runtime MUST expose a stable backend
 > interface so interpreter and JIT backends are swappable without IR changes.
 
-> t[format.exec.backend-v0-dynasmrt] v0 JIT backend SHOULD use `dynasmrt`.
+> t[format.exec.backend-v0-lightweight-jitlib] v0 JIT backend SHOULD use a
+> lightweight runtime code-generation library with patching/relocation support.
+
+v0 note: `dynasmrt` is an acceptable implementation choice, but not a normative
+requirement.
 
 > t[format.exec.backend-target-guarded] Backend-generated code MUST guard on
 > target architecture and calling-convention assumptions used at compile time.
@@ -299,8 +311,8 @@ v0 implementation order is constrained:
 4. Differential validation (interpreter vs reference backend) over corpus/fuzz.
 5. Baseline JIT enablement behind hotness thresholds.
 
-> t[format.exec.v0-interpreter-before-jit] JIT enablement MUST NOT be the first
-> executable path; interpreter support MUST exist first for all targeted opcodes.
+> t[format.exec.v0-interpreter-before-jit] JIT MUST NOT be the first implemented
+> execution tier; interpreter support MUST exist first for all targeted opcodes.
 
 > t[format.exec.v0-json-source-before-jit] Fully JIT-targeted JSON decode MUST
 > have a conforming `source` adapter (including save/restore) before JIT is

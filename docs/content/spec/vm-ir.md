@@ -365,9 +365,6 @@ Decode direction compiles into one executable `Program`:
 > t[format.parse.program-abi-version] A decode-direction `Program` MUST carry an
 > ABI version and MUST be rejected by incompatible executors.
 
-> t[format.parse.single-program-token-and-build] Decode lexical/parse dispatch and build
-> actions MUST be expressed in one executable program.
-
 > t[format.parse.single-program-lex-and-build] Decode lexical/parsing and build
 > actions MUST be expressed in one executable program.
 
@@ -575,6 +572,21 @@ Families:
 | `source-save` | none | Push current `source-cursor` onto `source-save-stack`. | Source does not support save, source error. |
 | `source-restore` | none | Pop save point and restore `source-cursor`. | Empty save stack, invalid save point, source error. |
 
+`scan-json-string` key-position behavior is defined by parse context:
+
+- key position is true when parser state indicates "expecting object key" (after
+  `{` or `,` inside an object, before `:`).
+- in key position, `scan-json-string` MUST write decoded string into both
+  `%scalar` and `%key`.
+- outside key position, `scan-json-string` MUST update `%scalar` and MUST clear
+  `%key`.
+
+> t[format.parse.scan-json-string-key-position-explicit] Key-position detection
+> for `scan-json-string` MUST be determined by explicit parser context state.
+
+> t[format.parse.scan-json-string-key-reg-update] `scan-json-string` MUST update
+> `%key` only in key position.
+
 #### Decode Disambiguation
 
 | Opcode | Operands | Effect | Failure |
@@ -663,6 +675,15 @@ variant solving; solver/disambiguation logic remains ordinary CFG instructions.
 
 > t[format.vm.enter-variant-no-hidden-solver] `enter-variant` MUST NOT trigger
 > implicit runtime variant solving or candidate narrowing.
+
+> t[format.vm.enter-variant-ops-mapping-compatible] `enter-variant` semantics
+> MUST be lowerable to ops path semantics where enum/variant navigation is
+> represented with `Field` segments only.
+
+> t[format.vm.enter-variant-ops-mapping-canonical] In `op-bridge` mode,
+> `enter-variant(n)` MUST map to enum `Field(n)` selection; if payload descent
+> occurs, bridge derivation MUST insert the canonical payload-root `Field(0)`
+> step exactly once before the first payload child segment.
 
 ## Decode Instruction Semantics
 
@@ -916,6 +937,10 @@ sequence.
 > t[format.bridge.path-derivation-canonical] Path derivation from navigation
 > instructions to `Op.dst` MUST be canonical and deterministic.
 
+> t[format.bridge.enum-variant-path-expansion] Bridge derivation for
+> `enter-variant` MUST follow canonical enum path expansion compatible with ops
+> field-only enum navigation rules.
+
 > t[format.bridge.build-op-mapping-complete] Every build opcode legal in the
 > current ABI MUST have one normative `op-bridge` mapping.
 
@@ -954,7 +979,7 @@ Canonical sink event interface:
 > t[format.source.byte-interface-stable] Decode source byte interface MUST be
 > explicitly versioned by ABI.
 
-> t[format.source-location-optional] Source location/span metadata MAY be
+> t[format.source.location-optional] Source location/span metadata MAY be
 > provided; if provided, decode errors MUST preserve it.
 
 Canonical source byte interface:
@@ -1436,6 +1461,20 @@ Payload bytes follow immediately:
 > t[format.bin.section-lens-trusted-after-verify] Section lengths MUST be bounds
 > checked before section decoding.
 
+Flags byte (`flags`) layout in v1:
+
+- bit `0`: `has_location_spans` hint.
+- bits `1..7`: reserved.
+
+> t[format.bin.flags-v1-defined] Binary v1 header flags layout MUST follow the
+> definition above.
+
+> t[format.bin.flags-v1-reserved-zero] Reserved flag bits (`1..7`) MUST be zero
+> in v1 encodings.
+
+> t[format.bin.flags-v1-unknown-rejected] Non-zero reserved flags MUST be
+> rejected by verifier for ABI v1.
+
 ### Section Payload Layouts
 
 String table section:
@@ -1540,6 +1579,31 @@ Operand bytes are opcode-specific and use:
 - byte class as `u8` (`0=ws`, `1=digit`, `2=hex`, `3=quote`)
 - bitmask as `mask_len(varint u32)` + raw bytes (little-endian bit order)
 - length mode as `u8` (`0=unknown`, `1=known`) followed by optional varint len
+
+Canonical varint (v1):
+
+- unsigned varint is ULEB128 base-128 continuation encoding.
+- canonical form is shortest possible byte sequence for the value.
+- decoders MUST reject non-canonical encodings (for example redundant leading
+  zero continuation groups).
+- signed integers use canonical zigzag transform followed by canonical unsigned
+  varint.
+
+> t[format.bin.varint-format-defined] Canonical varint encoding MUST be ULEB128
+> with shortest-form requirement.
+
+> t[format.bin.varint-noncanonical-rejected] Non-canonical varint encodings MUST
+> be rejected by verifier.
+
+Byte class definitions (v1):
+
+- `ws`: `{0x09, 0x0a, 0x0d, 0x20}`
+- `digit`: `{0x30..0x39}`
+- `hex`: `{0x30..0x39, 0x41..0x46, 0x61..0x66}`
+- `quote`: `{0x22}`
+
+> t[format.bin.byte-class-defined] Byte class ids MUST map to the sets above in
+> ABI v1.
 
 Per-op operand payloads:
 

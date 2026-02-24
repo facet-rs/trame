@@ -482,7 +482,7 @@ Families:
 - Control flow:
   - `jump`, `branch`, `call`, `ret`, `halt`, `fail`
 - Value navigation:
-  - `enter-field`, `enter-index`, `enter-key`, `enter-value`, `leave`
+  - `enter-field`, `enter-index`, `enter-key`, `enter-value`, `enter-variant`, `leave`
 - Encode emission:
   - `emit-begin-*`, `emit-field-name`, `emit-scalar`, `emit-null`, `emit-end`
 - Decode token/control:
@@ -537,6 +537,7 @@ Families:
 | `enter-index` | `(index u32)` | Push fixed positional index segment. | Index invalid for current shape node. |
 | `enter-key` | `(string u32)` | Push map-key segment resolved from `strings`. | Invalid string id. |
 | `enter-value` | none | Push value segment for map entry payload. | Invalid container context. |
+| `enter-variant` | `(index u32)` | Push enum variant segment for selected variant payload path. | Index invalid for current enum shape node. |
 | `leave` | none | Pop one segment from `path-stack`. | Underflow at root path. |
 
 #### Encode Emission
@@ -624,6 +625,18 @@ the value through runtime-safe access, and emits one sink scalar event.
 > t[format.vm.cand-dispatch-no-implicit-narrow] `cand-dispatch` MUST NOT mutate
 > `%cand-mask`.
 
+#### `enter-variant`
+
+`enter-variant` is explicit enum payload navigation. It does not perform hidden
+variant solving; solver/disambiguation logic remains ordinary CFG instructions.
+
+> t[format.vm.enter-variant-explicit-navigation] Enum payload traversal MUST use
+> explicit `enter-variant` path navigation when variant-specific payload paths
+> are required.
+
+> t[format.vm.enter-variant-no-hidden-solver] `enter-variant` MUST NOT trigger
+> implicit runtime variant solving or candidate narrowing.
+
 ## Decode Instruction Semantics
 
 Decode programs consume a token stream and drive build actions.
@@ -694,6 +707,13 @@ Decode programs consume a token stream and drive build actions.
 
 > t[format.parse.candidate-dispatch-cases-valid] `cand-dispatch` case ids MUST
 > reference valid candidate ids for the current program.
+
+> t[format.parse.candidate-count-consistent] Candidate count MUST be consistent
+> across all candidate-related instructions in a decode program.
+
+> t[format.parse.candidate-mask-width-consistent] All candidate masks used by
+> `cand-init`, `cand-key`, and `cand-tag-eq` in one program MUST use identical
+> mask byte width.
 
 ### Build Actions
 
@@ -1170,6 +1190,90 @@ enum Kind {
     (entry-proc f0)))
 ```
 
+## Worked Decode Example (Adjacently Tagged Enum)
+
+This example decodes:
+
+- input shape: `{"type":"Pair","content":{"a":1,"b":2}}`
+- enum:
+  - `Pair { a: u32, b: u32 }`
+  - `Unit`
+
+This minimal example assumes tags lower to `Pair` or `Unit`.
+
+```lisp
+(vmir
+  (abi 1)
+  (kind decode)
+  (shape-id 9001)
+  (consts
+    (strings ("type" "content" "Pair" "a" "b"))
+    (predicates ()))
+  (code
+    (procs
+      ((f0
+        (entry b0)
+        (blocks
+          ((b0
+            (build-stage (capacity 1))
+            (expect-token (kind object-start))
+            (expect-token (kind key))
+            (match-key (string 0) (then b1) (else b97)))
+           (b1
+            (expect-token (kind scalar))
+            (cand-init (mask #x03))
+            (cand-tag-eq (string 2) (then-keep #x01) (else-keep #x02))
+            (expect-token (kind key))
+            (match-key (string 1) (then b2) (else b97)))
+           (b2
+            (expect-token (kind object-start))
+            (cand-dispatch
+              (case 0 b10)
+              (case 1 b20)
+              (ambiguous b98)
+              (none b99)))
+           (b10
+            (read-token)
+            (match-token (kind object-end) (then b19) (else b11)))
+           (b11
+            (match-key (string 3) (then b12) (else b13)))
+           (b12
+            (enter-variant (index 0))
+            (enter-field (index 0))
+            (expect-token (kind scalar))
+            (build-set-imm)
+            (leave)
+            (leave)
+            (jump b10))
+           (b13
+            (match-key (string 4) (then b14) (else b15)))
+           (b14
+            (enter-variant (index 0))
+            (enter-field (index 1))
+            (expect-token (kind scalar))
+            (build-set-imm)
+            (leave)
+            (leave)
+            (jump b10))
+           (b15 (fail (code decode-unknown-field)))
+           (b19
+            (expect-token (kind object-end))
+            (build-end)
+            (halt))
+           (b20
+            (expect-token (kind object-end))
+            (enter-variant (index 1))
+            (build-default)
+            (leave)
+            (expect-token (kind object-end))
+            (build-end)
+            (halt))
+           (b97 (fail (code decode-expected-tag-content)))
+           (b98 (fail (code decode-ambiguous)))
+           (b99 (fail (code decode-no-match))))))))
+    (entry-proc f0)))
+```
+
 ## Binary Encoding v1
 
 Binary VM IR is canonical and executable.
@@ -1278,6 +1382,7 @@ Entry section:
 - `0x12 enter-key`
 - `0x13 enter-value`
 - `0x14 leave`
+- `0x15 enter-variant`
 - `0x20 emit-begin-struct`
 - `0x21 emit-begin-seq`
 - `0x22 emit-begin-map`
@@ -1328,6 +1433,7 @@ Per-op operand payloads:
 - `enter-field`: `field_index`
 - `enter-index`: `index`
 - `enter-key`: `string_id`
+- `enter-variant`: `variant_index`
 - `emit-begin-struct`: `field_count`
 - `emit-begin-seq` / `emit-begin-map`: `len_mode [len_if_known]`
 - `emit-field-name`: `string_id`
@@ -1342,8 +1448,82 @@ Per-op operand payloads:
 - `build-stage`: `len_mode [capacity_if_known]`
 - all other opcodes: empty operand payload
 
+`fail` code encoding:
+
+- text form uses `(fail (code symbol))`.
+- binary form encodes the symbol via `error_code_string_id` into `strings`.
+
+> t[format.bin.fail-code-interned] Binary `fail` operands MUST reference an
+> interned error-code symbol in the string table.
+
+> t[format.bin.fail-code-roundtrip] Text/binary round-trip MUST preserve `fail`
+> code symbol identity.
+
 > t[format.bin.operand-canonical] Operand payloads MUST use canonical forms and
 > must not include trailing unused bytes.
+
+### Predicate Argument Payload Encoding (v1)
+
+`arg_payload` encoding is selected by `arg_kind`:
+
+- `arg_kind=0` (`path`):
+  - `seg_count` (canonical varint `u32`)
+  - repeated `seg_count` times:
+    - `seg_kind` (`u8`; `0=field`, `1=index`, `2=key`, `3=value`, `4=variant`)
+    - `seg_payload`:
+      - `field`: `field_index` (canonical varint `u32`)
+      - `index`: `index` (canonical varint `u32`)
+      - `key`: `string_id` (canonical varint `u32`)
+      - `value`: empty
+      - `variant`: `variant_index` (canonical varint `u32`)
+- `arg_kind=1` (`const-bool`):
+  - `bool_byte` (`u8`; `0=false`, `1=true`)
+- `arg_kind=2` (`const-int`):
+  - signed canonical zigzag varint (`i64` domain)
+- `arg_kind=3` (`const-string-id`):
+  - `string_id` (canonical varint `u32`)
+- `arg_kind=4` (`token-reg`):
+  - `token_view` (`u8`; `0=kind`, `1=scalar-payload`)
+
+> t[format.bin.pred-arg-kind-known] Unknown predicate `arg_kind` values MUST be
+> rejected by binary verifier for ABI v1.
+
+> t[format.bin.pred-arg-path-segments-bounded] Predicate path segment count MUST
+> be bounded by verifier limits.
+
+> t[format.bin.pred-arg-key-string-in-range] Predicate path `key` segment string
+> ids and `const-string-id` values MUST reference valid string table entries.
+
+> t[format.bin.pred-arg-variant-index-in-range] Predicate path `variant` segment
+> indexes MUST be valid for the referenced enum shape context.
+
+> t[format.bin.pred-arg-token-view-known] Unknown `token_view` values MUST be
+> rejected by binary verifier for ABI v1.
+
+### Binary Verifier Requirements (v1)
+
+Before execution, verifier MUST validate:
+
+- CFG structure:
+  - every block has exactly one terminator.
+  - every block/proc target is in range.
+- opcode/operand validity:
+  - opcode byte known for ABI v1.
+  - operand payload length matches opcode schema.
+  - enum-like operand tags (token kinds, segment kinds, token views) are known.
+- decode candidate invariants:
+  - candidate mask widths are consistent within program.
+  - candidate ids in `cand-dispatch` are unique and in range.
+  - `cand-dispatch` has explicit `ambiguous` and `none` targets.
+
+> t[format.bin.verify-cfg-terminators] Verifier MUST reject programs where any
+> block lacks a valid single terminator.
+
+> t[format.bin.verify-operand-schema] Verifier MUST reject instructions whose
+> operand payload does not match opcode schema.
+
+> t[format.bin.verify-candidate-invariants] Verifier MUST reject decode programs
+> violating candidate-mask or dispatch invariants.
 
 ### Encoding Rules
 

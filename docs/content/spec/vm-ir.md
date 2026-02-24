@@ -113,7 +113,7 @@ Top-level program root:
 > t[format.vm.sexp-bool-format] Booleans MUST be encoded as `true` or `false`.
 
 > t[format.vm.sexp-string-format] Strings MUST be UTF-8 and escaped with
-> JSON-compatible escapes.
+> canonical backslash escapes.
 
 > t[format.vm.sexp-bytes-format] Byte blobs MUST be encoded as lowercase hex via
 > `#x...` tokens.
@@ -488,7 +488,7 @@ Families:
 - Encode emission:
   - `emit-begin-*`, `emit-field-name`, `emit-scalar`, `emit-null`, `emit-end`
 - Decode lexical/parse control:
-  - `read-byte`, `peek-byte`, `expect-byte`, `match-byte`, `match-byte-class`, `skip-byte-class`, `scan-json-string`, `scan-json-number`, `scan-json-literal`, `json-skip-value`, `match-key`, `source-save`, `source-restore`
+  - `read-byte`, `peek-byte`, `expect-byte`, `match-byte`, `match-byte-class`, `skip-byte-class`, `scan-string`, `scan-number`, `scan-literal`, `skip-value`, `match-key`, `source-save`, `source-restore`
 - Decode disambiguation:
   - `cand-init`, `cand-key`, `cand-tag-eq`, `cand-dispatch`
 - Build actions:
@@ -564,27 +564,27 @@ Families:
 | `match-byte` | `(byte u8) (then bN) (else bN)` | Branch by equality between `%byte` and operand byte. | `%byte` unset. |
 | `match-byte-class` | `(class C) (then bN) (else bN)` | Branch by whether `%byte` belongs to class `C`. | `%byte` unset, invalid class id. |
 | `skip-byte-class` | `(class C)` | Consume zero or more consecutive bytes in class `C`. | Invalid class id, source error. |
-| `scan-json-string` | none | Consume one JSON string literal, decode escapes/UTF-8, store in `%scalar` (string) and `%key` when in key position. | Malformed string, source error. |
-| `scan-json-number` | none | Consume one JSON number literal and store in `%scalar` (`int`/`uint`/`float`). | Malformed number, overflow policy error, source error. |
-| `scan-json-literal` | `(kind true\|false\|null)` | Consume exact JSON literal and store corresponding `%scalar` value. | Literal mismatch, source error. |
-| `json-skip-value` | none | Consume exactly one JSON value subtree from source bytes. | Malformed input, source error. |
+| `scan-string` | none | Consume one string literal according to active decode grammar, decode escapes/UTF-8, store in `%scalar` (string) and `%key` when in key position. | Malformed string, source error. |
+| `scan-number` | none | Consume one numeric literal according to active decode grammar and store in `%scalar` (`int`/`uint`/`float`). | Malformed number, overflow policy error, source error. |
+| `scan-literal` | `(kind true\|false\|null)` | Consume exact scalar literal for the selected kind and store corresponding `%scalar` value. | Literal mismatch, source error. |
+| `skip-value` | none | Consume exactly one grammar value subtree from source bytes. | Malformed input, source error. |
 | `match-key` | `(string u32) (then bN) (else bN)` | Branch by equality between `%key` and `strings[idx]`. | `%key` unset, invalid string id. |
 | `source-save` | none | Push current `source-cursor` onto `source-save-stack`. | Source does not support save, source error. |
 | `source-restore` | none | Pop save point and restore `source-cursor`. | Empty save stack, invalid save point, source error. |
 
-`scan-json-string` key-position behavior is defined by parse context:
+`scan-string` key-position behavior is defined by parse context:
 
-- key position is true when parser state indicates "expecting object key" (after
-  `{` or `,` inside an object, before `:`).
-- in key position, `scan-json-string` MUST write decoded string into both
+- key position is true when parser state indicates "expecting keyed-field name"
+  in the active decode grammar.
+- in key position, `scan-string` MUST write decoded string into both
   `%scalar` and `%key`.
-- outside key position, `scan-json-string` MUST update `%scalar` and MUST clear
+- outside key position, `scan-string` MUST update `%scalar` and MUST clear
   `%key`.
 
-> t[format.parse.scan-json-string-key-position-explicit] Key-position detection
-> for `scan-json-string` MUST be determined by explicit parser context state.
+> t[format.parse.scan-string-key-position-explicit] Key-position detection
+> for `scan-string` MUST be determined by explicit parser context state.
 
-> t[format.parse.scan-json-string-key-reg-update] `scan-json-string` MUST update
+> t[format.parse.scan-string-key-reg-update] `scan-string` MUST update
 > `%key` only in key position.
 
 #### Decode Disambiguation
@@ -627,11 +627,15 @@ Multi-way lexical dispatch is represented by explicit CFG chains/trees.
 
 #### Lex Builtins
 
-`scan-json-string`, `scan-json-number`, `scan-json-literal`, and
-`json-skip-value` are semantic builtins in the shared VM dialect.
+`scan-string`, `scan-number`, `scan-literal`, and
+`skip-value` are semantic builtins in the shared VM dialect.
 
 They are optimization helpers only: each builtin MUST be observationally
 equivalent to an explicit byte-level parser lowering in the same VM.
+
+> t[format.vm.lex-builtin-format-neutral] Core lex builtin opcode names and
+> contracts MUST be format-neutral; format identity MUST NOT be encoded in opcode
+> names.
 
 > t[format.vm.lex-builtin-semantic-equivalence] Lex builtins MUST be
 > observationally equivalent to explicit byte-level IR lowering.
@@ -707,8 +711,9 @@ Decode programs consume source bytes/code-units and drive build actions.
 > `match-byte-class`, and `match-key` MUST NOT consume additional input beyond
 > explicit consuming instructions.
 
-> t[format.parse.skip-value-single-tree] `json-skip-value` MUST consume exactly
-> one syntactic JSON value subtree and leave source cursor at the next sibling
+> t[format.parse.skip-value-single-tree] `skip-value` MUST consume exactly
+> one syntactic value subtree in the active grammar and leave source cursor at
+> the next sibling
 > position.
 
 > t[format.parse.source-save-restore-explicit] Decode replay MUST use explicit
@@ -881,7 +886,7 @@ Unknown fields are not implicit behavior. Compiler policy must lower to one of:
 - reject:
   - emit `fail` with unknown-field error code.
 - skip:
-  - execute `json-skip-value` and continue.
+  - execute `skip-value` and continue.
 - collect:
   - navigate to catch-all destination and execute explicit build actions.
 
@@ -1124,13 +1129,13 @@ Unknown fields are skipped.
             (peek-byte)
             (match-byte (byte #x7d) (then b9e) (else b2)))
            (b2
-            (scan-json-string)
+            (scan-string)
             (match-key (string 0) (then b3) (else b4)))
            (b3
             (skip-byte-class (class ws))
             (expect-byte (byte #x3a)) ; :
             (skip-byte-class (class ws))
-            (scan-json-number)
+            (scan-number)
             (enter-field (index 0))
             (build-set-imm)
             (leave)
@@ -1141,7 +1146,7 @@ Unknown fields are skipped.
             (skip-byte-class (class ws))
             (expect-byte (byte #x3a)) ; :
             (skip-byte-class (class ws))
-            (scan-json-string)
+            (scan-string)
             (enter-field (index 1))
             (build-set-imm)
             (leave)
@@ -1150,7 +1155,7 @@ Unknown fields are skipped.
             (skip-byte-class (class ws))
             (expect-byte (byte #x3a)) ; :
             (skip-byte-class (class ws))
-            (json-skip-value)
+            (skip-value)
             (jump b7))
            (b7
             (skip-byte-class (class ws))
@@ -1211,14 +1216,14 @@ enum Kind {
             (peek-byte)
             (match-byte (byte #x7d) (then b9) (else b2)))
            (b2
-            (scan-json-string)
+            (scan-string)
             (match-key (string 0) (then b3) (else b4)))
            (b3
             (skip-byte-class (class ws))
             (expect-byte (byte #x3a))
             (skip-byte-class (class ws))
             (cand-key (keep #x03))
-            (json-skip-value)
+            (skip-value)
             (jump b7))
            (b4
             (match-key (string 3) (then btag) (else b5)))
@@ -1226,7 +1231,7 @@ enum Kind {
             (skip-byte-class (class ws))
             (expect-byte (byte #x3a))
             (skip-byte-class (class ws))
-            (scan-json-string)
+            (scan-string)
             (cand-tag-eq (string 4) (then-keep #x01) (else-keep #x02))
             (jump b7))
            (b5
@@ -1236,7 +1241,7 @@ enum Kind {
             (expect-byte (byte #x3a))
             (skip-byte-class (class ws))
             (cand-key (keep #x01))
-            (json-skip-value)
+            (skip-value)
             (jump b7c))
            (b7
             (match-key (string 2) (then b8) (else b8u)))
@@ -1245,13 +1250,13 @@ enum Kind {
             (expect-byte (byte #x3a))
             (skip-byte-class (class ws))
             (cand-key (keep #x02))
-            (json-skip-value)
+            (skip-value)
             (jump b7c))
            (b8u
             (skip-byte-class (class ws))
             (expect-byte (byte #x3a))
             (skip-byte-class (class ws))
-            (json-skip-value)
+            (skip-value)
             (jump b7c))
            (b7c
             (skip-byte-class (class ws))
@@ -1325,19 +1330,19 @@ replay/buffering lowering per enum-tag ordering rules.
             (skip-byte-class (class ws))
             (expect-byte (byte #x7b))
             (skip-byte-class (class ws))
-            (scan-json-string)
+            (scan-string)
             (match-key (string 0) (then b1) (else b97)))
            (b1
             (skip-byte-class (class ws))
             (expect-byte (byte #x3a))
             (skip-byte-class (class ws))
-            (scan-json-string)
+            (scan-string)
             (cand-init (mask #x03))
             (cand-tag-eq (string 2) (then-keep #x01) (else-keep #x02))
             (skip-byte-class (class ws))
             (expect-byte (byte #x2c))
             (skip-byte-class (class ws))
-            (scan-json-string)
+            (scan-string)
             (match-key (string 1) (then b2) (else b97)))
            (b2
             (skip-byte-class (class ws))
@@ -1354,7 +1359,7 @@ replay/buffering lowering per enum-tag ordering rules.
             (peek-byte)
             (match-byte (byte #x7d) (then b19) (else b11)))
            (b11
-            (scan-json-string)
+            (scan-string)
             (match-key (string 3) (then b12) (else b13)))
            (b12
             (enter-variant (index 0))
@@ -1362,13 +1367,13 @@ replay/buffering lowering per enum-tag ordering rules.
             (skip-byte-class (class ws))
             (expect-byte (byte #x3a))
             (skip-byte-class (class ws))
-            (scan-json-number)
+            (scan-number)
             (build-set-imm)
             (leave)
             (leave)
             (jump b17))
            (b13
-            (scan-json-string)
+            (scan-string)
             (match-key (string 4) (then b14) (else b15)))
            (b14
             (enter-variant (index 0))
@@ -1376,7 +1381,7 @@ replay/buffering lowering per enum-tag ordering rules.
             (skip-byte-class (class ws))
             (expect-byte (byte #x3a))
             (skip-byte-class (class ws))
-            (scan-json-number)
+            (scan-number)
             (build-set-imm)
             (leave)
             (leave)
@@ -1546,10 +1551,10 @@ Entry section:
 - `0x33 match-byte`
 - `0x34 match-byte-class`
 - `0x35 skip-byte-class`
-- `0x36 scan-json-string`
-- `0x37 scan-json-number`
-- `0x38 scan-json-literal`
-- `0x39 json-skip-value`
+- `0x36 scan-string`
+- `0x37 scan-number`
+- `0x38 scan-literal`
+- `0x39 skip-value`
 - `0x3a match-key`
 - `0x3b source-save`
 - `0x3c source-restore`
@@ -1622,7 +1627,7 @@ Per-op operand payloads:
 - `match-byte`: `byte then_block_id else_block_id`
 - `match-byte-class`: `class_id then_block_id else_block_id`
 - `skip-byte-class`: `class_id`
-- `scan-json-literal`: `literal_kind`
+- `scan-literal`: `literal_kind`
 - `match-key`: `string_id then_block_id else_block_id`
 - `cand-init`: `mask_bytes`
 - `cand-key`: `mask_bytes`

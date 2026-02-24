@@ -66,11 +66,10 @@ Top-level program root:
   (shape-id 1234567890)
   (consts
     (strings (...))
-    (predicates (...))
-    (plans (...)))
+    (predicates (...)))
   (code
-    (blocks (...))
-    (entry b0)))
+    (procs (...))
+    (entry-proc f0)))
 ```
 
 > t[format.vm.sexp-root-tag] Program text form MUST use `vmir` as the root tag.
@@ -91,15 +90,18 @@ Top-level program root:
 - `strings`: interned UTF-8 literals referenced by code (field names, tag keys,
   fixed symbols).
 - `predicates`: symbolic predicate descriptors used by conditional branches.
-- `plans`: reusable structural traversal templates (for example field plans).
-- `blocks`: executable logic blocks (the control-flow program).
-- `entry`: entry block label.
+- `procs`: executable procedures.
+- `blocks`: executable basic blocks inside procedures.
+- `entry-proc`: procedure label where execution starts.
 
-> t[format.vm.sexp-consts-not-logic] `strings`, `predicates`, and `plans` are
-> constant tables and MUST NOT contain executable control-flow instructions.
+> t[format.vm.sexp-consts-not-logic] `strings` and `predicates` are constant
+> tables and MUST NOT contain executable control-flow instructions.
 
 > t[format.vm.sexp-code-is-logic] Executable logic MUST be represented in
-> `code.blocks` with explicit control flow.
+> `code.procs`/`blocks` with explicit control flow.
+
+> t[format.vm.sexp-entry-proc] Executable programs MUST define exactly one
+> `entry-proc`.
 
 ### Atoms and Literals
 
@@ -125,7 +127,7 @@ Top-level program root:
 > t[format.vm.sexp-predicate-labels] Predicate references MUST use canonical
 > `pN` labels.
 
-> t[format.vm.sexp-plan-labels] Field-plan references MUST use canonical `fpN`
+> t[format.vm.sexp-proc-labels] Procedure references MUST use canonical `fN`
 > labels.
 
 ### Comments and Whitespace
@@ -147,25 +149,25 @@ Top-level program root:
   (shape-id 42)
   (consts
     (strings ("id" "name"))
-    (predicates ())
-    (plans
-      ((fp0
-        (emit-field (field 0) (name 0))
-        (emit-field (field 1) (name 1))))))
+    (predicates ()))
   (code
-    (blocks
-      ((b0
-        (emit-begin-struct (fields 2))
-        (for-each-struct-field (plan fp0) (body b1) (after b2)))
-       (b1
-        (emit-field-name (string 0))
-        (emit-scalar)
-        (next-field)
-        (jump b1))
-       (b2
-        (emit-end)
-        (halt))))
-    (entry b0)))
+    (procs
+      ((f0
+        (entry b0)
+        (blocks
+          ((b0
+            (emit-begin-struct (fields 2))
+            (emit-field-name (string 0))
+            (enter-field (index 0))
+            (emit-scalar)
+            (leave)
+            (emit-field-name (string 1))
+            (enter-field (index 1))
+            (emit-scalar)
+            (leave)
+            (emit-end)
+            (ret)))))))
+    (entry-proc f0)))
 ```
 
 ## Encoding IR (`SerProgram`)
@@ -203,11 +205,10 @@ Serialization is split into two phases:
   (shape-id 1234567890)
   (consts
     (strings (...))
-    (predicates (...))
-    (plans (...)))
+    (predicates (...)))
   (code
-    (blocks (...))
-    (entry b0)))
+    (procs (...))
+    (entry-proc f0)))
 ```
 
 ### Compiler Ownership
@@ -215,25 +216,28 @@ Serialization is split into two phases:
 `facet-format` owns policy lowering into IR.
 
 > t[format.ir.compile-policy-owner] Policy lowering (`skip`, rename, flatten,
-> tagging templates, key policy) MUST happen in compile phase, not in sinks.
+> tagging rules, key policy) MUST happen in compile phase, not in sinks.
 
 > t[format.ir.compile-static-skip] Fields marked with unconditional skip MUST be
-> removed from emitted field plans during compile phase.
+> removed from emitted executable control flow during compile phase.
 
 > t[format.ir.compile-rename-resolution] Effective field/variant names MUST be
 > resolved during compile phase and stored in program string tables.
 
 > t[format.ir.compile-flatten-lowering] Flattened fields MUST be lowered into
-> explicit field-plan entries that define required runtime traversal.
+> explicit executable control flow that defines required runtime traversal.
 
 > t[format.ir.compile-predicate-binding] Dynamic skip predicates (for example
 > `skip_serializing_if`) MUST be represented as predicate table entries.
 
 > t[format.ir.compile-lowering-selection] Compile phase MUST encode lowering
-> policy choices explicitly in instructions/plan entries before execution.
+> policy choices explicitly in executable instructions/control flow.
 
 > t[format.ir.compile-validate-block-targets] Compile phase MUST reject programs
 > with dangling block references.
+
+> t[format.ir.compile-validate-proc-targets] Compile phase MUST reject programs
+> with dangling procedure references.
 
 > t[format.ir.compile-validate-indices] Compile phase MUST reject programs with
 > invalid field or variant indexes for the bound shape.
@@ -245,7 +249,7 @@ Serialization is split into two phases:
 > t[format.ir.exec-shape-guard] Executor MUST validate runtime shape id against
 > `program.root_shape_id` before executing any instruction.
 
-> t[format.ir.exec-entry-block] Execution MUST start at `entry_block`.
+> t[format.ir.exec-entry-proc] Execution MUST start at `entry-proc`.
 
 > t[format.ir.exec-stack-balance] Navigation instructions (`Enter*` / `Leave`)
 > MUST preserve stack correctness; leaving root scope MUST be rejected.
@@ -265,29 +269,26 @@ Serialization is split into two phases:
 > t[format.ir.exec-control-flow-only-from-ir] Runtime traversal control flow
 > MUST follow explicit IR instructions.
 
-### Field Plans
+### Procedures and Loops
 
-> t[format.ir.field-plan-emit-entry] `EmitField` entries MUST reference a valid
-> field index and output key/name identifier.
+> t[format.ir.proc-cfg-only] Executable programs MUST be expressible as
+> procedures containing basic blocks and explicit control-flow edges.
 
-> t[format.ir.field-plan-predicate-optional] Field plan entries MAY carry an
-> optional predicate id; if present, execution MUST evaluate it before emit.
+> t[format.ir.proc-call-explicit] Procedure calls/returns (if present) MUST be
+> explicit instructions in the IR.
 
-> t[format.ir.field-plan-flatten-struct] `FlattenStruct` entries MUST reference
-> a nested field plan valid for the referenced field's effective shape.
+> t[format.ir.loop-via-cfg-backedge] Loops MUST be represented by explicit CFG
+> back-edges.
 
-> t[format.ir.field-plan-flatten-map] `FlattenMap` entries MUST produce map
-> entry emission semantics equivalent to current format behavior.
-
-> t[format.ir.field-plan-flatten-enum] `FlattenEnum` entries MUST preserve the
-> same visibility/tagging behavior as non-IR serializer semantics.
+> t[format.ir.no-plan-indirection] Executable IR MUST NOT depend on plan-like
+> indirection at runtime.
 
 ### Enum and Tagging
 
 > t[format.ir.enum-active-variant] Executor MUST resolve active variant at
 > runtime before executing variant-dependent branches.
 
-> t[format.ir.enum-tagging-template] Tagging strategy selection MUST be encoded
+> t[format.ir.enum-tagging-policy] Tagging strategy selection MUST be encoded
 > in the program at compile time.
 
 > t[format.ir.enum-payload-control-flow] Payload emission for each variant MUST

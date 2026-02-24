@@ -6,10 +6,6 @@ pub enum CompileError {
     RootNotStruct {
         type_name: &'static str,
     },
-    UnsupportedFieldCount {
-        type_name: &'static str,
-        found: usize,
-    },
     UnsupportedFieldType {
         field_index: usize,
         field_name: &'static str,
@@ -24,6 +20,7 @@ pub enum Error {
     UnexpectedEof { offset: usize },
     VarintOverflow { offset: usize },
     InvalidUtf8 { offset: usize },
+    InvalidBool { offset: usize, value: u8 },
     TrailingBytes { offset: usize },
     InvalidRegister { reg: usize },
     RegisterUnset { reg: usize },
@@ -46,6 +43,7 @@ impl From<CompileError> for Error {
 pub enum ScalarKind {
     U32,
     String,
+    Bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,31 +55,26 @@ pub enum DecodeInstr {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PostcardDecodeProgram {
+    pub register_count: usize,
     pub instructions: Vec<DecodeInstr>,
 }
 
-/// Compile-time validated decode plan for the first postcard vertical slice:
-/// one struct with exactly two fields (`u32`, `String`) in declaration order.
+/// Compile-time validated decode plan for postcard struct slices.
+///
+/// Supported scalar fields in v0: `u32`, `String`, `bool`.
 #[derive(Clone, Debug)]
-pub struct PostcardStructU32StringPlan {
+pub struct PostcardStructPlan {
     shape: &'static Shape,
     program: PostcardDecodeProgram,
 }
 
-impl PostcardStructU32StringPlan {
+impl PostcardStructPlan {
     pub fn compile(shape: &'static Shape) -> Result<Self, CompileError> {
         let Type::User(UserType::Struct(st)) = shape.ty else {
             return Err(CompileError::RootNotStruct {
                 type_name: shape.type_identifier,
             });
         };
-
-        if st.fields.len() != 2 {
-            return Err(CompileError::UnsupportedFieldCount {
-                type_name: shape.type_identifier,
-                found: st.fields.len(),
-            });
-        }
 
         let mut instructions = Vec::with_capacity(st.fields.len() * 2 + 1);
         for (idx, field) in st.fields.iter().enumerate() {
@@ -103,7 +96,10 @@ impl PostcardStructU32StringPlan {
             });
         }
         instructions.push(DecodeInstr::RequireEof);
-        let program = PostcardDecodeProgram { instructions };
+        let program = PostcardDecodeProgram {
+            register_count: st.fields.len(),
+            instructions,
+        };
 
         Ok(Self { shape, program })
     }
@@ -124,7 +120,7 @@ impl PostcardStructU32StringPlan {
         }
 
         let mut reader = Reader::new(input);
-        let mut regs = [RegValue::Unset, RegValue::Unset];
+        let mut regs = vec![RegValue::Unset; self.program.register_count];
         let mut trame = Trame::<LRuntime>::alloc::<T>()?;
         for instr in &self.program.instructions {
             match *instr {
@@ -141,6 +137,7 @@ impl PostcardStructU32StringPlan {
                                 .to_owned();
                             RegValue::String(value)
                         }
+                        ScalarKind::Bool => RegValue::Bool(reader.read_bool()?),
                     };
                 }
                 DecodeInstr::WriteFieldFromReg { field, src } => {
@@ -157,6 +154,10 @@ impl PostcardStructU32StringPlan {
                         }
                         RegValue::String(value) => {
                             trame.parse_from_str(Path::field(field), value)?;
+                        }
+                        RegValue::Bool(value) => {
+                            let value_text = if *value { "true" } else { "false" };
+                            trame.parse_from_str(Path::field(field), value_text)?;
                         }
                     }
                 }
@@ -179,11 +180,13 @@ impl PostcardStructU32StringPlan {
     }
 }
 
-pub fn compile<T>() -> Result<PostcardStructU32StringPlan, CompileError>
+pub type PostcardStructU32StringPlan = PostcardStructPlan;
+
+pub fn compile<T>() -> Result<PostcardStructPlan, CompileError>
 where
     T: Facet<'static>,
 {
-    PostcardStructU32StringPlan::compile_for::<T>()
+    PostcardStructPlan::compile_for::<T>()
 }
 
 pub fn from_slice<T>(input: &[u8]) -> Result<T, Error>
@@ -199,6 +202,7 @@ enum RegValue {
     Unset,
     U32(u32),
     String(String),
+    Bool(bool),
 }
 
 struct Reader<'a> {
@@ -268,6 +272,16 @@ impl<'a> Reader<'a> {
         let bytes = self.read_bytes(len)?;
         Ok((start, bytes))
     }
+
+    fn read_bool(&mut self) -> Result<bool, Error> {
+        let offset = self.pos;
+        let value = self.read_byte()?;
+        match value {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(Error::InvalidBool { offset, value }),
+        }
+    }
 }
 
 fn scalar_kind_for_shape(shape: &'static Shape) -> Option<ScalarKind> {
@@ -276,6 +290,9 @@ fn scalar_kind_for_shape(shape: &'static Shape) -> Option<ScalarKind> {
     }
     if shape.type_identifier == "String" {
         return Some(ScalarKind::String);
+    }
+    if shape.type_identifier == "bool" {
+        return Some(ScalarKind::Bool);
     }
     None
 }
@@ -297,8 +314,15 @@ mod tests {
     }
 
     #[derive(Debug, PartialEq, facet::Facet)]
-    struct WrongShape {
-        only: u32,
+    struct Demo3 {
+        id: u32,
+        name: String,
+        ok: bool,
+    }
+
+    #[derive(Debug, PartialEq, facet::Facet)]
+    struct WrongType {
+        only: i64,
     }
 
     fn encode_u32(mut value: u32) -> Vec<u8> {
@@ -321,6 +345,12 @@ mod tests {
         out
     }
 
+    fn encode_demo3_wire(id: u32, name: &str, ok: bool) -> Vec<u8> {
+        let mut out = encode_demo_wire(id, name);
+        out.push(if ok { 1 } else { 0 });
+        out
+    }
+
     #[test]
     fn decode_demo() {
         let wire = encode_demo_wire(7, "alice");
@@ -335,13 +365,14 @@ mod tests {
     }
 
     #[test]
-    fn compile_rejects_wrong_shape() {
-        let err = compile::<WrongShape>().expect_err("shape should be rejected");
+    fn compile_rejects_unsupported_field_type() {
+        let err = compile::<WrongType>().expect_err("shape should be rejected");
         assert_eq!(
             err,
-            CompileError::UnsupportedFieldCount {
-                type_name: "WrongShape",
-                found: 1
+            CompileError::UnsupportedFieldType {
+                field_index: 0,
+                field_name: "only",
+                type_name: "i64",
             }
         );
     }
@@ -363,6 +394,34 @@ mod tests {
                     dst: 1,
                 },
                 DecodeInstr::WriteFieldFromReg { field: 1, src: 1 },
+                DecodeInstr::RequireEof,
+            ]
+        );
+    }
+
+    #[test]
+    fn compile_is_shape_driven_for_multiple_fields() {
+        let plan = compile::<Demo3>().expect("compile should succeed");
+        let program = plan.program();
+        assert_eq!(program.register_count, 3);
+        assert_eq!(
+            program.instructions,
+            vec![
+                DecodeInstr::ReadScalar {
+                    kind: ScalarKind::U32,
+                    dst: 0,
+                },
+                DecodeInstr::WriteFieldFromReg { field: 0, src: 0 },
+                DecodeInstr::ReadScalar {
+                    kind: ScalarKind::String,
+                    dst: 1,
+                },
+                DecodeInstr::WriteFieldFromReg { field: 1, src: 1 },
+                DecodeInstr::ReadScalar {
+                    kind: ScalarKind::Bool,
+                    dst: 2,
+                },
+                DecodeInstr::WriteFieldFromReg { field: 2, src: 2 },
                 DecodeInstr::RequireEof,
             ]
         );
@@ -399,5 +458,19 @@ mod tests {
 
         let err = from_slice::<Demo>(&wire).expect_err("invalid utf8 should fail");
         assert_eq!(err, Error::InvalidUtf8 { offset: 2 });
+    }
+
+    #[test]
+    fn decode_shape_driven_three_fields() {
+        let wire = encode_demo3_wire(7, "alice", true);
+        let value: Demo3 = from_slice(&wire).expect("decode should succeed");
+        assert_eq!(
+            value,
+            Demo3 {
+                id: 7,
+                name: "alice".into(),
+                ok: true,
+            }
+        );
     }
 }

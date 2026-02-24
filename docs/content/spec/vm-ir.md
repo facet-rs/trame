@@ -39,6 +39,114 @@ All formats target one VM dialect.
 > t[format.vm.builtins-extension-point] Format-specific behavior MAY be exposed
 > only through a constrained builtin set callable from the shared IR.
 
+## IR Representations
+
+The same program may have:
+
+- a canonical text form (S-expression) for review/snapshots
+- a canonical binary form for execution/cache
+
+> t[format.vm.text-form-sexp] The canonical text representation of VM IR MUST be
+> S-expression based.
+
+> t[format.vm.binary-form-canonical] The executable representation MUST have a
+> canonical binary encoding keyed by ABI version.
+
+> t[format.vm.text-binary-roundtrip] For well-formed programs within the active
+> ABI version, text and binary forms MUST round-trip without semantic loss.
+
+### Canonical S-expression Shape
+
+Top-level program root:
+
+```lisp
+(vmir
+  (abi 1)
+  (kind encode|decode|fused)
+  (profile json|postcard|toml|yaml|...)
+  (shape-id 1234567890)
+  (strings (...))
+  (predicates (...))
+  (plans (...))
+  (blocks (...))
+  (entry b0))
+```
+
+> t[format.vm.sexp-root-tag] Program text form MUST use `vmir` as the root tag.
+
+> t[format.vm.sexp-key-order] Root keys MUST be emitted in canonical order:
+> `abi`, `kind`, `profile`, `shape-id`, `strings`, `predicates`, `plans`,
+> `blocks`, `entry`.
+
+> t[format.vm.sexp-canonical-print] Canonical printer output MUST be
+> deterministic (byte-identical for semantically identical programs).
+
+### Atoms and Literals
+
+> t[format.vm.sexp-symbol-style] Instruction and field symbols MUST use
+> lowercase kebab-case.
+
+> t[format.vm.sexp-int-format] Integer literals MUST be base-10 without leading
+> plus signs; negative values use leading `-`.
+
+> t[format.vm.sexp-bool-format] Booleans MUST be encoded as `true` or `false`.
+
+> t[format.vm.sexp-string-format] Strings MUST be UTF-8 and escaped with
+> JSON-compatible escapes.
+
+> t[format.vm.sexp-bytes-format] Byte blobs MUST be encoded as lowercase hex via
+> `#x...` tokens.
+
+### References
+
+> t[format.vm.sexp-block-labels] Block references MUST use canonical `bN`
+> labels.
+
+> t[format.vm.sexp-predicate-labels] Predicate references MUST use canonical
+> `pN` labels.
+
+> t[format.vm.sexp-plan-labels] Field-plan references MUST use canonical `fpN`
+> labels.
+
+### Comments and Whitespace
+
+> t[format.vm.sexp-parser-whitespace] Parsers MUST accept arbitrary ASCII
+> whitespace between forms.
+
+> t[format.vm.sexp-parser-comments] Parsers MAY accept `;` line comments.
+
+> t[format.vm.sexp-canonical-no-comments] Canonical printer output MUST NOT
+> include comments.
+
+### Minimal Example
+
+```lisp
+(vmir
+  (abi 1)
+  (kind encode)
+  (profile json)
+  (shape-id 42)
+  (strings ("id" "name"))
+  (predicates ())
+  (plans
+    ((fp0
+      (emit-field (field 0) (name 0))
+      (emit-field (field 1) (name 1)))))
+  (blocks
+    ((b0
+      (emit-begin-struct (fields 2))
+      (for-each-struct-field (plan fp0) (body b1) (after b2)))
+     (b1
+      (emit-field-name (string 0))
+      (emit-scalar)
+      (next-field)
+      (jump b1))
+     (b2
+      (emit-end)
+      (halt))))
+  (entry b0))
+```
+
 ## Encoding IR (`SerProgram`)
 
 ### Model

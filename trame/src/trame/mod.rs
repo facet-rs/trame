@@ -11,7 +11,7 @@ pub use heap_value::HeapValue;
 #[cfg(not(creusot))]
 use crate::runtime::LiveRuntime;
 use crate::{
-    Op, PathSegment, Source,
+    Op, Path, PathSegment, Source,
     node::{FieldSlot, FieldStates, Node, NodeFlags, NodeKind, NodeState},
     ops::SourceKind,
     runtime::{
@@ -3675,6 +3675,192 @@ where
     /// The caller must ensure `shape` matches the type that will be materialized.
     pub unsafe fn alloc_shape(shape: &'static facet_core::Shape) -> Result<Self, TrameError> {
         Ok(unsafe { Trame::new(R::heap(), shape) })
+    }
+
+    fn parse_target_shape(
+        &self,
+        target_idx: NodeIdx<R>,
+        target: PathTarget,
+    ) -> Result<&'static facet_core::Shape, TrameError> {
+        let node = self.arena.get(target_idx);
+        let target_shape = node.shape;
+
+        match target {
+            PathTarget::Direct => match &node.kind {
+                NodeKind::Scalar { .. }
+                | NodeKind::Pointer { .. }
+                | NodeKind::Enum { .. }
+                | NodeKind::List { .. }
+                | NodeKind::Map { .. } => Ok(target_shape),
+                NodeKind::PointerSlice { .. } => Err(TrameError::UnsupportedSource),
+                NodeKind::Struct { .. }
+                | NodeKind::MapEntry { .. }
+                | NodeKind::EnumVariant { .. }
+                | NodeKind::EnumPayload { .. } => Err(TrameError::NotAStruct),
+            },
+            PathTarget::Field(field_idx) => match &node.kind {
+                NodeKind::Struct { .. } => Ok(Self::field_meta(target_shape, field_idx)?.shape),
+                NodeKind::MapEntry { .. } => {
+                    let map_idx = node.parent;
+                    if !map_idx.is_valid() {
+                        return Err(TrameError::NotAStruct);
+                    }
+                    let map_shape = self.arena.get(map_idx).shape;
+                    let map_type = map_shape.as_map().ok_or(TrameError::NotAStruct)?;
+                    match field_idx {
+                        0 => Ok(map_type.key()),
+                        1 => Ok(map_type.value()),
+                        _ => Err(TrameError::FieldOutOfBounds {
+                            index: field_idx,
+                            count: 2,
+                        }),
+                    }
+                }
+                NodeKind::EnumPayload { variant_idx, .. } => {
+                    Ok(Self::enum_payload_meta(target_shape, *variant_idx, field_idx)?.shape)
+                }
+                NodeKind::Pointer { .. } => {
+                    if field_idx != 0 {
+                        return Err(TrameError::FieldOutOfBounds {
+                            index: field_idx,
+                            count: 1,
+                        });
+                    }
+                    Err(TrameError::UnsupportedSource)
+                }
+                NodeKind::List {
+                    elements, closed, ..
+                }
+                | NodeKind::PointerSlice { elements, closed } => {
+                    let element_count = elements.len();
+                    if field_idx >= element_count {
+                        return Err(TrameError::FieldOutOfBounds {
+                            index: field_idx,
+                            count: element_count,
+                        });
+                    }
+                    if *closed {
+                        return Err(TrameError::UnsupportedSource);
+                    }
+                    Err(TrameError::UnsupportedSource)
+                }
+                NodeKind::Map {
+                    entries, closed, ..
+                } => {
+                    let entry_count = entries.len();
+                    if field_idx >= entry_count {
+                        return Err(TrameError::FieldOutOfBounds {
+                            index: field_idx,
+                            count: entry_count,
+                        });
+                    }
+                    if *closed {
+                        return Err(TrameError::UnsupportedSource);
+                    }
+                    Err(TrameError::UnsupportedSource)
+                }
+                NodeKind::Enum { .. } | NodeKind::EnumVariant { .. } => {
+                    Err(TrameError::UnsupportedSource)
+                }
+                NodeKind::Scalar { .. } => Err(TrameError::NotAStruct),
+            },
+            PathTarget::Append => match &node.kind {
+                NodeKind::List { .. } | NodeKind::PointerSlice { .. } => target_shape
+                    .sequence_element()
+                    .ok_or(TrameError::UnsupportedSource),
+                NodeKind::Map { .. } => Err(TrameError::UnsupportedSource),
+                _ => Err(TrameError::UnsupportedPath {
+                    segment: PathSegment::Append,
+                }),
+            },
+        }
+    }
+
+    /// Parse from string using shape parse hooks and assign into `dst`.
+    pub fn parse_from_str(&mut self, dst: Path, input: &str) -> Result<(), TrameError> {
+        let (target_idx, path_target) = self.resolve_path(dst.segments())?;
+        let parse_shape = self.parse_target_shape(target_idx, path_target)?;
+
+        let temp_ptr = unsafe { self.heap.alloc(parse_shape) };
+        let parsed = unsafe { parse_shape.call_parse(input, facet_core::PtrUninit::new(temp_ptr)) };
+
+        match parsed {
+            Some(Ok(())) => {
+                let set_result = self.apply(Op::Set {
+                    dst,
+                    src: unsafe { Source::from_ptr_shape(temp_ptr, parse_shape) },
+                });
+                match set_result {
+                    Ok(()) => {
+                        unsafe { self.heap.dealloc_moved(temp_ptr, parse_shape) };
+                        Ok(())
+                    }
+                    Err(err) => {
+                        unsafe {
+                            self.heap.drop_in_place(temp_ptr, parse_shape);
+                            self.heap.dealloc(temp_ptr, parse_shape);
+                        }
+                        Err(err)
+                    }
+                }
+            }
+            Some(Err(_)) => {
+                unsafe { self.heap.dealloc(temp_ptr, parse_shape) };
+                Err(TrameError::ParseFromStrFailed {
+                    type_name: parse_shape.type_identifier,
+                })
+            }
+            None => {
+                unsafe { self.heap.dealloc(temp_ptr, parse_shape) };
+                Err(TrameError::ParseFromStrUnsupported {
+                    type_name: parse_shape.type_identifier,
+                })
+            }
+        }
+    }
+
+    /// Parse from bytes using shape parse hooks and assign into `dst`.
+    pub fn parse_from_bytes(&mut self, dst: Path, bytes: &[u8]) -> Result<(), TrameError> {
+        let (target_idx, path_target) = self.resolve_path(dst.segments())?;
+        let parse_shape = self.parse_target_shape(target_idx, path_target)?;
+
+        let temp_ptr = unsafe { self.heap.alloc(parse_shape) };
+        let parsed =
+            unsafe { parse_shape.call_parse_bytes(bytes, facet_core::PtrUninit::new(temp_ptr)) };
+
+        match parsed {
+            Some(Ok(())) => {
+                let set_result = self.apply(Op::Set {
+                    dst,
+                    src: unsafe { Source::from_ptr_shape(temp_ptr, parse_shape) },
+                });
+                match set_result {
+                    Ok(()) => {
+                        unsafe { self.heap.dealloc_moved(temp_ptr, parse_shape) };
+                        Ok(())
+                    }
+                    Err(err) => {
+                        unsafe {
+                            self.heap.drop_in_place(temp_ptr, parse_shape);
+                            self.heap.dealloc(temp_ptr, parse_shape);
+                        }
+                        Err(err)
+                    }
+                }
+            }
+            Some(Err(_)) => {
+                unsafe { self.heap.dealloc(temp_ptr, parse_shape) };
+                Err(TrameError::ParseFromBytesFailed {
+                    type_name: parse_shape.type_identifier,
+                })
+            }
+            None => {
+                unsafe { self.heap.dealloc(temp_ptr, parse_shape) };
+                Err(TrameError::ParseFromBytesUnsupported {
+                    type_name: parse_shape.type_identifier,
+                })
+            }
+        }
     }
 }
 

@@ -717,40 +717,17 @@ fn apply_scalar(
         }
     };
 
-    let raw = RawValue::new(shape)?;
-    let parsed = unsafe { shape.call_parse(scalar, PtrUninit::new(raw.ptr)) };
-
-    match parsed {
-        Some(Ok(())) => {
-            let result = trame.apply(Op::Set {
-                dst: path,
-                src: unsafe { Source::from_ptr_shape(raw.ptr, shape) },
-            });
-            match result {
-                Ok(()) => {
-                    raw.dealloc();
-                    Ok(())
-                }
-                Err(err) => {
-                    raw.drop_and_dealloc(shape);
-                    Err(Error::Trame(err))
-                }
-            }
-        }
-        Some(Err(_)) => {
-            raw.dealloc();
-            Err(Error::ScalarParse {
-                type_name: shape.type_identifier,
-                offset,
-            })
-        }
-        None => {
-            raw.dealloc();
-            Err(Error::UnsupportedShape {
-                type_name: shape.type_identifier,
-                offset,
-            })
-        }
+    match trame.parse_from_str(path, scalar) {
+        Ok(()) => Ok(()),
+        Err(TrameError::ParseFromStrFailed { .. }) => Err(Error::ScalarParse {
+            type_name: shape.type_identifier,
+            offset,
+        }),
+        Err(TrameError::ParseFromStrUnsupported { .. }) => Err(Error::UnsupportedShape {
+            type_name: shape.type_identifier,
+            offset,
+        }),
+        Err(err) => Err(Error::Trame(err)),
     }
 }
 

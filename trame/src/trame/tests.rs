@@ -47,6 +47,11 @@ struct ArcSliceHolder {
 }
 
 #[derive(Debug, PartialEq, facet::Facet)]
+struct ParseFieldHolder {
+    value: u32,
+}
+
+#[derive(Debug, PartialEq, facet::Facet)]
 struct MapOverwriteDropProbe(u32);
 
 impl Default for MapOverwriteDropProbe {
@@ -226,6 +231,59 @@ fn scalar_lifecycle_live_alloc() {
     let hv = trame.build().unwrap();
     let value = hv.materialize::<u32>().unwrap();
     assert_eq!(value, 123);
+}
+
+#[test]
+fn parse_from_str_sets_field() {
+    let mut trame = Trame::<LRuntime>::alloc::<ParseFieldHolder>().unwrap();
+
+    trame.parse_from_str(Path::field(0), "42").unwrap();
+    let hv = trame.build().unwrap();
+    let value = hv.materialize::<ParseFieldHolder>().unwrap();
+
+    assert_eq!(value, ParseFieldHolder { value: 42 });
+}
+
+#[test]
+fn parse_from_str_reports_parse_failure() {
+    let mut trame = Trame::<LRuntime>::alloc::<ParseFieldHolder>().unwrap();
+
+    let err = trame.parse_from_str(Path::field(0), "not-a-number");
+
+    assert!(matches!(err, Err(TrameError::ParseFromStrFailed { .. })));
+}
+
+#[test]
+fn parse_from_str_reports_missing_parse_hook() {
+    let mut trame = Trame::<LRuntime>::alloc::<Vec<u32>>().unwrap();
+
+    let err = trame.parse_from_str(Path::empty(), "123");
+
+    assert!(matches!(
+        err,
+        Err(TrameError::ParseFromStrUnsupported { .. })
+    ));
+}
+
+#[test]
+fn parse_from_str_cleans_up_if_apply_fails_after_parse() {
+    let mut trame = Trame::<LRuntime>::alloc::<Vec<u32>>().unwrap();
+
+    let err = trame.parse_from_str(Path::append(), "7");
+
+    assert_eq!(err, Err(TrameError::UnsupportedSource));
+}
+
+#[test]
+fn parse_from_bytes_reports_missing_parse_hook() {
+    let mut trame = Trame::<LRuntime>::alloc::<u32>().unwrap();
+
+    let err = trame.parse_from_bytes(Path::empty(), &[1, 2, 3, 4]);
+
+    assert!(matches!(
+        err,
+        Err(TrameError::ParseFromBytesUnsupported { .. })
+    ));
 }
 
 #[test]

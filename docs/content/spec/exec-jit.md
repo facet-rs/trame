@@ -136,6 +136,31 @@ Deopt transfer state uses a versioned snapshot.
 > t[format.exec.deopt-no-lost-side-effects] Deopt points MUST preserve all
 > side effects that were committed before snapshot materialization.
 
+### JIT Deopt Metadata
+
+JIT backends maintain side metadata to translate machine execution state into
+`deopt-v1` snapshots.
+
+Required metadata classes:
+
+- machine-pc -> VM `pc` map at deoptable instruction boundaries;
+- spill/register map for VM-visible state (`%tok`, `%cand-mask`, locals);
+- source/sink side-effect boundary markers;
+- save-stack materialization metadata when replay is active.
+
+> t[format.exec.deopt-metadata-pc-map] JIT backend MUST maintain a precise
+> machine-pc-to-VM-pc mapping for every deoptable boundary.
+
+> t[format.exec.deopt-metadata-state-map] JIT backend MUST encode enough
+> register/spill metadata to reconstruct VM-visible state fields in `deopt-v1`.
+
+> t[format.exec.deopt-metadata-sideeffect-fences] JIT backend MUST mark
+> side-effect boundaries so deopt transfer preserves exactly-once effects.
+
+> t[format.exec.deopt-metadata-save-stack] When source replay/savepoints are
+> active, JIT backend MUST encode metadata needed to reconstruct source
+> save-stack state in `deopt-v1`.
+
 ## Safety
 
 > t[format.exec.unsafe-contained] Unsafe operations in this architecture MUST be

@@ -111,6 +111,16 @@ fn write_field_from_reg(
         (ScalarKind::Bool, RegValue::Bool(value)) => {
             unsafe { (dst as *mut bool).write(*value) };
         }
+        (ScalarKind::Bool, RegValue::U32(value)) => match *value {
+            0 => unsafe { (dst as *mut bool).write(false) },
+            1 => unsafe { (dst as *mut bool).write(true) },
+            other => {
+                return Err(Error::InvalidBool {
+                    offset: 0,
+                    value: other as u8,
+                });
+            }
+        },
         (ScalarKind::String, RegValue::String(value)) => {
             if *init_flag != 0 {
                 unsafe { core::ptr::drop_in_place(dst as *mut String) };
@@ -173,6 +183,14 @@ where
                 *slot = RegValue::U32(reader.read_byte()? as u32);
                 Ok(())
             }
+            DecodeInstr::MoveRegU32 { dst, src } => {
+                let out = read_reg_u32(&regs, src as usize)?;
+                let slot = regs
+                    .get_mut(dst as usize)
+                    .ok_or(Error::InvalidRegister { reg: dst as usize })?;
+                *slot = RegValue::U32(out);
+                Ok(())
+            }
             DecodeInstr::AndImmU32 { dst, src, imm } => {
                 let out = read_reg_u32(&regs, src as usize)? & imm;
                 let slot = regs
@@ -197,6 +215,16 @@ where
                 *slot = RegValue::U32(out);
                 Ok(())
             }
+            DecodeInstr::JumpIfRegZero { src, target } => {
+                if target > plan.program.instructions.len() {
+                    return Err(Error::ShapeMismatch);
+                }
+                if read_reg_u32(&regs, src as usize)? == 0 {
+                    pc = target;
+                    continue;
+                }
+                Ok(())
+            }
             DecodeInstr::JumpIfByteHighBitClear { src, target } => {
                 if target > plan.program.instructions.len() {
                     return Err(Error::ShapeMismatch);
@@ -207,6 +235,11 @@ where
                     continue;
                 }
                 Ok(())
+            }
+            DecodeInstr::FailInvalidBool { value_reg } => {
+                let value = read_reg_u32(&regs, value_reg as usize)? as u8;
+                let offset = reader.offset().saturating_sub(1);
+                return Err(Error::InvalidBool { offset, value });
             }
             DecodeInstr::ReadScalar { op, dst } => {
                 let slot = regs

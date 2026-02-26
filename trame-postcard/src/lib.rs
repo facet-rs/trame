@@ -99,6 +99,9 @@ fn compile_struct_plan(
             ReadScalarOp::VarintU32 => {
                 emit_varint_u32_read(&mut instructions, idx as u8, tmp_byte_reg, tmp_data_reg);
             }
+            ReadScalarOp::BoolByte01 => {
+                emit_bool_byte01_read(&mut instructions, idx as u8, tmp_byte_reg, tmp_data_reg);
+            }
             _ => instructions.push(DecodeInstr::ReadScalar { op, dst: idx as u8 }),
         }
         instructions.push(DecodeInstr::WriteFieldFromReg {
@@ -163,6 +166,29 @@ fn emit_varint_u32_read(instructions: &mut Vec<DecodeInstr>, dst: u8, tmp_byte: 
     }
 }
 
+fn emit_bool_byte01_read(instructions: &mut Vec<DecodeInstr>, dst: u8, tmp_byte: u8, tmp_data: u8) {
+    instructions.push(DecodeInstr::ReadInputByte { dst: tmp_byte });
+    instructions.push(DecodeInstr::AndImmU32 {
+        dst: tmp_data,
+        src: tmp_byte,
+        imm: 0xfe,
+    });
+    let jump_idx = instructions.len();
+    instructions.push(DecodeInstr::JumpIfRegZero {
+        src: tmp_data,
+        target: usize::MAX,
+    });
+    instructions.push(DecodeInstr::FailInvalidBool {
+        value_reg: tmp_byte,
+    });
+    let ok_target = instructions.len();
+    instructions.push(DecodeInstr::MoveRegU32 { dst, src: tmp_byte });
+    match &mut instructions[jump_idx] {
+        DecodeInstr::JumpIfRegZero { target, .. } => *target = ok_target,
+        _ => unreachable!("jump slot should always point to JumpIfRegZero"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,7 +235,7 @@ mod tests {
     fn compile_is_shape_driven_for_multiple_fields() {
         let plan = compile_for::<Demo3>().expect("compile should succeed");
         assert_eq!(plan.program.register_count, 5);
-        assert_eq!(plan.program.instructions.len(), 31);
+        assert_eq!(plan.program.instructions.len(), 35);
     }
 
     #[test]

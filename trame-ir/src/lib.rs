@@ -66,11 +66,14 @@ impl ReadScalarOp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodeInstr {
     SetRegU32 { dst: u8, value: u32 },
+    MoveRegU32 { dst: u8, src: u8 },
     ReadInputByte { dst: u8 },
     AndImmU32 { dst: u8, src: u8, imm: u32 },
     ShlImmU32 { dst: u8, src: u8, shift: u8 },
     OrU32 { dst: u8, lhs: u8, rhs: u8 },
+    JumpIfRegZero { src: u8, target: usize },
     JumpIfByteHighBitClear { src: u8, target: usize },
+    FailInvalidBool { value_reg: u8 },
     ReadScalar { op: ReadScalarOp, dst: u8 },
     WriteFieldFromReg { field: u32, src: u8 },
     RequireEof,
@@ -103,6 +106,9 @@ impl DecodeProgram {
                         dst, value
                     );
                 }
+                DecodeInstr::MoveRegU32 { dst, src } => {
+                    let _ = writeln!(&mut out, "    (move-reg-u32 (dst r{}) (src r{}))", dst, src);
+                }
                 DecodeInstr::ReadInputByte { dst } => {
                     let _ = writeln!(&mut out, "    (read-input-byte (dst r{}))", dst);
                 }
@@ -127,11 +133,25 @@ impl DecodeProgram {
                         dst, lhs, rhs
                     );
                 }
+                DecodeInstr::JumpIfRegZero { src, target } => {
+                    let _ = writeln!(
+                        &mut out,
+                        "    (jump-if-reg-zero (src r{}) (target {}))",
+                        src, target
+                    );
+                }
                 DecodeInstr::JumpIfByteHighBitClear { src, target } => {
                     let _ = writeln!(
                         &mut out,
                         "    (jump-if-byte-high-bit-clear (src r{}) (target {}))",
                         src, target
+                    );
+                }
+                DecodeInstr::FailInvalidBool { value_reg } => {
+                    let _ = writeln!(
+                        &mut out,
+                        "    (fail-invalid-bool (value-reg r{}))",
+                        value_reg
                     );
                 }
                 DecodeInstr::ReadScalar { op, dst } => {

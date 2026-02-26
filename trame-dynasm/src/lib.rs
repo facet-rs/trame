@@ -509,6 +509,11 @@ impl DynasmCompiledProgram {
                 idx = next_idx;
                 continue;
             }
+            if let Some((op, next_idx)) = Self::match_lowered_bool_byte01(plan, idx) {
+                ops.push(op);
+                idx = next_idx;
+                continue;
+            }
             match (*instr, plan.program.instructions.get(idx + 1).copied()) {
                 (
                     DecodeInstr::ReadScalar { op, dst },
@@ -650,6 +655,74 @@ impl DynasmCompiledProgram {
                 offset: field_plan.offset,
             },
             idx + 1,
+        ))
+    }
+
+    fn match_lowered_bool_byte01(plan: &StructPlan, start: usize) -> Option<(JitDynasmOp, usize)> {
+        let DecodeInstr::ReadInputByte { dst: byte_reg } = *plan.program.instructions.get(start)?
+        else {
+            return None;
+        };
+        let DecodeInstr::AndImmU32 {
+            dst: mask_reg,
+            src: mask_src,
+            imm,
+        } = *plan.program.instructions.get(start + 1)?
+        else {
+            return None;
+        };
+        if mask_src != byte_reg || imm != 0xfe {
+            return None;
+        }
+        let DecodeInstr::JumpIfRegZero {
+            src: jump_src,
+            target,
+        } = *plan.program.instructions.get(start + 2)?
+        else {
+            return None;
+        };
+        if jump_src != mask_reg {
+            return None;
+        }
+        let DecodeInstr::FailInvalidBool { value_reg } =
+            *plan.program.instructions.get(start + 3)?
+        else {
+            return None;
+        };
+        if value_reg != byte_reg {
+            return None;
+        }
+        let DecodeInstr::MoveRegU32 {
+            dst: value_dst,
+            src: value_src,
+        } = *plan.program.instructions.get(start + 4)?
+        else {
+            return None;
+        };
+        if value_src != byte_reg {
+            return None;
+        }
+        if target != start + 4 {
+            return None;
+        }
+        let DecodeInstr::WriteFieldFromReg { field, src } =
+            *plan.program.instructions.get(start + 5)?
+        else {
+            return None;
+        };
+        if src != value_dst {
+            return None;
+        }
+        let field_plan = plan.field_plans.get(field as usize)?;
+        if field_plan.kind != ScalarKind::Bool {
+            return None;
+        }
+        Some((
+            JitDynasmOp::ReadWriteBool {
+                field,
+                offset: field_plan.offset,
+            },
+            start + 6,
         ))
     }
 }

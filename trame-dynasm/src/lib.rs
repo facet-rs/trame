@@ -175,6 +175,19 @@ struct StringWordOffsets {
 }
 
 #[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy)]
+struct VecStringEmitConfig {
+    o: JitContextOffsets,
+    field_offset: usize,
+    helper_alloc_bytes: usize,
+    dangling_u8_ptr: u64,
+    string_word_offsets: StringWordOffsets,
+    err_elem_eof: dynasmrt::DynamicLabel,
+    err_elem_invalid_utf8: dynasmrt::DynamicLabel,
+    elem_fail_label: dynasmrt::DynamicLabel,
+}
+
+#[cfg(target_arch = "aarch64")]
 fn jit_string_word_offsets() -> Option<StringWordOffsets> {
     if core::mem::size_of::<String>() != 3 * core::mem::size_of::<usize>() {
         return None;
@@ -1199,16 +1212,20 @@ impl DynasmTrampoline {
                     emit_aarch64_decode_u32(&mut ops, err_elem_eof, err_elem_overflow);
                     emit_aarch64_vec_write_string_from_len(
                         &mut ops,
-                        o,
-                        offset,
-                        helper_alloc_bytes,
-                        dangling_u8_ptr,
-                        string_ptr_off,
-                        string_len_off,
-                        string_cap_off,
-                        err_elem_eof,
-                        err_elem_invalid_utf8,
-                        elem_fail_label,
+                        VecStringEmitConfig {
+                            o,
+                            field_offset: offset,
+                            helper_alloc_bytes,
+                            dangling_u8_ptr,
+                            string_word_offsets: StringWordOffsets {
+                                ptr: string_ptr_off,
+                                len: string_len_off,
+                                cap: string_cap_off,
+                            },
+                            err_elem_eof,
+                            err_elem_invalid_utf8,
+                            elem_fail_label,
+                        },
                     );
                 }
             }
@@ -1570,17 +1587,19 @@ fn emit_aarch64_decode_u32(
 #[cfg(target_arch = "aarch64")]
 fn emit_aarch64_vec_write_string_from_len(
     ops: &mut dynasmrt::aarch64::Assembler,
-    o: JitContextOffsets,
-    field_offset: usize,
-    helper_alloc_bytes: usize,
-    dangling_u8_ptr: u64,
-    string_ptr_off: u32,
-    string_len_off: u32,
-    string_cap_off: u32,
-    err_elem_eof: dynasmrt::DynamicLabel,
-    err_elem_invalid_utf8: dynasmrt::DynamicLabel,
-    elem_fail_label: dynasmrt::DynamicLabel,
+    cfg: VecStringEmitConfig,
 ) {
+    let o = cfg.o;
+    let field_offset = cfg.field_offset;
+    let helper_alloc_bytes = cfg.helper_alloc_bytes;
+    let dangling_u8_ptr = cfg.dangling_u8_ptr;
+    let string_ptr_off = cfg.string_word_offsets.ptr;
+    let string_len_off = cfg.string_word_offsets.len;
+    let string_cap_off = cfg.string_word_offsets.cap;
+    let err_elem_eof = cfg.err_elem_eof;
+    let err_elem_invalid_utf8 = cfg.err_elem_invalid_utf8;
+    let elem_fail_label = cfg.elem_fail_label;
+
     let string_zero = ops.new_dynamic_label();
     let string_store = ops.new_dynamic_label();
     let copy_qword_loop = ops.new_dynamic_label();

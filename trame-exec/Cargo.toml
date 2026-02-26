@@ -26,6 +26,7 @@ trame-dynasm = { workspace = true, optional = true }
 facet.workspace = true
 facet-postcard.workspace = true
 trame-postcard.workspace = true
+trame-json.workspace = true
 
 [lints]
 workspace = true

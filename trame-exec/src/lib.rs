@@ -74,6 +74,19 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    #[test]
+    fn interpreter_backend_decodes_json_plan() {
+        let expected = Demo3 {
+            id: 7,
+            name: "alice".into(),
+            ok: true,
+        };
+        let input = br#"{ "id": 7, "name": "alice", "ok": true }"#;
+        let plan = trame_json::compile_for::<Demo3>().expect("compile");
+        let actual: Demo3 = decode(&plan, input, BackendKind::Interpreter).expect("decode");
+        assert_eq!(actual, expected);
+    }
+
     #[cfg(feature = "dynasm-rt")]
     #[test]
     fn dynasm_backend_matches_interpreter() {

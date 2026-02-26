@@ -31,6 +31,7 @@ trame-runtime = { path = "trame-runtime", version = "0.1.0" }
 trame-solver = { path = "trame-solver", version = "0.1.0" }
 trame-ir = { path = "trame-ir", version = "0.1.0" }
 trame-postcard = { path = "trame-postcard", version = "0.1.0" }
+trame-json = { path = "trame-json", version = "0.1.0" }
 trame-interpreter = { path = "trame-interpreter", version = "0.1.0" }
 trame-dynasm = { path = "trame-dynasm", version = "0.1.0" }
 # third-party deps
@@ -38,6 +39,7 @@ creusot-std = { git = "https://github.com/creusot-rs/creusot", package = "creuso
 facet-core = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43.2" }
 facet = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43.2" }
 facet-postcard = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43.2" }
+facet-json = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43.2" }
 smallvec = "2.0.0-alpha.12"
 afl = "0.17"
 arbitrary = { version = "1", features = ["derive"] }

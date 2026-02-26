@@ -65,6 +65,8 @@ impl ReadScalarOp {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodeInstr {
+    SkipJsonWhitespace,
+    ExpectInputByte { value: u8 },
     SetRegU32 { dst: u8, value: u32 },
     MoveRegU32 { dst: u8, src: u8 },
     ReadInputByte { dst: u8 },
@@ -102,6 +104,12 @@ impl DecodeProgram {
         let _ = writeln!(&mut out, "  (instructions");
         for instr in &self.instructions {
             match *instr {
+                DecodeInstr::SkipJsonWhitespace => {
+                    let _ = writeln!(&mut out, "    (skip-json-whitespace)");
+                }
+                DecodeInstr::ExpectInputByte { value } => {
+                    let _ = writeln!(&mut out, "    (expect-input-byte (value {}))", value);
+                }
                 DecodeInstr::SetRegU32 { dst, value } => {
                     let _ = writeln!(
                         &mut out,

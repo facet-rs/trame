@@ -82,8 +82,10 @@ fn compile_struct_plan(
         });
     };
 
-    let mut instructions = Vec::with_capacity(st.fields.len() * 2 + 1);
+    let mut instructions = Vec::with_capacity(st.fields.len() * 12 + 4);
     let mut field_plans = Vec::with_capacity(st.fields.len());
+    instructions.push(DecodeInstr::SkipJsonWhitespace);
+    instructions.push(DecodeInstr::ExpectInputByte { value: b'{' });
     for (idx, field) in st.fields.iter().enumerate() {
         let field_shape = field.shape.get();
         let Some((kind, op)) = scalar_meta_for_shape(field_shape) else {
@@ -93,16 +95,30 @@ fn compile_struct_plan(
                 type_name: field_shape.type_identifier,
             });
         };
+        instructions.push(DecodeInstr::SkipJsonWhitespace);
+        instructions.push(DecodeInstr::ExpectInputByte { value: b'"' });
+        for &byte in field.name.as_bytes() {
+            instructions.push(DecodeInstr::ExpectInputByte { value: byte });
+        }
+        instructions.push(DecodeInstr::ExpectInputByte { value: b'"' });
+        instructions.push(DecodeInstr::SkipJsonWhitespace);
+        instructions.push(DecodeInstr::ExpectInputByte { value: b':' });
         instructions.push(DecodeInstr::ReadScalar { op, dst: idx as u8 });
         instructions.push(DecodeInstr::WriteFieldFromReg {
             field: idx as u32,
             src: idx as u8,
         });
+        if idx + 1 != st.fields.len() {
+            instructions.push(DecodeInstr::SkipJsonWhitespace);
+            instructions.push(DecodeInstr::ExpectInputByte { value: b',' });
+        }
         field_plans.push(StructFieldPlan {
             kind,
             offset: field.offset,
         });
     }
+    instructions.push(DecodeInstr::SkipJsonWhitespace);
+    instructions.push(DecodeInstr::ExpectInputByte { value: b'}' });
     if require_eof {
         instructions.push(DecodeInstr::RequireEof);
     }
@@ -185,9 +201,9 @@ mod tests {
     }
 
     #[test]
-    fn interpreter_decodes_scalar_stream_for_json_ops() {
+    fn interpreter_decodes_object_for_json_ops() {
         let plan = compile_for::<Demo3>().expect("json compile");
-        let input = br#"42 "alice" true"#;
+        let input = br#"{"id":42,"name":"alice","ok":true}"#;
         let decoded: Demo3 = trame_interpreter::decode(&plan, input).expect("decode");
         assert_eq!(
             decoded,
@@ -202,7 +218,7 @@ mod tests {
     #[test]
     fn interpreter_decodes_utf8_quoted_string() {
         let plan = compile_for::<Demo>().expect("json compile");
-        let input = "7 \"héllo\"".as_bytes();
+        let input = r#"{ "id": 7, "name": "héllo" }"#.as_bytes();
         let decoded: Demo = trame_interpreter::decode(&plan, input).expect("decode");
         assert_eq!(
             decoded,

@@ -156,6 +156,14 @@ impl<'a> Reader<'a> {
         }
         Err(Error::ShapeMismatch)
     }
+
+    fn expect_input_byte(&mut self, expected: u8) -> Result<(), Error> {
+        let found = self.read_byte()?;
+        if found == expected {
+            return Ok(());
+        }
+        Err(Error::ShapeMismatch)
+    }
 }
 
 fn write_field_from_reg(
@@ -344,6 +352,11 @@ where
     let mut pc = 0usize;
     while let Some(instr) = plan.program.instructions.get(pc).copied() {
         let step = match instr {
+            DecodeInstr::SkipJsonWhitespace => {
+                reader.skip_json_ws();
+                Ok(())
+            }
+            DecodeInstr::ExpectInputByte { value } => reader.expect_input_byte(value),
             DecodeInstr::SetRegU32 { dst, value } => {
                 let slot = regs
                     .get_mut(dst as usize)

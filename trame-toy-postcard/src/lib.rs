@@ -899,6 +899,103 @@ where
 }
 
 #[cfg(feature = "dynasm-rt")]
+unsafe extern "C" fn jit_op_read_write_field_u32<T>(ctx: *mut c_void, arg1: u64, arg2: u64) -> i32
+where
+    T: Facet<'static>,
+{
+    let ctx = unsafe { jit_ctx::<T>(ctx) };
+    if ctx.failed {
+        return 0;
+    }
+    let field = arg1 as usize;
+    let offset = arg2 as usize;
+    if field >= ctx.field_inits.len() {
+        jit_set_error(ctx, Error::InvalidRegister { reg: field });
+        return 0;
+    }
+    let value = match jit_read_u32(ctx) {
+        Ok(v) => v,
+        Err(e) => {
+            jit_set_error(ctx, e);
+            return 0;
+        }
+    };
+    let dst = unsafe { ctx.out.as_mut_ptr().cast::<u8>().add(offset).cast::<u32>() };
+    unsafe { dst.write(value) };
+    ctx.field_inits[field] = true;
+    0
+}
+
+#[cfg(feature = "dynasm-rt")]
+unsafe extern "C" fn jit_op_read_write_field_bool<T>(ctx: *mut c_void, arg1: u64, arg2: u64) -> i32
+where
+    T: Facet<'static>,
+{
+    let ctx = unsafe { jit_ctx::<T>(ctx) };
+    if ctx.failed {
+        return 0;
+    }
+    let field = arg1 as usize;
+    let offset = arg2 as usize;
+    if field >= ctx.field_inits.len() {
+        jit_set_error(ctx, Error::InvalidRegister { reg: field });
+        return 0;
+    }
+    let value = match jit_read_bool(ctx) {
+        Ok(v) => v,
+        Err(e) => {
+            jit_set_error(ctx, e);
+            return 0;
+        }
+    };
+    let dst = unsafe { ctx.out.as_mut_ptr().cast::<u8>().add(offset).cast::<bool>() };
+    unsafe { dst.write(value) };
+    ctx.field_inits[field] = true;
+    0
+}
+
+#[cfg(feature = "dynasm-rt")]
+unsafe extern "C" fn jit_op_read_write_field_string<T>(
+    ctx: *mut c_void,
+    arg1: u64,
+    arg2: u64,
+) -> i32
+where
+    T: Facet<'static>,
+{
+    let ctx = unsafe { jit_ctx::<T>(ctx) };
+    if ctx.failed {
+        return 0;
+    }
+    let field = arg1 as usize;
+    let offset = arg2 as usize;
+    if field >= ctx.field_inits.len() {
+        jit_set_error(ctx, Error::InvalidRegister { reg: field });
+        return 0;
+    }
+    let value = match jit_read_string(ctx) {
+        Ok(v) => v,
+        Err(e) => {
+            jit_set_error(ctx, e);
+            return 0;
+        }
+    };
+    let dst = unsafe {
+        ctx.out
+            .as_mut_ptr()
+            .cast::<u8>()
+            .add(offset)
+            .cast::<String>()
+    };
+    if ctx.field_inits[field] {
+        unsafe { core::ptr::drop_in_place(dst) };
+    }
+    unsafe { dst.write(value) };
+    ctx.field_inits[field] = true;
+    0
+}
+
+#[cfg(feature = "dynasm-rt")]
 unsafe extern "C" fn jit_op_write_field<T>(ctx: *mut c_void, arg1: u64, arg2: u64) -> i32
 where
     T: Facet<'static>,
@@ -979,7 +1076,41 @@ impl DynasmCompiledProgram {
         T: Facet<'static>,
     {
         let mut calls = Vec::with_capacity(plan.program.instructions.len());
-        for instr in &plan.program.instructions {
+        let mut idx = 0usize;
+        while let Some(instr) = plan.program.instructions.get(idx) {
+            if let (
+                DecodeInstr::ReadScalar { kind, dst },
+                Some(DecodeInstr::WriteFieldFromReg { field, src }),
+            ) = (*instr, plan.program.instructions.get(idx + 1).copied())
+            {
+                if dst == src {
+                    let field_idx = field as usize;
+                    let Some(field_plan) = plan.field_plans.get(field_idx) else {
+                        calls.push(JitCall {
+                            helper: jit_op_read_scalar::<T> as *const () as usize,
+                            arg1: scalar_kind_tag(kind),
+                            arg2: dst as u64,
+                        });
+                        idx += 1;
+                        continue;
+                    };
+                    let helper = match kind {
+                        ScalarKind::U32 => jit_op_read_write_field_u32::<T> as *const () as usize,
+                        ScalarKind::String => {
+                            jit_op_read_write_field_string::<T> as *const () as usize
+                        }
+                        ScalarKind::Bool => jit_op_read_write_field_bool::<T> as *const () as usize,
+                    };
+                    calls.push(JitCall {
+                        helper,
+                        arg1: field as u64,
+                        arg2: field_plan.offset as u64,
+                    });
+                    idx += 2;
+                    continue;
+                }
+            }
+
             let call = match *instr {
                 DecodeInstr::ReadScalar { kind, dst } => JitCall {
                     helper: jit_op_read_scalar::<T> as *const () as usize,
@@ -998,6 +1129,7 @@ impl DynasmCompiledProgram {
                 },
             };
             calls.push(call);
+            idx += 1;
         }
         Self {
             calls,

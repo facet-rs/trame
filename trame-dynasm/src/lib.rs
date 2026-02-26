@@ -1196,221 +1196,19 @@ impl DynasmTrampoline {
                     );
                 }
                 JitDynasmOp::ReadWriteString { offset, .. } => {
-                    let string_zero = ops.new_dynamic_label();
-                    let string_store = ops.new_dynamic_label();
-                    let copy_qword_loop = ops.new_dynamic_label();
-                    let copy_tail_loop = ops.new_dynamic_label();
-                    let copy_done = ops.new_dynamic_label();
-                    let utf8_loop = ops.new_dynamic_label();
-                    let utf8_valid = ops.new_dynamic_label();
-                    let utf8_scalar_start = ops.new_dynamic_label();
-                    let utf8_ascii8_loop = ops.new_dynamic_label();
-                    let utf8_ascii_tail_loop = ops.new_dynamic_label();
-                    let utf8_ascii = ops.new_dynamic_label();
-                    let utf8_two = ops.new_dynamic_label();
-                    let utf8_three = ops.new_dynamic_label();
-                    let utf8_four = ops.new_dynamic_label();
-                    let utf8_three_not_e0 = ops.new_dynamic_label();
-                    let utf8_three_after_ed = ops.new_dynamic_label();
-                    let utf8_four_not_f0 = ops.new_dynamic_label();
-                    let utf8_four_after_f4 = ops.new_dynamic_label();
-                    let utf8_invalid = ops.new_dynamic_label();
                     emit_aarch64_decode_u32(&mut ops, err_elem_eof, err_elem_overflow);
-                    emit_aarch64_load_u64(&mut ops, 17, 0x8080_8080_8080_8080);
-                    dynasm!(ops
-                        ; .arch aarch64
-                        ; mov x13, x7
-                        ; adds x12, x7, x11
-                        ; b.cs =>err_elem_eof
-                        ; cmp x12, x6
-                        ; b.hi =>err_elem_eof
-                        ; mov x14, x12
-                        ; mov x23, x11
-                        ; add x24, x5, x7
-                        ; cbz x23, =>utf8_valid
-                        ; mov x15, #0
-                        ; cmp x23, #8
-                        ; b.lo =>utf8_scalar_start
-                        ; =>utf8_ascii8_loop
-                        ; add x10, x15, #8
-                        ; cmp x10, x23
-                        ; b.hi =>utf8_ascii_tail_loop
-                        ; ldr x9, [x24, x15]
-                        ; and x9, x9, x17
-                        ; cbnz x9, =>utf8_scalar_start
-                        ; mov x15, x10
-                        ; b =>utf8_ascii8_loop
-                        ; =>utf8_ascii_tail_loop
-                        ; cmp x15, x23
-                        ; b.eq =>utf8_valid
-                        ; ldrb w9, [x24, x15]
-                        ; tbnz w9, #7, =>utf8_scalar_start
-                        ; add x15, x15, #1
-                        ; b =>utf8_ascii_tail_loop
-                        ; =>utf8_scalar_start
-                        ; mov x15, #0
-                        ; =>utf8_loop
-                        ; cmp x15, x23
-                        ; b.eq =>utf8_valid
-                        ; ldrb w9, [x24, x15]
-                        ; cmp w9, #0x7f
-                        ; b.ls =>utf8_ascii
-                        ; and w10, w9, #0xE0
-                        ; cmp w10, #0xC0
-                        ; b.eq =>utf8_two
-                        ; and w10, w9, #0xF0
-                        ; cmp w10, #0xE0
-                        ; b.eq =>utf8_three
-                        ; and w10, w9, #0xF8
-                        ; cmp w10, #0xF0
-                        ; b.eq =>utf8_four
-                        ; b =>utf8_invalid
-
-                        ; =>utf8_ascii
-                        ; add x15, x15, #1
-                        ; b =>utf8_loop
-
-                        ; =>utf8_two
-                        ; add x10, x15, #1
-                        ; cmp x10, x23
-                        ; b.hs =>utf8_invalid
-                        ; ldrb w11, [x24, x10]
-                        ; and w12, w11, #0xC0
-                        ; cmp w12, #0x80
-                        ; b.ne =>utf8_invalid
-                        ; cmp w9, #0xC2
-                        ; b.lo =>utf8_invalid
-                        ; add x15, x15, #2
-                        ; b =>utf8_loop
-
-                        ; =>utf8_three
-                        ; add x10, x15, #2
-                        ; cmp x10, x23
-                        ; b.hs =>utf8_invalid
-                        ; add x10, x15, #1
-                        ; ldrb w11, [x24, x10]
-                        ; add x12, x15, #2
-                        ; ldrb w17, [x24, x12]
-                        ; and w10, w11, #0xC0
-                        ; cmp w10, #0x80
-                        ; b.ne =>utf8_invalid
-                        ; and w10, w17, #0xC0
-                        ; cmp w10, #0x80
-                        ; b.ne =>utf8_invalid
-                        ; cmp w9, #0xE0
-                        ; b.ne =>utf8_three_not_e0
-                        ; cmp w11, #0xA0
-                        ; b.lo =>utf8_invalid
-                        ; =>utf8_three_not_e0
-                        ; cmp w9, #0xED
-                        ; b.ne =>utf8_three_after_ed
-                        ; cmp w11, #0xA0
-                        ; b.hs =>utf8_invalid
-                        ; =>utf8_three_after_ed
-                        ; add x15, x15, #3
-                        ; b =>utf8_loop
-
-                        ; =>utf8_four
-                        ; add x10, x15, #3
-                        ; cmp x10, x23
-                        ; b.hs =>utf8_invalid
-                        ; cmp w9, #0xF4
-                        ; b.hi =>utf8_invalid
-                        ; add x10, x15, #1
-                        ; ldrb w11, [x24, x10]
-                        ; add x12, x15, #2
-                        ; ldrb w17, [x24, x12]
-                        ; add x10, x15, #3
-                        ; ldrb w12, [x24, x10]
-                        ; and w10, w11, #0xC0
-                        ; cmp w10, #0x80
-                        ; b.ne =>utf8_invalid
-                        ; and w10, w17, #0xC0
-                        ; cmp w10, #0x80
-                        ; b.ne =>utf8_invalid
-                        ; and w10, w12, #0xC0
-                        ; cmp w10, #0x80
-                        ; b.ne =>utf8_invalid
-                        ; cmp w9, #0xF0
-                        ; b.ne =>utf8_four_not_f0
-                        ; cmp w11, #0x90
-                        ; b.lo =>utf8_invalid
-                        ; =>utf8_four_not_f0
-                        ; cmp w9, #0xF4
-                        ; b.ne =>utf8_four_after_f4
-                        ; cmp w11, #0x90
-                        ; b.hs =>utf8_invalid
-                        ; =>utf8_four_after_f4
-                        ; add x15, x15, #4
-                        ; b =>utf8_loop
-
-                        ; =>utf8_invalid
-                        ; mov x1, x13
-                        ; mov w2, wzr
-                        ; b =>err_elem_invalid_utf8
-
-                        ; =>utf8_valid
-                        ; mov x7, x14
-                        ; ldr x8, [sp]
-                        ; str x14, [x8, #o.pos]
-                        ; cbz x23, =>string_zero
-                        ; mov x0, x23
-                        ; mov x1, #1
-                    );
-                    emit_aarch64_load_u64(&mut ops, 16, helper_alloc_bytes as u64);
-                    dynasm!(ops
-                        ; .arch aarch64
-                        ; blr x16
-                        ; mov x14, x0
-                        ; cbnz x14, >string_alloc_ok
-                        ; mov x1, #0
-                        ; mov w2, wzr
-                    );
-                    emit_aarch64_write_failure(&mut ops, o, JitErrorTag::ShapeMismatch);
-                    dynasm!(ops
-                        ; .arch aarch64
-                        ; b =>elem_fail_label
-                        ; string_alloc_ok:
-                        ; mov x9, #0
-                        ; cmp x23, #8
-                        ; b.lo =>copy_tail_loop
-                        ; =>copy_qword_loop
-                        ; add x10, x9, #8
-                        ; cmp x10, x23
-                        ; b.hi =>copy_tail_loop
-                        ; ldr x11, [x24, x9]
-                        ; str x11, [x14, x9]
-                        ; mov x9, x10
-                        ; b =>copy_qword_loop
-                        ; =>copy_tail_loop
-                        ; cmp x9, x23
-                        ; b.eq =>copy_done
-                        ; ldrb w10, [x24, x9]
-                        ; strb w10, [x14, x9]
-                        ; add x9, x9, #1
-                        ; b =>copy_tail_loop
-                        ; =>copy_done
-                        ; b =>string_store
-                        ; =>string_zero
-                    );
-                    emit_aarch64_load_u64(&mut ops, 14, dangling_u8_ptr);
-                    dynasm!(ops
-                        ; .arch aarch64
-                        ; =>string_store
-                        ; mov x9, x22
-                    );
-                    emit_aarch64_load_u64(&mut ops, 10, offset as u64);
-                    dynasm!(ops
-                        ; .arch aarch64
-                        ; add x9, x9, x10
-                        ; str x14, [x9, #string_ptr_off]
-                        ; str x23, [x9, #string_len_off]
-                        ; str x23, [x9, #string_cap_off]
-                        ; ldr x8, [sp]
-                        ; ldr x5, [x8, #o.input_ptr]
-                        ; ldr x6, [x8, #o.input_len]
-                        ; ldr x7, [x8, #o.pos]
-                        ; add x21, x21, #1
+                    emit_aarch64_vec_write_string_from_len(
+                        &mut ops,
+                        o,
+                        offset,
+                        helper_alloc_bytes,
+                        dangling_u8_ptr,
+                        string_ptr_off,
+                        string_len_off,
+                        string_cap_off,
+                        err_elem_eof,
+                        err_elem_invalid_utf8,
+                        elem_fail_label,
                     );
                 }
             }
@@ -1766,6 +1564,238 @@ fn emit_aarch64_decode_u32(
         ; b =>err_overflow
 
         ; =>done
+    );
+}
+
+#[cfg(target_arch = "aarch64")]
+fn emit_aarch64_vec_write_string_from_len(
+    ops: &mut dynasmrt::aarch64::Assembler,
+    o: JitContextOffsets,
+    field_offset: usize,
+    helper_alloc_bytes: usize,
+    dangling_u8_ptr: u64,
+    string_ptr_off: u32,
+    string_len_off: u32,
+    string_cap_off: u32,
+    err_elem_eof: dynasmrt::DynamicLabel,
+    err_elem_invalid_utf8: dynasmrt::DynamicLabel,
+    elem_fail_label: dynasmrt::DynamicLabel,
+) {
+    let string_zero = ops.new_dynamic_label();
+    let string_store = ops.new_dynamic_label();
+    let copy_qword_loop = ops.new_dynamic_label();
+    let copy_tail_loop = ops.new_dynamic_label();
+    let copy_done = ops.new_dynamic_label();
+    let utf8_loop = ops.new_dynamic_label();
+    let utf8_valid = ops.new_dynamic_label();
+    let utf8_scalar_start = ops.new_dynamic_label();
+    let utf8_ascii8_loop = ops.new_dynamic_label();
+    let utf8_ascii_tail_loop = ops.new_dynamic_label();
+    let utf8_ascii = ops.new_dynamic_label();
+    let utf8_two = ops.new_dynamic_label();
+    let utf8_three = ops.new_dynamic_label();
+    let utf8_four = ops.new_dynamic_label();
+    let utf8_three_not_e0 = ops.new_dynamic_label();
+    let utf8_three_after_ed = ops.new_dynamic_label();
+    let utf8_four_not_f0 = ops.new_dynamic_label();
+    let utf8_four_after_f4 = ops.new_dynamic_label();
+    let utf8_invalid = ops.new_dynamic_label();
+
+    emit_aarch64_load_u64(ops, 17, 0x8080_8080_8080_8080);
+    dynasm!(ops
+        ; .arch aarch64
+        ; mov x13, x7
+        ; adds x12, x7, x11
+        ; b.cs =>err_elem_eof
+        ; cmp x12, x6
+        ; b.hi =>err_elem_eof
+        ; mov x14, x12
+        ; mov x23, x11
+        ; add x24, x5, x7
+        ; cbz x23, =>utf8_valid
+        ; mov x15, #0
+        ; cmp x23, #8
+        ; b.lo =>utf8_scalar_start
+        ; =>utf8_ascii8_loop
+        ; add x10, x15, #8
+        ; cmp x10, x23
+        ; b.hi =>utf8_ascii_tail_loop
+        ; ldr x9, [x24, x15]
+        ; and x9, x9, x17
+        ; cbnz x9, =>utf8_scalar_start
+        ; mov x15, x10
+        ; b =>utf8_ascii8_loop
+        ; =>utf8_ascii_tail_loop
+        ; cmp x15, x23
+        ; b.eq =>utf8_valid
+        ; ldrb w9, [x24, x15]
+        ; tbnz w9, #7, =>utf8_scalar_start
+        ; add x15, x15, #1
+        ; b =>utf8_ascii_tail_loop
+        ; =>utf8_scalar_start
+        ; mov x15, #0
+        ; =>utf8_loop
+        ; cmp x15, x23
+        ; b.eq =>utf8_valid
+        ; ldrb w9, [x24, x15]
+        ; cmp w9, #0x7f
+        ; b.ls =>utf8_ascii
+        ; and w10, w9, #0xE0
+        ; cmp w10, #0xC0
+        ; b.eq =>utf8_two
+        ; and w10, w9, #0xF0
+        ; cmp w10, #0xE0
+        ; b.eq =>utf8_three
+        ; and w10, w9, #0xF8
+        ; cmp w10, #0xF0
+        ; b.eq =>utf8_four
+        ; b =>utf8_invalid
+
+        ; =>utf8_ascii
+        ; add x15, x15, #1
+        ; b =>utf8_loop
+
+        ; =>utf8_two
+        ; add x10, x15, #1
+        ; cmp x10, x23
+        ; b.hs =>utf8_invalid
+        ; ldrb w11, [x24, x10]
+        ; and w12, w11, #0xC0
+        ; cmp w12, #0x80
+        ; b.ne =>utf8_invalid
+        ; cmp w9, #0xC2
+        ; b.lo =>utf8_invalid
+        ; add x15, x15, #2
+        ; b =>utf8_loop
+
+        ; =>utf8_three
+        ; add x10, x15, #2
+        ; cmp x10, x23
+        ; b.hs =>utf8_invalid
+        ; add x10, x15, #1
+        ; ldrb w11, [x24, x10]
+        ; add x12, x15, #2
+        ; ldrb w17, [x24, x12]
+        ; and w10, w11, #0xC0
+        ; cmp w10, #0x80
+        ; b.ne =>utf8_invalid
+        ; and w10, w17, #0xC0
+        ; cmp w10, #0x80
+        ; b.ne =>utf8_invalid
+        ; cmp w9, #0xE0
+        ; b.ne =>utf8_three_not_e0
+        ; cmp w11, #0xA0
+        ; b.lo =>utf8_invalid
+        ; =>utf8_three_not_e0
+        ; cmp w9, #0xED
+        ; b.ne =>utf8_three_after_ed
+        ; cmp w11, #0xA0
+        ; b.hs =>utf8_invalid
+        ; =>utf8_three_after_ed
+        ; add x15, x15, #3
+        ; b =>utf8_loop
+
+        ; =>utf8_four
+        ; add x10, x15, #3
+        ; cmp x10, x23
+        ; b.hs =>utf8_invalid
+        ; cmp w9, #0xF4
+        ; b.hi =>utf8_invalid
+        ; add x10, x15, #1
+        ; ldrb w11, [x24, x10]
+        ; add x12, x15, #2
+        ; ldrb w17, [x24, x12]
+        ; add x10, x15, #3
+        ; ldrb w12, [x24, x10]
+        ; and w10, w11, #0xC0
+        ; cmp w10, #0x80
+        ; b.ne =>utf8_invalid
+        ; and w10, w17, #0xC0
+        ; cmp w10, #0x80
+        ; b.ne =>utf8_invalid
+        ; and w10, w12, #0xC0
+        ; cmp w10, #0x80
+        ; b.ne =>utf8_invalid
+        ; cmp w9, #0xF0
+        ; b.ne =>utf8_four_not_f0
+        ; cmp w11, #0x90
+        ; b.lo =>utf8_invalid
+        ; =>utf8_four_not_f0
+        ; cmp w9, #0xF4
+        ; b.ne =>utf8_four_after_f4
+        ; cmp w11, #0x90
+        ; b.hs =>utf8_invalid
+        ; =>utf8_four_after_f4
+        ; add x15, x15, #4
+        ; b =>utf8_loop
+
+        ; =>utf8_invalid
+        ; mov x1, x13
+        ; mov w2, wzr
+        ; b =>err_elem_invalid_utf8
+
+        ; =>utf8_valid
+        ; mov x7, x14
+        ; ldr x8, [sp]
+        ; str x14, [x8, #o.pos]
+        ; cbz x23, =>string_zero
+        ; mov x0, x23
+        ; mov x1, #1
+    );
+    emit_aarch64_load_u64(ops, 16, helper_alloc_bytes as u64);
+    dynasm!(ops
+        ; .arch aarch64
+        ; blr x16
+        ; mov x14, x0
+        ; cbnz x14, >string_alloc_ok
+        ; mov x1, #0
+        ; mov w2, wzr
+    );
+    emit_aarch64_write_failure(ops, o, JitErrorTag::ShapeMismatch);
+    dynasm!(ops
+        ; .arch aarch64
+        ; b =>elem_fail_label
+        ; string_alloc_ok:
+        ; mov x9, #0
+        ; cmp x23, #8
+        ; b.lo =>copy_tail_loop
+        ; =>copy_qword_loop
+        ; add x10, x9, #8
+        ; cmp x10, x23
+        ; b.hi =>copy_tail_loop
+        ; ldr x11, [x24, x9]
+        ; str x11, [x14, x9]
+        ; mov x9, x10
+        ; b =>copy_qword_loop
+        ; =>copy_tail_loop
+        ; cmp x9, x23
+        ; b.eq =>copy_done
+        ; ldrb w10, [x24, x9]
+        ; strb w10, [x14, x9]
+        ; add x9, x9, #1
+        ; b =>copy_tail_loop
+        ; =>copy_done
+        ; b =>string_store
+        ; =>string_zero
+    );
+    emit_aarch64_load_u64(ops, 14, dangling_u8_ptr);
+    dynasm!(ops
+        ; .arch aarch64
+        ; =>string_store
+        ; mov x9, x22
+    );
+    emit_aarch64_load_u64(ops, 10, field_offset as u64);
+    dynasm!(ops
+        ; .arch aarch64
+        ; add x9, x9, x10
+        ; str x14, [x9, #string_ptr_off]
+        ; str x23, [x9, #string_len_off]
+        ; str x23, [x9, #string_cap_off]
+        ; ldr x8, [sp]
+        ; ldr x5, [x8, #o.input_ptr]
+        ; ldr x6, [x8, #o.input_len]
+        ; ldr x7, [x8, #o.pos]
+        ; add x21, x21, #1
     );
 }
 

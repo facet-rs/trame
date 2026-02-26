@@ -1,5 +1,5 @@
 use facet_core::{ConstTypeId, Def, Facet, Shape, Type, UserType};
-use trame::{LRuntime, Op, Path, Source, Trame, TrameError};
+use trame::TrameError;
 
 #[cfg(feature = "dynasm-rt")]
 use core::ffi::c_void;
@@ -138,6 +138,7 @@ impl PostcardDecodeProgram {
 pub struct PostcardStructPlan {
     shape: &'static Shape,
     program: PostcardDecodeProgram,
+    field_plans: Vec<StructFieldPlan>,
 }
 
 /// Compile-time validated decode plan for postcard `Vec<Struct>` slices.
@@ -145,6 +146,12 @@ pub struct PostcardStructPlan {
 pub struct PostcardVecStructPlan {
     shape: &'static Shape,
     element_plan: PostcardStructPlan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StructFieldPlan {
+    kind: ScalarKind,
+    offset: usize,
 }
 
 // t[impl format.exec.backend-interface-stable]
@@ -525,6 +532,58 @@ fn scalar_kind_for_shape(shape: &'static Shape) -> Option<ScalarKind> {
     None
 }
 
+fn write_field_from_reg(
+    out_ptr: *mut u8,
+    field_plans: &[StructFieldPlan],
+    field_inits: &mut [bool],
+    field_idx: usize,
+    src_reg_idx: usize,
+    reg: &mut RegValue,
+) -> Result<(), Error> {
+    let field = field_plans
+        .get(field_idx)
+        .ok_or(Error::InvalidRegister { reg: field_idx })?;
+    let init_flag = field_inits
+        .get_mut(field_idx)
+        .ok_or(Error::InvalidRegister { reg: field_idx })?;
+    let dst = unsafe { out_ptr.add(field.offset) };
+
+    match (field.kind, reg) {
+        (ScalarKind::U32, RegValue::U32(value)) => {
+            unsafe { (dst as *mut u32).write(*value) };
+        }
+        (ScalarKind::Bool, RegValue::Bool(value)) => {
+            unsafe { (dst as *mut bool).write(*value) };
+        }
+        (ScalarKind::String, RegValue::String(value)) => {
+            if *init_flag {
+                unsafe { core::ptr::drop_in_place(dst as *mut String) };
+            }
+            unsafe { (dst as *mut String).write(core::mem::take(value)) };
+        }
+        (_, RegValue::Unset) => return Err(Error::RegisterUnset { reg: src_reg_idx }),
+        _ => return Err(Error::ShapeMismatch),
+    }
+    *init_flag = true;
+    Ok(())
+}
+
+unsafe fn drop_initialized_fields(
+    out_ptr: *mut u8,
+    field_plans: &[StructFieldPlan],
+    field_inits: &[bool],
+) {
+    for (field, init) in field_plans.iter().zip(field_inits.iter()) {
+        if !*init {
+            continue;
+        }
+        if field.kind == ScalarKind::String {
+            let dst = unsafe { out_ptr.add(field.offset) };
+            unsafe { core::ptr::drop_in_place(dst as *mut String) };
+        }
+    }
+}
+
 fn compile_struct_plan(
     shape: &'static Shape,
     require_eof: bool,
@@ -536,6 +595,7 @@ fn compile_struct_plan(
     };
 
     let mut instructions = Vec::with_capacity(st.fields.len() * 2 + 1);
+    let mut field_plans = Vec::with_capacity(st.fields.len());
     for (idx, field) in st.fields.iter().enumerate() {
         let field_shape = field.shape.get();
         let Some(kind) = scalar_kind_for_shape(field_shape) else {
@@ -553,6 +613,10 @@ fn compile_struct_plan(
             field: idx as u32,
             src: idx as u8,
         });
+        field_plans.push(StructFieldPlan {
+            kind,
+            offset: field.offset,
+        });
     }
     if require_eof {
         instructions.push(DecodeInstr::RequireEof);
@@ -563,20 +627,25 @@ fn compile_struct_plan(
         register_count: st.fields.len(),
         instructions,
     };
-    Ok(PostcardStructPlan { shape, program })
+    Ok(PostcardStructPlan {
+        shape,
+        program,
+        field_plans,
+    })
 }
 
 fn decode_struct_with_reader<T>(
-    program: &PostcardDecodeProgram,
+    plan: &PostcardStructPlan,
     reader: &mut Reader<'_>,
 ) -> Result<T, Error>
 where
     T: Facet<'static>,
 {
-    let mut regs = vec![RegValue::Unset; program.register_count];
-    let mut trame = Trame::<LRuntime>::alloc::<T>()?;
-    for instr in &program.instructions {
-        match *instr {
+    let mut regs = vec![RegValue::Unset; plan.program.register_count];
+    let mut field_inits = vec![false; plan.field_plans.len()];
+    let mut out = core::mem::MaybeUninit::<T>::uninit();
+    for instr in &plan.program.instructions {
+        let step = match *instr {
             DecodeInstr::ReadScalar { kind, dst } => {
                 let slot = regs
                     .get_mut(dst as usize)
@@ -592,25 +661,20 @@ where
                     }
                     ScalarKind::Bool => RegValue::Bool(reader.read_bool()?),
                 };
+                Ok(())
             }
             DecodeInstr::WriteFieldFromReg { field, src } => {
                 let reg = regs
-                    .get(src as usize)
+                    .get_mut(src as usize)
                     .ok_or(Error::InvalidRegister { reg: src as usize })?;
-                match reg {
-                    RegValue::Unset => {
-                        return Err(Error::RegisterUnset { reg: src as usize });
-                    }
-                    RegValue::U32(value) => {
-                        apply_field_u32(&mut trame, field, *value)?;
-                    }
-                    RegValue::String(value) => {
-                        apply_field_string(&mut trame, field, value.clone())?;
-                    }
-                    RegValue::Bool(value) => {
-                        apply_field_bool(&mut trame, field, *value)?;
-                    }
-                }
+                write_field_from_reg(
+                    out.as_mut_ptr().cast(),
+                    &plan.field_plans,
+                    &mut field_inits,
+                    field as usize,
+                    src as usize,
+                    reg,
+                )
             }
             DecodeInstr::RequireEof => {
                 if !reader.is_eof() {
@@ -618,47 +682,23 @@ where
                         offset: reader.offset(),
                     });
                 }
+                Ok(())
             }
+        };
+        if let Err(err) = step {
+            unsafe {
+                drop_initialized_fields(out.as_mut_ptr().cast(), &plan.field_plans, &field_inits);
+            }
+            return Err(err);
         }
     }
-
-    let hv = trame.build()?;
-    hv.materialize::<T>().map_err(Error::Trame)
-}
-
-fn apply_field_u32(trame: &mut Trame<'_, LRuntime>, field: u32, value: u32) -> Result<(), Error> {
-    let mut src = value;
-    trame
-        .apply(Op::Set {
-            dst: Path::field(field),
-            src: Source::from_ref(&mut src),
-        })
-        .map_err(Error::Trame)
-}
-
-fn apply_field_bool(trame: &mut Trame<'_, LRuntime>, field: u32, value: bool) -> Result<(), Error> {
-    let mut src = value;
-    trame
-        .apply(Op::Set {
-            dst: Path::field(field),
-            src: Source::from_ref(&mut src),
-        })
-        .map_err(Error::Trame)
-}
-
-fn apply_field_string(
-    trame: &mut Trame<'_, LRuntime>,
-    field: u32,
-    mut value: String,
-) -> Result<(), Error> {
-    trame
-        .apply(Op::Set {
-            dst: Path::field(field),
-            src: Source::from_ref(&mut value),
-        })
-        .map_err(Error::Trame)?;
-    core::mem::forget(value);
-    Ok(())
+    if let Some(missing) = field_inits.iter().position(|init| !*init) {
+        unsafe {
+            drop_initialized_fields(out.as_mut_ptr().cast(), &plan.field_plans, &field_inits);
+        }
+        return Err(Error::RegisterUnset { reg: missing });
+    }
+    Ok(unsafe { out.assume_init() })
 }
 
 fn decode_with_interpreter<T>(plan: &PostcardStructPlan, input: &[u8]) -> Result<T, Error>
@@ -666,7 +706,7 @@ where
     T: Facet<'static>,
 {
     let mut reader = Reader::new(input);
-    decode_struct_with_reader::<T>(&plan.program, &mut reader)
+    decode_struct_with_reader::<T>(plan, &mut reader)
 }
 
 fn decode_vec_with_interpreter<T>(
@@ -681,7 +721,7 @@ where
     let mut out = Vec::with_capacity(len);
     for _ in 0..len {
         out.push(decode_struct_with_reader::<T>(
-            &plan.element_plan.program,
+            &plan.element_plan,
             &mut reader,
         )?);
     }
@@ -700,7 +740,9 @@ struct JitCallContext<T> {
     input_len: usize,
     pos: usize,
     regs: Vec<RegValue>,
-    trame: Option<Trame<'static, LRuntime>>,
+    field_plans_ptr: *const StructFieldPlan,
+    field_plans_len: usize,
+    field_inits: Vec<bool>,
     failed: bool,
     error: MaybeUninit<Error>,
     out: MaybeUninit<T>,
@@ -867,22 +909,23 @@ where
     }
     let field = arg1 as u32;
     let src = arg2 as usize;
-    let Some(reg) = ctx.regs.get(src).cloned() else {
+    let Some(reg) = ctx.regs.get_mut(src) else {
         jit_set_error(ctx, Error::InvalidRegister { reg: src });
         return 0;
     };
-    let Some(trame) = ctx.trame.as_mut() else {
-        jit_set_error(ctx, Error::InvalidRegister { reg: src });
-        return 0;
-    };
-    let result = match reg {
-        RegValue::Unset => Err(Error::RegisterUnset { reg: src }),
-        RegValue::U32(value) => apply_field_u32(trame, field, value),
-        RegValue::String(value) => apply_field_string(trame, field, value),
-        RegValue::Bool(value) => apply_field_bool(trame, field, value),
-    };
+    let field_plans =
+        unsafe { core::slice::from_raw_parts(ctx.field_plans_ptr, ctx.field_plans_len) };
+    let result = write_field_from_reg(
+        ctx.out.as_mut_ptr().cast(),
+        field_plans,
+        &mut ctx.field_inits,
+        field as usize,
+        src,
+        reg,
+    );
     if let Err(e) = result {
         jit_set_error(ctx, e);
+        return 0;
     }
     0
 }
@@ -911,19 +954,15 @@ where
     if ctx.failed {
         return 1;
     }
-    let Some(trame) = ctx.trame.take() else {
-        jit_set_error(ctx, Error::InvalidRegister { reg: 0 });
-        return 1;
-    };
-    match trame.build().and_then(|hv| hv.materialize::<T>()) {
-        Ok(value) => {
-            ctx.out.write(value);
-            0
-        }
-        Err(e) => {
-            jit_set_error(ctx, Error::Trame(e));
+    if let Some(missing) = ctx.field_inits.iter().position(|init| !*init) {
+        if !ctx.failed {
+            jit_set_error(ctx, Error::RegisterUnset { reg: missing });
+            1
+        } else {
             1
         }
+    } else {
+        0
     }
 }
 
@@ -1161,13 +1200,14 @@ fn decode_with_trampoline_at<T>(
 where
     T: Facet<'static>,
 {
-    let trame = Trame::<LRuntime>::alloc::<T>()?;
     let mut ctx = JitCallContext::<T> {
         input_ptr: input.as_ptr(),
         input_len: input.len(),
         pos: start_pos,
         regs: vec![RegValue::Unset; plan.program.register_count],
-        trame: Some(trame),
+        field_plans_ptr: plan.field_plans.as_ptr(),
+        field_plans_len: plan.field_plans.len(),
+        field_inits: vec![false; plan.field_plans.len()],
         failed: false,
         error: MaybeUninit::uninit(),
         out: MaybeUninit::uninit(),
@@ -1176,10 +1216,26 @@ where
     let status = unsafe { trampoline.call((&mut ctx as *mut JitCallContext<T>).cast()) };
     match status {
         0 => Ok((unsafe { ctx.out.assume_init() }, ctx.pos)),
-        1 => Err(unsafe { ctx.error.assume_init() }),
+        1 => {
+            unsafe {
+                drop_initialized_fields(
+                    ctx.out.as_mut_ptr().cast(),
+                    &plan.field_plans,
+                    &ctx.field_inits,
+                );
+            }
+            Err(unsafe { ctx.error.assume_init() })
+        }
         _ => {
+            unsafe {
+                drop_initialized_fields(
+                    ctx.out.as_mut_ptr().cast(),
+                    &plan.field_plans,
+                    &ctx.field_inits,
+                );
+            }
             let mut reader = Reader::new(&input[start_pos..]);
-            let value = decode_struct_with_reader::<T>(&plan.program, &mut reader)?;
+            let value = decode_struct_with_reader::<T>(plan, &mut reader)?;
             Ok((value, start_pos + reader.offset()))
         }
     }

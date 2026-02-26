@@ -3,43 +3,22 @@
 specs (
     {
         name trame
-        include (
-            docs/content/spec/ops.md
-            docs/content/spec/trame-source.md
-            docs/content/spec/vm-ir.md
-            docs/content/spec/exec-jit.md
-        )
+        include (docs/content/spec/trame.md)
         impls (
             {
                 name rust
-                include (
-                    trame/**/*.rs
-                    trame-ir/**/*.rs
-                    trame-postcard/**/*.rs
-                    trame-json/**/*.rs
-                    trame-interpreter/**/*.rs
-                    trame-dynasm/**/*.rs
-                    trame-exec/**/*.rs
-                )
+                include (trame*/**/*.rs)
                 exclude (target/**)
             }
         )
     }
     {
-        name format-layers
-        include (docs/content/spec/format-layers.md)
+        name trame-lang
+        include (docs/content/spec/trame-lang.md)
         impls (
             {
                 name rust
-                include (
-                    trame/**/*.rs
-                    trame-ir/**/*.rs
-                    trame-postcard/**/*.rs
-                    trame-json/**/*.rs
-                    trame-interpreter/**/*.rs
-                    trame-dynasm/**/*.rs
-                    trame-exec/**/*.rs
-                )
+                include (trame*/**/*.rs)
                 exclude (target/**)
             }
         )

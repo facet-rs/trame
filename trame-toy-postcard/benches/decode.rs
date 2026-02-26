@@ -33,7 +33,7 @@ static VEC_PLAN: LazyLock<PostcardVecStructPlan> = LazyLock::new(|| {
 });
 #[cfg(feature = "dynasm-rt")]
 static DYNASM_VEC: LazyLock<DynasmPreparedVec<SampleStruct>> = LazyLock::new(|| {
-    (&*VEC_PLAN)
+    VEC_PLAN
         .prepare_dynasm::<SampleStruct>()
         .expect("dynasm vec prepare should succeed")
 });

@@ -7,7 +7,10 @@ specs (
         impls (
             {
                 name rust
-                include (trame/**/*.rs)
+                include (
+                    trame/**/*.rs
+                    trame-toy-postcard/**/*.rs
+                )
                 exclude (target/**)
             }
         )

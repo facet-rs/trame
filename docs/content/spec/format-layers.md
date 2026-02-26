@@ -4,260 +4,202 @@ insert_anchor_links = "heading"
 weight = 40
 +++
 
-# Typed Layered Decode IR (Shape + Format in One Program)
+# Typed Layer Contracts for trame Runtime IR
 
-This document defines decode-layer architecture boundaries between:
+## Introduction and Context
 
-- shape-driven semantic lowering
-- format-driven lexical/stateful lowering
-- the shared executable IR contract
-- execution backends (interpreter and JIT)
+The trame runtime is a serialization runtime for moving between external wire
+formats and Rust values using facet reflection metadata.
 
-It is a review-first architecture draft. Existing behavior in
-`vm-ir.md` and `exec-jit.md` remains authoritative until this contract is
-adopted.
+The practical target includes postcard and json and must scale to stateful
+formats like toml and yaml.
 
-## Scope and Non-Goals
+This section is intentionally explicit about lineage and constraints:
 
-This section governs decode architecture boundaries only.
+1. [`serde`](https://serde.rs/) (crate: [`serde`](https://crates.io/crates/serde)) is the baseline in Rust serialization. It uses a generic visitor architecture with format-specific deserializer implementations and a fixed high-level data model.
+2. [`facet`](https://facet.rs/) (crate: [`facet`](https://crates.io/crates/facet)) provides rich reflection over Rust types (field metadata, offsets, sizes/layout, type operations, and vtable-backed behavior), but pure runtime decision-making can carry overhead.
+3. `facet-jit` (historical label) specialized decode paths with [`cranelift`](https://cranelift.dev/) (for example [`cranelift-jit`](https://docs.rs/cranelift-jit/latest/cranelift_jit/)), through the stack in [`facet-format`](https://github.com/facet-rs/facet/tree/main/facet-format) and [`facet-json`](https://github.com/facet-rs/facet/tree/main/facet-json). It demonstrated that specialization can be competitive with serde on relevant workloads ([perf.facet.rs](https://perf.facet.rs)).
+4. [`trame`](https://github.com/facet-rs/trame) pursues the same broad goal (reflection + specialization) with a different runtime architecture: one typed IR, explicit layer contracts, and thin native code emission via [`dynasm`](https://docs.rs/dynasm/latest/dynasm/) / [`dynasmrt`](https://docs.rs/dynasmrt/latest/dynasmrt/) instead of relying on heavier JIT stacks.
 
-It does not define:
+Key trame crates for this architecture:
 
-- final textual syntax for every IR addition
-- target-specific machine-code details
-- migration sequencing for existing experimental crates
+- [`trame-ir`](https://github.com/facet-rs/trame/tree/main/trame-ir)
+- [`trame-interpreter`](https://github.com/facet-rs/trame/tree/main/trame-interpreter)
+- [`trame-dynasm`](https://github.com/facet-rs/trame/tree/main/trame-dynasm)
+- [`trame-exec`](https://github.com/facet-rs/trame/tree/main/trame-exec)
+- [`trame-json`](https://github.com/facet-rs/trame/tree/main/trame-json)
+- [`trame-postcard`](https://github.com/facet-rs/trame/tree/main/trame-postcard)
 
-Current `trame-json` and `trame-postcard` split APIs are considered
-experimental and non-normative for the long-term architecture.
+## Problem Statement
 
-## Layer Responsibilities
+How do we deserialize and serialize multiple wire formats into/from Rust values
+using facet reflection information, while staying competitive with serde,
+keeping JIT compilation cheap enough, and maintaining strong safety/correctness
+guarantees?
 
-Shape and format responsibilities are separate but compile into one executable
-program.
+The problem is not only throughput. Generated machine code is outside many
+normal Rust safety tools, so runtime contracts must make memory and state
+behavior explicit and testable.
 
-> t[format.layers.shape-owns-semantic-routing] Shape lowering MUST own semantic
-> decode/build routing (for example: required/default handling, flatten, enum
-> tagging strategy, untagged candidate selection, and destination path writes).
+## Success Criteria
 
-> t[format.layers.format-owns-lexical-state] Format lowering MUST own lexical
-> and syntax-state transitions (for example: delimiter handling, keyed vs
-> ordered field discovery, indentation/table navigation, anchor/alias
-> resolution).
+The primary success criterion is replacement viability in real projects, not
+microbenchmark headlines.
 
-> t[format.layers.shape-format-shared-isa] Shape and format lowering MUST target
-> one shared executable decode ISA within one `Program`.
+- Projects currently using facet format crates can switch to trame runtime behavior without semantic regressions.
+- This includes postcard-heavy workloads like roam rpc.
+- Error reporting remains high quality.
+- Performance wins matter only when correctness and safety hold.
 
-> t[format.layers.no-rust-helper-semantics] Decode parse semantics MUST NOT
-> depend on host-language helper objects/functions that are outside the IR
-> semantic model.
+## IR-First Model
 
-## Program Model
+This document is IR-first. It defines the executable artifact directly.
 
-> t[format.layers.single-program-holistic] Each decode entrypoint MUST compile
-> to one holistic decode program containing all required shape and format
-> control flow.
+Syntax note for this draft: examples use rust-like `tir` pseudocode with `//`
+comments. Comments are written before the line they explain.
 
-> t[format.layers.no-wrapper-element-model] Decode correctness MUST NOT rely on
-> an element-program-plus-wrapper execution model.
+> t[format.layers.ir-surface-first] The spec MUST define executable decode
+> behavior from IR program surface examples before discussing lowering details.
 
-> t[format.layers.root-shape-any] Decode program generation MUST support any
-> valid root shape category (including scalar, struct, enum, list, map, set,
-> and pointer-capable roots), not only struct roots.
+> t[format.layers.single-program-shape-format] Shape and format functions for a
+> decode target MUST be emitted into one shared `program` artifact.
 
-The holistic program model exists to make flatten/untagged/replay/global state
-explicit in one CFG.
+### Program Surface (v1 Draft)
 
-## Typed IR State Model
+#### 1. Syntax
 
-The decode ISA is extended with an explicit `state` section that declares all
-persistent parser/build state used by program procedures.
-
-Canonical conceptual shape:
-
-```lisp
-(vmir
-  (abi 1)
-  (kind decode)
-  (shape-id 123)
-  (state
-    (slots
-      (s0 (type u32))
-      (s1 (type bool))
-      (s2 (type (array u8 32)))
-      (s3 (type (stack u32 64)))
-      (s4 (type (ring (record ((k u32) (v u32))) 128)))
-      (s5 (type (bitset 256)))
-      (s6 (type (table key-u32 value-u32 cap-512)))
-      (s7 (type (record ((cursor u32) (depth u16) (flags u16)))))))
-  (code ...))
+```ebnf
+Program      = "program" "{" Abi Decl* Fn* "}" ;
+Abi          = "abi" ":" Unsigned ;
+Decl         = ConstDecl | TypeDecl | StateDecl ;
+ConstDecl    = "const" Ident ":" Type "=" ConstExpr ;
+TypeDecl     = StructDecl | EnumDecl ;
+StructDecl   = "struct" Ident "{" FieldDecl* "}" ;
+EnumDecl     = "enum" Ident "{" VariantDecl* "}" ;
+StateDecl    = "state" "{" SlotDecl* "}" ;
+SlotDecl     = Ident ":" SlotType ;
+SlotType     = Type | "stack" "<" Type "," Unsigned ">" | "ring" "<" Type "," Unsigned ">" | "table" "<" Type "," Type "," Unsigned ">" | "bitmap" "<" Unsigned ">" ;
+Fn           = "fn" Ident "(" ParamList? ")" "->" ResultType Block ;
+ResultType   = "Result" "<" RetType "," ErrType ">" ;
+RetType      = "void" | Type | TupleType ;
+Block        = "{" Stmt* "}" ;
+Stmt         = Assign | If | Loop | Break | RetOk | RetErr | ExprStmt ;
+ExprStmt     = Expr ;
+Expr         = Literal | Var | Field | Call | Binary | Unary | PtrAdd | PtrSub ;
 ```
 
-> t[format.layers.state-section-required] Decode programs that require
-> cross-procedure parser/build state MUST declare that state in an explicit IR
-> `state` section.
+> t[format.layers.input-shape-arbitrary] Program generation input MUST accept any
+> facet shape category supported by the runtime.
 
-> t[format.layers.state-types-closed-v1] ABI v1 state slot kinds MUST be
-> limited to a closed, verifier-known set (fixed-width scalars/booleans, fixed
-> arrays, bounded stacks, bounded rings/queues, bitsets, records, and bounded
-> tables/maps).
+> t[format.layers.output-program-specialized] Generated IR output MUST be
+> specialized for that concrete shape and format profile.
 
-> t[format.layers.state-layout-static] All declared state slots MUST have static
-> layout/size determined at verify time.
+#### 2. State Model
 
-> t[format.layers.state-bounds-verified] Verifier/runtime MUST reject programs
-> where state-slot accesses can violate declared bounds/capacities.
+- Program state is only: locals, `state` slots, constants.
+- No hidden host parser/runtime state is allowed.
+- Shape-derived layout data is materialized as constants in output IR.
+- Root/child container semantics are represented in explicit slots or locals.
+- Slot storage class is explicit: fixed (`Type`) or bounded dynamic (`stack/ring/table/bitmap`).
 
-No host-opaque runtime parser struct is allowed to be the semantic source of
-truth for parse state. Any state needed for correctness must be represented in
-IR state slots.
+> t[format.layers.state-explicit-only] All runtime state required for semantics
+> MUST be explicit in locals or declared state slots.
 
-## Shape Code Contract
+> t[format.layers.state-shape-layout-materialized] Field offsets, field indexes,
+> and required/default masks MUST be materialized as constants in output IR.
 
-Shape lowering is compile-time and queries shape abstractions (`IShape` family
-and related interfaces).
+#### 3. Op Semantics
 
-Shape code may:
+- Memory model: untyped byte-addressed memory.
+- Width ops: `ld8/ld16/ld32/ld64`, `st8/st16/st32/st64`.
+- Pointer ops: `ptr_add`, `ptr_sub`, `ptr_diff`.
+- Integer ops: `add/sub/mul/and/or/xor/shl/shr`, compare branches.
+- Conversion ops: `zext`, `sext`, `trunc`, `bitcast`.
+- Control ops: `if`, `loop`, `break`, `ret ok`, `ret err`.
+- Calls: `call fn(...)` only for declared IR functions/intrinsics.
+- No tag+payload event union is required as ABI between shape and format code.
 
-- read/write typed IR state slots
-- branch on parse outcomes and shape metadata
-- emit build/navigation actions
+> t[format.layers.memory-width-explicit] All memory reads/writes MUST use
+> explicit-width ops.
 
-Shape code must not:
+> t[format.layers.no-hidden-helper-calls] Semantics-critical behavior MUST NOT
+> rely on backend-inserted helper calls absent from IR.
 
-- own lexical tokenization rules
-- hide candidate routing state outside IR
+#### 4. Lowering Constraints
 
-> t[format.layers.flatten-untagged-state-explicit] Flatten/untagged candidate
-> selection state (for example masks, candidate indices, replay markers) MUST be
-> represented in explicit IR state/registers.
+- v1 targets: `x86_64` little-endian, `aarch64` little-endian.
+- Each op has total lowering mapping for each target.
+- Lowering is deterministic for identical IR + target profile.
+- Lowering preserves explicit error branches and memory op order.
+- Backends may optimize instruction selection but not observable semantics.
 
-## Format Code Contract
+> t[format.layers.lowering-op-total] Every defined op MUST have lowering rules
+> for each supported v1 target.
 
-Format code is also compiled into IR procedures in the same decode ISA.
+> t[format.layers.lowering-deterministic] Lowering MUST be deterministic for
+> identical IR and target profile.
 
-Format procedures may implement:
+```rust
+// Example compiled output for one concrete shape+format request.
+// Target shape: User { id: u32, active: bool }
+// Format profile: json object.
+program {
+  abi: 1
 
-- token boundaries and delimiters
-- keyed/ordered field transitions
-- sequence/map framing
-- format-specific state machines
+  struct Span { start: u32, len: u32 }
+  enum DecodeError {
+    eof { cursor: u32 }
+    invalid_byte { cursor: u32, got: u8 }
+    unknown_key { key: Span }
+    duplicate_field { field_ix: u32 }
+    missing_required { field_ix: u32 }
+    type_mismatch { field_ix: u32 }
+  }
 
-### Stateful Format Requirements
+  struct JsonState { in_ptr: ptr, in_len: u32, cursor: u32 }
+  state { json: JsonState }
 
-TOML-like reopening and deferred navigation state must be explicit in IR state.
+  const FIELD_ID_IX: u32 = 0
+  const FIELD_ACTIVE_IX: u32 = 1
+  const FIELD_ID_OFFSET: u32 = 0
+  const FIELD_ACTIVE_OFFSET: u32 = 4
+  const SEEN_ID_MASK: u64 = 1
+  const SEEN_ACTIVE_MASK: u64 = 2
 
-> t[format.layers.toml-reopen-state-explicit] TOML-style table reopening and
-> pending navigation state MUST be represented by explicit IR state slots (for
-> example path stacks, pending-event queues, reopen bookkeeping).
+  fn decode_root(in_ptr: ptr, in_len: u32, out_ptr: ptr) -> Result<void, DecodeError> {
+    seen: u64 = 0
+    call json_begin(in_ptr, in_len)
+    call json_expect_byte('{')
 
-YAML-like anchor/alias bookkeeping must be explicit in IR state.
+    loop fields {
+      call json_skip_ws()
+      if call json_try_byte('}') { break }
 
-> t[format.layers.yaml-anchor-state-explicit] YAML-style anchor/alias resolution
-> state MUST be represented by explicit IR state slots (for example anchor
-> tables and alias worklists).
+      key = call json_parse_key_span()
+      call json_skip_ws()
+      call json_expect_byte(':')
 
-## Call ABI Between Shape and Format Procedures
+      if call span_eq_ascii(key, "id") {
+        if (seen & SEEN_ID_MASK) != 0 { ret err duplicate_field { field_ix: FIELD_ID_IX } }
+        id_v = call json_parse_u32()
+        st32(ptr_add(out_ptr, FIELD_ID_OFFSET), id_v)
+        seen = seen | SEEN_ID_MASK
+      } else if call span_eq_ascii(key, "active") {
+        if (seen & SEEN_ACTIVE_MASK) != 0 { ret err duplicate_field { field_ix: FIELD_ACTIVE_IX } }
+        active_v = call json_parse_bool()
+        st8(ptr_add(out_ptr, FIELD_ACTIVE_OFFSET), zext_u8(active_v))
+        seen = seen | SEEN_ACTIVE_MASK
+      } else {
+        ret err unknown_key { key: key }
+      }
 
-Shape and format procedures communicate through explicit call boundaries in IR.
+      call json_skip_ws()
+      call json_try_byte(',')
+    }
 
-Canonical conceptual proc form:
-
-```lisp
-(proc p17
-  (sig
-    (params (r0:u32 r1:u32))
-    (returns (r0:u32))
-    (clobbers (r2 r3 r4))
-    (preserves (r5 r6))
-    (errors (decode-eof decode-invalid-token decode-no-match)))
-  (body ...))
+    if (seen & SEEN_ID_MASK) == 0 { ret err missing_required { field_ix: FIELD_ID_IX } }
+    if (seen & SEEN_ACTIVE_MASK) == 0 { ret err missing_required { field_ix: FIELD_ACTIVE_IX } }
+    ret ok
+  }
+}
 ```
-
-> t[format.layers.call-signature-explicit] Every callable decode procedure MUST
-> declare a typed call signature (params and returns).
-
-> t[format.layers.call-clobbers-explicit] Every callable decode procedure MUST
-> explicitly declare register/state clobber behavior.
-
-> t[format.layers.call-preserve-contract-explicit] Every callable decode
-> procedure MUST explicitly declare preserved registers/state across call
-> boundaries.
-
-> t[format.layers.call-error-channel-explicit] Every callable decode procedure
-> MUST expose a typed error/result channel in its ABI contract.
-
-Unbounded recursion is disallowed in v1; lowering must use bounded/iterative
-forms.
-
-## Inlining Policy
-
-Inlining is a backend optimization and must not affect observable semantics.
-
-> t[format.layers.inline-semantic-equivalence] Inlined and non-inlined execution
-> of the same decode program MUST be semantically equivalent.
-
-> t[format.layers.inline-boundary-mapping-required] Backends MUST preserve
-> debug/deopt mapping information for original call boundaries across inlining.
-
-## Register Allocation Policy
-
-Register allocation is global across merged shape+format control flow.
-
-> t[format.layers.regalloc-global-space] Decode register allocation MUST operate
-> on one global virtual register space across shape and format procedures in the
-> merged program.
-
-> t[format.layers.regalloc-post-inline] Register allocation MUST run after
-> integration/inlining decisions for the compiled decode CFG.
-
-> t[format.layers.regalloc-deterministic] For identical input IR and target
-> profile, register allocation decisions MUST be deterministic.
-
-Spills/reloads must preserve typed semantics and declared call-clobber rules.
-
-## Backends and Hidden State
-
-Backends execute the IR contract and cannot introduce hidden parser state that
-changes semantics.
-
-> t[format.layers.backend-no-hidden-parser-state] Execution backends MUST NOT
-> rely on hidden parser state outside declared IR state/register model.
-
-> t[format.layers.interpreter-jit-equivalence-required] Interpreter and JIT
-> backends MUST be semantically equivalent for programs conforming to this
-> layer contract.
-
-## Error and Recovery Contract
-
-Decode errors are typed and flow through declared procedure error channels.
-
-Required model:
-
-- typed error classes (format + semantic)
-- explicit rollback/poison behavior for state slots that require it
-- replay/save-restore based on declared state slots, not host-opaque objects
-
-## Conformance Matrix (Minimum)
-
-Implementations claiming conformance to this layer contract must demonstrate
-all scenarios below against interpreter and JIT:
-
-1. keyed self-describing decode with flatten/default handling.
-2. ordered hinted decode with length-prefixed sequence framing.
-3. untagged enum candidate-mask + replay flow in one holistic program.
-4. TOML reopening with interleaved table navigation and deferred pending queues.
-5. YAML anchors/aliases with successful resolution and explicit failure paths.
-
-These scenarios are conformance minimums for this document and are additive to
-existing VM IR and execution conformance requirements.
-
-## Review Checklist
-
-Use this checklist when reviewing implementations against this spec:
-
-1. No correctness rule depends on external Rust helper parser objects.
-2. All correctness-critical parse/build state is declared in IR `state`.
-3. Shape and format procedures both use shared ISA and explicit call ABI.
-4. Wrapper element-program model is absent from semantics.
-5. Global post-inline deterministic register allocation is enforceable.
-

@@ -11,6 +11,11 @@ use trame_ir::{
     DecodeInstr, Error, ReadScalarOp, ScalarKind, StructFieldPlan, StructPlan, VecStructPlan,
 };
 
+#[cfg(target_arch = "aarch64")]
+unsafe extern "C" {
+    fn memcpy(dst: *mut c_void, src: *const c_void, n: usize) -> *mut c_void;
+}
+
 #[cfg(test)]
 static FORCE_DYNASM_COMPILE_FAIL: AtomicBool = AtomicBool::new(false);
 
@@ -164,6 +169,63 @@ struct JitContextOffsets {
     vec_ptr: u32,
     vec_len: u32,
     out: u32,
+}
+
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy)]
+struct StringWordOffsets {
+    ptr: u32,
+    len: u32,
+    cap: u32,
+}
+
+#[cfg(target_arch = "aarch64")]
+fn jit_string_word_offsets() -> Option<StringWordOffsets> {
+    if core::mem::size_of::<String>() != 3 * core::mem::size_of::<usize>() {
+        return None;
+    }
+    let mut sample = String::with_capacity(17);
+    sample.push('x');
+    let ptr = sample.as_ptr() as usize;
+    let len = sample.len();
+    let cap = sample.capacity();
+    let words = unsafe { *(&sample as *const String).cast::<[usize; 3]>() };
+
+    let mut ptr_idx = None;
+    let mut len_idx = None;
+    let mut cap_idx = None;
+    for (idx, word) in words.into_iter().enumerate() {
+        if word == ptr {
+            if ptr_idx.is_some() {
+                return None;
+            }
+            ptr_idx = Some(idx);
+        }
+        if word == len {
+            if len_idx.is_some() {
+                return None;
+            }
+            len_idx = Some(idx);
+        }
+        if word == cap {
+            if cap_idx.is_some() {
+                return None;
+            }
+            cap_idx = Some(idx);
+        }
+    }
+    let ptr_idx = ptr_idx?;
+    let len_idx = len_idx?;
+    let cap_idx = cap_idx?;
+    if ptr_idx == len_idx || ptr_idx == cap_idx || len_idx == cap_idx {
+        return None;
+    }
+    let word_size = core::mem::size_of::<usize>() as u32;
+    Some(StringWordOffsets {
+        ptr: ptr_idx as u32 * word_size,
+        len: len_idx as u32 * word_size,
+        cap: cap_idx as u32 * word_size,
+    })
 }
 
 fn jit_context_offsets<T>() -> JitContextOffsets
@@ -420,12 +482,11 @@ where
     0
 }
 
-unsafe extern "C" fn jit_op_write_string_len_to_ptr<T>(
+unsafe extern "C" fn jit_op_validate_utf8_range<T>(
     ctx: *mut c_void,
     arg1: u64,
     arg2: u64,
     arg3: u64,
-    arg4: u64,
 ) -> i32
 where
     T: Facet<'static>,
@@ -434,20 +495,28 @@ where
     if ctx.failed {
         return 1;
     }
-    let dst = arg1 as usize as *mut String;
-    let src = arg2 as usize as *const u8;
-    let len = arg3 as usize;
-    let start = arg4 as usize;
+    let src = arg1 as usize as *const u8;
+    let len = arg2 as usize;
+    let start = arg3 as usize;
     let bytes = unsafe { core::slice::from_raw_parts(src, len) };
-    let value = match core::str::from_utf8(bytes) {
-        Ok(v) => v.to_owned(),
-        Err(_) => {
-            jit_set_failure(ctx, JitErrorTag::InvalidUtf8, start, 0);
-            return 1;
-        }
-    };
-    unsafe { dst.write(value) };
+    if core::str::from_utf8(bytes).is_err() {
+        jit_set_failure(ctx, JitErrorTag::InvalidUtf8, start, 0);
+        return 1;
+    }
     0
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe extern "C" fn jit_alloc_bytes(arg1: u64, arg2: u64) -> *mut u8 {
+    let size = arg1 as usize;
+    let align = arg2 as usize;
+    if size == 0 {
+        return NonNull::<u8>::dangling().as_ptr();
+    }
+    let Ok(layout) = Layout::from_size_align(size, align) else {
+        return core::ptr::null_mut();
+    };
+    unsafe { alloc(layout) }
 }
 
 unsafe extern "C" fn jit_op_drop_string_ptr(_: *mut c_void, arg1: u64, _arg2: u64) -> i32 {
@@ -1032,11 +1101,18 @@ impl DynasmTrampoline {
         let err_overflow = ops.new_dynamic_label();
         let entry = ops.offset();
 
-        let string_helper = jit_op_write_string_len_to_ptr::<T> as *const () as usize;
+        let string_validate_helper = jit_op_validate_utf8_range::<T> as *const () as usize;
         let drop_string_helper = jit_op_drop_string_ptr as *const () as usize;
         let helper_alloc = jit_op_vec_alloc::<T> as *const () as usize;
         let helper_dealloc = jit_op_vec_dealloc_raw::<T> as *const () as usize;
         let helper_finalize = jit_op_vec_finalize::<T> as *const () as usize;
+        let helper_alloc_bytes = jit_alloc_bytes as *const () as usize;
+        let helper_memcpy = memcpy as *const () as usize;
+        let string_word_offsets = jit_string_word_offsets()?;
+        let string_ptr_off = string_word_offsets.ptr;
+        let string_len_off = string_word_offsets.len;
+        let string_cap_off = string_word_offsets.cap;
+        let dangling_u8_ptr = NonNull::<u8>::dangling().as_ptr() as usize as u64;
         let stride = core::mem::size_of::<T>() as u64;
 
         let mut string_fields = Vec::new();
@@ -1150,33 +1226,74 @@ impl DynasmTrampoline {
                     );
                 }
                 JitDynasmOp::ReadWriteString { offset, .. } => {
+                    let string_zero = ops.new_dynamic_label();
+                    let string_store = ops.new_dynamic_label();
                     emit_aarch64_decode_u32(&mut ops, err_elem_eof, err_elem_overflow);
                     dynasm!(ops
                         ; .arch aarch64
-                        ; mov x1, x7
+                        ; mov x13, x7
                         ; adds x12, x7, x11
                         ; b.cs =>err_elem_eof
                         ; cmp x12, x6
                         ; b.hi =>err_elem_eof
+                        ; mov x23, x11
+                        ; add x24, x5, x7
+                        ; mov x7, x12
                         ; ldr x8, [sp]
                         ; str x12, [x8, #o.pos]
                         ; ldr x0, [sp]
-                        ; mov x1, x22
+                        ; mov x1, x24
+                        ; mov x2, x23
+                        ; mov x3, x13
                     );
-                    emit_aarch64_load_u64(&mut ops, 9, offset as u64);
-                    dynasm!(ops
-                        ; .arch aarch64
-                        ; add x1, x1, x9
-                        ; add x2, x5, x7
-                        ; mov x3, x11
-                        ; mov x4, x7
-                        ; mov x7, x12
-                    );
-                    emit_aarch64_load_u64(&mut ops, 16, string_helper as u64);
+                    emit_aarch64_load_u64(&mut ops, 16, string_validate_helper as u64);
                     dynasm!(ops
                         ; .arch aarch64
                         ; blr x16
                         ; cbnz w0, =>elem_fail_label
+                        ; cbz x23, =>string_zero
+                        ; mov x0, x23
+                        ; mov x1, #1
+                    );
+                    emit_aarch64_load_u64(&mut ops, 16, helper_alloc_bytes as u64);
+                    dynasm!(ops
+                        ; .arch aarch64
+                        ; blr x16
+                        ; mov x14, x0
+                        ; cbnz x14, >string_alloc_ok
+                        ; mov x1, #0
+                        ; mov w2, wzr
+                    );
+                    emit_aarch64_write_failure(&mut ops, o, JitErrorTag::ShapeMismatch);
+                    dynasm!(ops
+                        ; .arch aarch64
+                        ; b =>elem_fail_label
+                        ; string_alloc_ok:
+                        ; mov x0, x14
+                        ; mov x1, x24
+                        ; mov x2, x23
+                    );
+                    emit_aarch64_load_u64(&mut ops, 16, helper_memcpy as u64);
+                    dynasm!(ops
+                        ; .arch aarch64
+                        ; blr x16
+                        ; mov x14, x0
+                        ; b =>string_store
+                        ; =>string_zero
+                    );
+                    emit_aarch64_load_u64(&mut ops, 14, dangling_u8_ptr);
+                    dynasm!(ops
+                        ; .arch aarch64
+                        ; =>string_store
+                        ; mov x9, x22
+                    );
+                    emit_aarch64_load_u64(&mut ops, 10, offset as u64);
+                    dynasm!(ops
+                        ; .arch aarch64
+                        ; add x9, x9, x10
+                        ; str x14, [x9, #string_ptr_off]
+                        ; str x23, [x9, #string_len_off]
+                        ; str x23, [x9, #string_cap_off]
                         ; ldr x8, [sp]
                         ; ldr x5, [x8, #o.input_ptr]
                         ; ldr x6, [x8, #o.input_len]

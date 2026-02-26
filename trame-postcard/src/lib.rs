@@ -99,6 +99,13 @@ fn compile_struct_plan(
             ReadScalarOp::VarintU32 => {
                 emit_varint_u32_read(&mut instructions, idx as u8, tmp_byte_reg, tmp_data_reg);
             }
+            ReadScalarOp::LenPrefixedUtf8 => {
+                emit_varint_u32_read(&mut instructions, idx as u8, tmp_byte_reg, tmp_data_reg);
+                instructions.push(DecodeInstr::ReadUtf8BytesFromLenReg {
+                    dst: idx as u8,
+                    len_reg: idx as u8,
+                });
+            }
             ReadScalarOp::BoolByte01 => {
                 emit_bool_byte01_read(&mut instructions, idx as u8, tmp_byte_reg, tmp_data_reg);
             }
@@ -228,14 +235,14 @@ mod tests {
     fn compile_emits_program() {
         let plan = compile_for::<Demo>().expect("compile should succeed");
         assert_eq!(plan.program.register_count, 4);
-        assert_eq!(plan.program.instructions.len(), 29);
+        assert_eq!(plan.program.instructions.len(), 54);
     }
 
     #[test]
     fn compile_is_shape_driven_for_multiple_fields() {
         let plan = compile_for::<Demo3>().expect("compile should succeed");
         assert_eq!(plan.program.register_count, 5);
-        assert_eq!(plan.program.instructions.len(), 35);
+        assert_eq!(plan.program.instructions.len(), 60);
     }
 
     #[test]

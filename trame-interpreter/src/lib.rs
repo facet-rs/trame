@@ -183,6 +183,19 @@ where
                 *slot = RegValue::U32(reader.read_byte()? as u32);
                 Ok(())
             }
+            DecodeInstr::ReadUtf8BytesFromLenReg { dst, len_reg } => {
+                let len = read_reg_u32(&regs, len_reg as usize)? as usize;
+                let str_offset = reader.offset();
+                let str_bytes = reader.read_bytes(len)?;
+                let value = core::str::from_utf8(str_bytes)
+                    .map_err(|_| Error::InvalidUtf8 { offset: str_offset })?
+                    .to_owned();
+                let slot = regs
+                    .get_mut(dst as usize)
+                    .ok_or(Error::InvalidRegister { reg: dst as usize })?;
+                *slot = RegValue::String(value);
+                Ok(())
+            }
             DecodeInstr::MoveRegU32 { dst, src } => {
                 let out = read_reg_u32(&regs, src as usize)?;
                 let slot = regs

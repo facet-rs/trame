@@ -504,6 +504,11 @@ impl DynasmCompiledProgram {
         let mut require_eof = false;
         let mut idx = 0usize;
         while let Some(instr) = plan.program.instructions.get(idx) {
+            if let Some((op, next_idx)) = Self::match_lowered_len_prefixed_utf8(plan, idx) {
+                ops.push(op);
+                idx = next_idx;
+                continue;
+            }
             if let Some((op, next_idx)) = Self::match_lowered_varint_u32(plan, idx) {
                 ops.push(op);
                 idx = next_idx;
@@ -557,7 +562,7 @@ impl DynasmCompiledProgram {
         })
     }
 
-    fn match_lowered_varint_u32(plan: &StructPlan, start: usize) -> Option<(JitDynasmOp, usize)> {
+    fn parse_lowered_varint_seq(plan: &StructPlan, start: usize) -> Option<(u8, usize)> {
         let DecodeInstr::SetRegU32 { dst, value } = *plan.program.instructions.get(start)? else {
             return None;
         };
@@ -637,6 +642,11 @@ impl DynasmCompiledProgram {
             return None;
         }
 
+        Some((dst, idx))
+    }
+
+    fn match_lowered_varint_u32(plan: &StructPlan, start: usize) -> Option<(JitDynasmOp, usize)> {
+        let (dst, idx) = Self::parse_lowered_varint_seq(plan, start)?;
         let DecodeInstr::WriteFieldFromReg { field, src } = *plan.program.instructions.get(idx)?
         else {
             return None;
@@ -651,6 +661,42 @@ impl DynasmCompiledProgram {
 
         Some((
             JitDynasmOp::ReadWriteU32 {
+                field,
+                offset: field_plan.offset,
+            },
+            idx + 1,
+        ))
+    }
+
+    fn match_lowered_len_prefixed_utf8(
+        plan: &StructPlan,
+        start: usize,
+    ) -> Option<(JitDynasmOp, usize)> {
+        let (len_reg, mut idx) = Self::parse_lowered_varint_seq(plan, start)?;
+        let DecodeInstr::ReadUtf8BytesFromLenReg {
+            dst,
+            len_reg: ir_len_reg,
+        } = *plan.program.instructions.get(idx)?
+        else {
+            return None;
+        };
+        if ir_len_reg != len_reg {
+            return None;
+        }
+        idx += 1;
+        let DecodeInstr::WriteFieldFromReg { field, src } = *plan.program.instructions.get(idx)?
+        else {
+            return None;
+        };
+        if src != dst {
+            return None;
+        }
+        let field_plan = plan.field_plans.get(field as usize)?;
+        if field_plan.kind != ScalarKind::String {
+            return None;
+        }
+        Some((
+            JitDynasmOp::ReadWriteString {
                 field,
                 offset: field_plan.offset,
             },

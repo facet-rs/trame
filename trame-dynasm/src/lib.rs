@@ -454,6 +454,85 @@ where
     0
 }
 
+unsafe extern "C" fn jit_op_read_write_field_json_string<T>(
+    ctx: *mut c_void,
+    arg1: u64,
+    arg2: u64,
+) -> i32
+where
+    T: Facet<'static>,
+{
+    let ctx = unsafe { jit_ctx::<T>(ctx) };
+    if ctx.failed {
+        return 1;
+    }
+    let field = arg1 as usize;
+    let offset = arg2 as usize;
+    if field >= ctx.field_inits.len() {
+        jit_set_failure(ctx, JitErrorTag::InvalidRegister, field, 0);
+        return 1;
+    }
+
+    while ctx.pos < ctx.input_len {
+        let byte = unsafe { *ctx.input_ptr.add(ctx.pos) };
+        if matches!(byte, b' ' | b'\t' | b'\n' | b'\r') {
+            ctx.pos += 1;
+            continue;
+        }
+        break;
+    }
+    if ctx.pos >= ctx.input_len {
+        jit_set_failure(ctx, JitErrorTag::UnexpectedEof, ctx.pos, 0);
+        return 1;
+    }
+    let opening = unsafe { *ctx.input_ptr.add(ctx.pos) };
+    if opening != b'"' {
+        jit_set_failure(ctx, JitErrorTag::ShapeMismatch, ctx.pos, 0);
+        return 1;
+    }
+    ctx.pos += 1;
+    let start = ctx.pos;
+    while ctx.pos < ctx.input_len {
+        let byte = unsafe { *ctx.input_ptr.add(ctx.pos) };
+        match byte {
+            b'"' => {
+                let len = ctx.pos - start;
+                let bytes = unsafe { core::slice::from_raw_parts(ctx.input_ptr.add(start), len) };
+                let value = match core::str::from_utf8(bytes) {
+                    Ok(v) => v.to_owned(),
+                    Err(_) => {
+                        jit_set_failure(ctx, JitErrorTag::InvalidUtf8, start, 0);
+                        return 1;
+                    }
+                };
+                ctx.pos += 1;
+                let dst = unsafe {
+                    ctx.out
+                        .as_mut_ptr()
+                        .cast::<u8>()
+                        .add(offset)
+                        .cast::<String>()
+                };
+                if ctx.field_inits[field] != 0 {
+                    unsafe { core::ptr::drop_in_place(dst) };
+                }
+                unsafe { dst.write(value) };
+                ctx.field_inits[field] = 1;
+                return 0;
+            }
+            b'\\' => {
+                jit_set_failure(ctx, JitErrorTag::ShapeMismatch, ctx.pos, 0);
+                return 1;
+            }
+            _ => {
+                ctx.pos += 1;
+            }
+        }
+    }
+    jit_set_failure(ctx, JitErrorTag::UnexpectedEof, start, 0);
+    1
+}
+
 unsafe extern "C" fn jit_op_vec_alloc<T>(ctx: *mut c_void, arg1: u64, _arg2: u64) -> i32
 where
     T: Facet<'static>,
@@ -553,15 +632,21 @@ where
 
 #[derive(Clone, Copy)]
 enum JitDynasmOp {
+    SkipJsonWhitespace,
+    ExpectInputByte { value: u8 },
     ReadWriteU32 { field: u32, offset: usize },
+    ReadWriteDecimalU32 { field: u32, offset: usize },
     ReadWriteBool { field: u32, offset: usize },
+    ReadWriteBoolLiteral { field: u32, offset: usize },
     ReadWriteString { field: u32, offset: usize },
+    ReadWriteQuotedString { field: u32, offset: usize },
 }
 
 struct DynasmCompiledProgram {
     ops: Vec<JitDynasmOp>,
     require_eof: bool,
-    string_helper: usize,
+    postcard_string_helper: usize,
+    json_string_helper: usize,
     context_offsets: JitContextOffsets,
 }
 
@@ -590,6 +675,14 @@ impl DynasmCompiledProgram {
                 continue;
             }
             match (*instr, plan.program.instructions.get(idx + 1).copied()) {
+                (DecodeInstr::SkipJsonWhitespace, _) => {
+                    ops.push(JitDynasmOp::SkipJsonWhitespace);
+                    idx += 1;
+                }
+                (DecodeInstr::ExpectInputByte { value }, _) => {
+                    ops.push(JitDynasmOp::ExpectInputByte { value });
+                    idx += 1;
+                }
                 (
                     DecodeInstr::ReadScalar { op, dst },
                     Some(DecodeInstr::WriteFieldFromReg { field, src }),
@@ -604,7 +697,15 @@ impl DynasmCompiledProgram {
                             field,
                             offset: field_plan.offset,
                         },
+                        ReadScalarOp::DecimalU32 => JitDynasmOp::ReadWriteDecimalU32 {
+                            field,
+                            offset: field_plan.offset,
+                        },
                         ReadScalarOp::BoolByte01 => JitDynasmOp::ReadWriteBool {
+                            field,
+                            offset: field_plan.offset,
+                        },
+                        ReadScalarOp::BoolLiteral => JitDynasmOp::ReadWriteBoolLiteral {
                             field,
                             offset: field_plan.offset,
                         },
@@ -612,7 +713,10 @@ impl DynasmCompiledProgram {
                             field,
                             offset: field_plan.offset,
                         },
-                        _ => return None,
+                        ReadScalarOp::QuotedUtf8String => JitDynasmOp::ReadWriteQuotedString {
+                            field,
+                            offset: field_plan.offset,
+                        },
                     };
                     ops.push(op);
                     idx += 2;
@@ -627,7 +731,8 @@ impl DynasmCompiledProgram {
         Some(Self {
             ops,
             require_eof,
-            string_helper: jit_op_read_write_field_string::<T> as *const () as usize,
+            postcard_string_helper: jit_op_read_write_field_string::<T> as *const () as usize,
+            json_string_helper: jit_op_read_write_field_json_string::<T> as *const () as usize,
             context_offsets: jit_context_offsets::<T>(),
         })
     }
@@ -922,6 +1027,7 @@ impl DynasmTrampoline {
         let err_eof = ops.new_dynamic_label();
         let err_overflow = ops.new_dynamic_label();
         let err_invalid_bool = ops.new_dynamic_label();
+        let err_shape = ops.new_dynamic_label();
         let err_trailing = ops.new_dynamic_label();
         let entry = ops.offset();
         dynasm!(ops
@@ -937,8 +1043,36 @@ impl DynasmTrampoline {
 
         for op in &program.ops {
             match *op {
+                JitDynasmOp::SkipJsonWhitespace => {
+                    emit_aarch64_skip_json_ws(&mut ops);
+                }
+                JitDynasmOp::ExpectInputByte { value } => {
+                    dynasm!(ops
+                        ; .arch aarch64
+                        ; mov x1, x7
+                        ; cmp x7, x6
+                        ; b.hs =>err_eof
+                        ; ldrb w11, [x5, x7]
+                        ; add x7, x7, #1
+                    );
+                    emit_aarch64_load_u64(&mut ops, 9, value as u64);
+                    dynasm!(ops
+                        ; .arch aarch64
+                        ; cmp w11, w9
+                        ; b.eq >expect_ok
+                        ; sub x1, x7, #1
+                        ; mov w2, wzr
+                        ; b =>err_shape
+                        ; expect_ok:
+                    );
+                }
                 JitDynasmOp::ReadWriteU32 { field, offset } => {
                     emit_aarch64_decode_u32(&mut ops, err_eof, err_overflow);
+                    emit_aarch64_store_field_u32(&mut ops, o.out as usize + offset);
+                    emit_aarch64_mark_field_init(&mut ops, o, field as usize);
+                }
+                JitDynasmOp::ReadWriteDecimalU32 { field, offset } => {
+                    emit_aarch64_decode_decimal_u32(&mut ops, err_overflow, err_shape);
                     emit_aarch64_store_field_u32(&mut ops, o.out as usize + offset);
                     emit_aarch64_mark_field_init(&mut ops, o, field as usize);
                 }
@@ -961,6 +1095,11 @@ impl DynasmTrampoline {
                     emit_aarch64_store_field_bool(&mut ops, o.out as usize + offset);
                     emit_aarch64_mark_field_init(&mut ops, o, field as usize);
                 }
+                JitDynasmOp::ReadWriteBoolLiteral { field, offset } => {
+                    emit_aarch64_decode_bool_literal(&mut ops, err_shape);
+                    emit_aarch64_store_field_bool(&mut ops, o.out as usize + offset);
+                    emit_aarch64_mark_field_init(&mut ops, o, field as usize);
+                }
                 JitDynasmOp::ReadWriteString { field, offset } => {
                     dynasm!(ops
                         ; .arch aarch64
@@ -970,7 +1109,27 @@ impl DynasmTrampoline {
                     );
                     emit_aarch64_load_u64(&mut ops, 1, field as u64);
                     emit_aarch64_load_u64(&mut ops, 2, offset as u64);
-                    emit_aarch64_load_u64(&mut ops, 16, program.string_helper as u64);
+                    emit_aarch64_load_u64(&mut ops, 16, program.postcard_string_helper as u64);
+                    dynasm!(ops
+                        ; .arch aarch64
+                        ; blr x16
+                        ; cbnz w0, =>return_label
+                        ; ldr x8, [sp]
+                        ; ldr x5, [x8, #o.input_ptr]
+                        ; ldr x6, [x8, #o.input_len]
+                        ; ldr x7, [x8, #o.pos]
+                    );
+                }
+                JitDynasmOp::ReadWriteQuotedString { field, offset } => {
+                    dynasm!(ops
+                        ; .arch aarch64
+                        ; ldr x8, [sp]
+                        ; str x7, [x8, #o.pos]
+                        ; ldr x0, [sp]
+                    );
+                    emit_aarch64_load_u64(&mut ops, 1, field as u64);
+                    emit_aarch64_load_u64(&mut ops, 2, offset as u64);
+                    emit_aarch64_load_u64(&mut ops, 16, program.json_string_helper as u64);
                     dynasm!(ops
                         ; .arch aarch64
                         ; blr x16
@@ -1032,6 +1191,18 @@ impl DynasmTrampoline {
             ; =>err_invalid_bool
         );
         emit_aarch64_write_failure(&mut ops, o, JitErrorTag::InvalidBool);
+        dynasm!(ops
+            ; .arch aarch64
+            ; mov w0, #1
+            ; b =>return_label
+        );
+
+        dynasm!(ops
+            ; .arch aarch64
+            ; =>err_shape
+            ; mov w2, wzr
+        );
+        emit_aarch64_write_failure(&mut ops, o, JitErrorTag::ShapeMismatch);
         dynasm!(ops
             ; .arch aarch64
             ; mov w0, #1
@@ -1228,6 +1399,7 @@ impl DynasmTrampoline {
                         },
                     );
                 }
+                _ => return None,
             }
         }
 
@@ -1508,6 +1680,163 @@ fn emit_aarch64_store_field_bool(ops: &mut dynasmrt::aarch64::Assembler, offset:
         ; .arch aarch64
         ; add x8, x8, x9
         ; strb w11, [x8]
+    );
+}
+
+#[cfg(target_arch = "aarch64")]
+fn emit_aarch64_skip_json_ws(ops: &mut dynasmrt::aarch64::Assembler) {
+    let loop_label = ops.new_dynamic_label();
+    let done = ops.new_dynamic_label();
+    dynasm!(ops
+        ; .arch aarch64
+        ; =>loop_label
+        ; cmp x7, x6
+        ; b.hs =>done
+        ; ldrb w9, [x5, x7]
+        ; cmp w9, #32
+        ; b.eq >skip_one
+        ; cmp w9, #9
+        ; b.eq >skip_one
+        ; cmp w9, #10
+        ; b.eq >skip_one
+        ; cmp w9, #13
+        ; b.eq >skip_one
+        ; b =>done
+        ; skip_one:
+        ; add x7, x7, #1
+        ; b =>loop_label
+        ; =>done
+    );
+}
+
+#[cfg(target_arch = "aarch64")]
+fn emit_aarch64_decode_decimal_u32(
+    ops: &mut dynasmrt::aarch64::Assembler,
+    err_overflow: dynasmrt::DynamicLabel,
+    err_shape: dynasmrt::DynamicLabel,
+) {
+    let digit_loop = ops.new_dynamic_label();
+    let digit_done = ops.new_dynamic_label();
+    let no_digits = ops.new_dynamic_label();
+    let mul_add = ops.new_dynamic_label();
+    let overflow = ops.new_dynamic_label();
+    let done = ops.new_dynamic_label();
+
+    emit_aarch64_skip_json_ws(ops);
+    emit_aarch64_load_u64(ops, 14, 429_496_729);
+    dynasm!(ops
+        ; .arch aarch64
+        ; mov x1, x7
+        ; mov w11, wzr
+        ; mov w12, wzr
+        ; =>digit_loop
+        ; cmp x7, x6
+        ; b.hs =>digit_done
+        ; ldrb w9, [x5, x7]
+        ; sub w10, w9, #48
+        ; cmp w10, #9
+        ; b.hi =>digit_done
+        ; mov w12, #1
+        ; cmp w11, w14
+        ; b.hi =>overflow
+        ; b.lo =>mul_add
+        ; cmp w10, #5
+        ; b.hi =>overflow
+        ; =>mul_add
+        ; mov w9, #10
+        ; madd w11, w11, w9, w10
+        ; add x7, x7, #1
+        ; b =>digit_loop
+
+        ; =>digit_done
+        ; cbz w12, =>no_digits
+        ; b =>done
+
+        ; =>no_digits
+        ; mov x1, x7
+        ; mov w2, wzr
+        ; b =>err_shape
+
+        ; =>overflow
+        ; b =>err_overflow
+
+        ; =>done
+    );
+}
+
+#[cfg(target_arch = "aarch64")]
+fn emit_aarch64_decode_bool_literal(
+    ops: &mut dynasmrt::aarch64::Assembler,
+    err_shape: dynasmrt::DynamicLabel,
+) {
+    let true_case = ops.new_dynamic_label();
+    let false_case = ops.new_dynamic_label();
+    let done = ops.new_dynamic_label();
+
+    emit_aarch64_skip_json_ws(ops);
+    dynasm!(ops
+        ; .arch aarch64
+        ; mov x1, x7
+        ; cmp x7, x6
+        ; b.hs =>err_shape
+        ; ldrb w9, [x5, x7]
+        ; cmp w9, #116 // 't'
+        ; b.eq =>true_case
+        ; cmp w9, #102 // 'f'
+        ; b.eq =>false_case
+        ; mov w2, wzr
+        ; b =>err_shape
+
+        ; =>true_case
+        ; add x10, x7, #4
+        ; cmp x10, x6
+        ; b.hi =>err_shape
+        ; ldrb w9, [x5, x7]
+        ; cmp w9, #116 // 't'
+        ; b.ne =>err_shape
+        ; add x11, x7, #1
+        ; ldrb w9, [x5, x11]
+        ; cmp w9, #114 // 'r'
+        ; b.ne =>err_shape
+        ; add x11, x7, #2
+        ; ldrb w9, [x5, x11]
+        ; cmp w9, #117 // 'u'
+        ; b.ne =>err_shape
+        ; add x11, x7, #3
+        ; ldrb w9, [x5, x11]
+        ; cmp w9, #101 // 'e'
+        ; b.ne =>err_shape
+        ; mov w11, #1
+        ; mov x7, x10
+        ; b =>done
+
+        ; =>false_case
+        ; add x10, x7, #5
+        ; cmp x10, x6
+        ; b.hi =>err_shape
+        ; ldrb w9, [x5, x7]
+        ; cmp w9, #102 // 'f'
+        ; b.ne =>err_shape
+        ; add x11, x7, #1
+        ; ldrb w9, [x5, x11]
+        ; cmp w9, #97 // 'a'
+        ; b.ne =>err_shape
+        ; add x11, x7, #2
+        ; ldrb w9, [x5, x11]
+        ; cmp w9, #108 // 'l'
+        ; b.ne =>err_shape
+        ; add x11, x7, #3
+        ; ldrb w9, [x5, x11]
+        ; cmp w9, #115 // 's'
+        ; b.ne =>err_shape
+        ; add x11, x7, #4
+        ; ldrb w9, [x5, x11]
+        ; cmp w9, #101 // 'e'
+        ; b.ne =>err_shape
+        ; mov w11, #0
+        ; mov x7, x10
+
+        ; =>done
     );
 }
 
@@ -2080,5 +2409,14 @@ mod tests {
         let plan = trame_postcard::compile_vec_for::<Vec<Demo3>>().expect("compile should succeed");
         let err = decode_vec::<Demo3>(&plan, &wire).expect_err("dynasm should fail");
         assert_eq!(err, Error::InvalidUtf8 { offset: 3 });
+    }
+
+    #[test]
+    fn decode_json_struct_dynasm_and_interpreter_are_equivalent() {
+        let input = br#"{ "id": 11, "name": "trent", "ok": false }"#;
+        let plan = trame_json::compile_for::<Demo3>().expect("compile should succeed");
+        let from_interpreter: Demo3 = trame_interpreter::decode(&plan, input).expect("interp");
+        let from_dynasm: Demo3 = decode(&plan, input).expect("dynasm");
+        assert_eq!(from_dynasm, from_interpreter);
     }
 }

@@ -88,6 +88,74 @@ impl<'a> Reader<'a> {
             _ => Err(Error::InvalidBool { offset, value }),
         }
     }
+
+    fn skip_json_ws(&mut self) {
+        while let Some(&byte) = self.input.get(self.pos) {
+            if matches!(byte, b' ' | b'\t' | b'\n' | b'\r') {
+                self.pos += 1;
+                continue;
+            }
+            break;
+        }
+    }
+
+    fn read_decimal_u32(&mut self) -> Result<u32, Error> {
+        self.skip_json_ws();
+        let start = self.pos;
+        let mut value = 0u32;
+        let mut saw_digit = false;
+        while let Some(&byte) = self.input.get(self.pos) {
+            if !byte.is_ascii_digit() {
+                break;
+            }
+            saw_digit = true;
+            value = value
+                .checked_mul(10)
+                .and_then(|v| v.checked_add((byte - b'0') as u32))
+                .ok_or(Error::VarintOverflow { offset: start })?;
+            self.pos += 1;
+        }
+        if !saw_digit {
+            return Err(Error::ShapeMismatch);
+        }
+        Ok(value)
+    }
+
+    fn read_quoted_utf8_string(&mut self) -> Result<String, Error> {
+        self.skip_json_ws();
+        if self.read_byte()? != b'"' {
+            return Err(Error::ShapeMismatch);
+        }
+        let start = self.pos;
+        while let Some(&byte) = self.input.get(self.pos) {
+            self.pos += 1;
+            match byte {
+                b'"' => {
+                    let bytes = &self.input[start..self.pos - 1];
+                    let value = core::str::from_utf8(bytes)
+                        .map_err(|_| Error::InvalidUtf8 { offset: start })?;
+                    return Ok(value.to_owned());
+                }
+                b'\\' => return Err(Error::ShapeMismatch),
+                _ => {}
+            }
+        }
+        Err(Error::UnexpectedEof { offset: start })
+    }
+
+    fn read_bool_literal(&mut self) -> Result<bool, Error> {
+        self.skip_json_ws();
+        let remaining = &self.input[self.pos..];
+        if remaining.starts_with(b"true") {
+            self.pos += 4;
+            return Ok(true);
+        }
+        if remaining.starts_with(b"false") {
+            self.pos += 5;
+            return Ok(false);
+        }
+        Err(Error::ShapeMismatch)
+    }
 }
 
 fn write_field_from_reg(
@@ -412,7 +480,11 @@ where
                         RegValue::String(value)
                     }
                     ReadScalarOp::BoolByte01 => RegValue::Bool(reader.read_bool()?),
-                    _ => return Err(Error::UnsupportedReadOp { op }),
+                    ReadScalarOp::DecimalU32 => RegValue::U32(reader.read_decimal_u32()?),
+                    ReadScalarOp::QuotedUtf8String => {
+                        RegValue::String(reader.read_quoted_utf8_string()?)
+                    }
+                    ReadScalarOp::BoolLiteral => RegValue::Bool(reader.read_bool_literal()?),
                 };
                 Ok(())
             }

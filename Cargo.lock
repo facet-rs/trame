@@ -1016,6 +1016,7 @@ version = "0.1.0"
 dependencies = [
  "facet",
  "facet-core",
+ "trame-interpreter",
  "trame-ir",
  "trame-postcard",
 ]

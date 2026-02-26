@@ -183,4 +183,33 @@ mod tests {
             from_postcard.element_plan.field_plans
         );
     }
+
+    #[test]
+    fn interpreter_decodes_scalar_stream_for_json_ops() {
+        let plan = compile_for::<Demo3>().expect("json compile");
+        let input = br#"42 "alice" true"#;
+        let decoded: Demo3 = trame_interpreter::decode(&plan, input).expect("decode");
+        assert_eq!(
+            decoded,
+            Demo3 {
+                id: 42,
+                name: "alice".into(),
+                ok: true,
+            }
+        );
+    }
+
+    #[test]
+    fn interpreter_decodes_utf8_quoted_string() {
+        let plan = compile_for::<Demo>().expect("json compile");
+        let input = "7 \"héllo\"".as_bytes();
+        let decoded: Demo = trame_interpreter::decode(&plan, input).expect("decode");
+        assert_eq!(
+            decoded,
+            Demo {
+                id: 7,
+                name: "héllo".into()
+            }
+        );
+    }
 }

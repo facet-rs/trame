@@ -19,6 +19,7 @@ trame-ir.workspace = true
 [dev-dependencies]
 facet.workspace = true
 trame-postcard.workspace = true
+trame-interpreter.workspace = true
 
 [lints]
 workspace = true

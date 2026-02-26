@@ -12,15 +12,4 @@ specs (
             }
         )
     }
-    {
-        name trame-lang
-        include (docs/content/spec/trame-lang.md)
-        impls (
-            {
-                name rust
-                include (trame*/**/*.rs)
-                exclude (target/**)
-            }
-        )
-    }
 )

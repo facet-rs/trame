@@ -11,11 +11,6 @@ use trame_ir::{
     DecodeInstr, Error, ReadScalarOp, ScalarKind, StructFieldPlan, StructPlan, VecStructPlan,
 };
 
-#[cfg(target_arch = "aarch64")]
-unsafe extern "C" {
-    fn memcpy(dst: *mut c_void, src: *const c_void, n: usize) -> *mut c_void;
-}
-
 #[cfg(test)]
 static FORCE_DYNASM_COMPILE_FAIL: AtomicBool = AtomicBool::new(false);
 
@@ -1083,7 +1078,6 @@ impl DynasmTrampoline {
         let helper_dealloc = jit_op_vec_dealloc_raw::<T> as *const () as usize;
         let helper_finalize = jit_op_vec_finalize::<T> as *const () as usize;
         let helper_alloc_bytes = jit_alloc_bytes as *const () as usize;
-        let helper_memcpy = memcpy as *const () as usize;
         let string_word_offsets = jit_string_word_offsets()?;
         let string_ptr_off = string_word_offsets.ptr;
         let string_len_off = string_word_offsets.len;
@@ -1204,6 +1198,9 @@ impl DynasmTrampoline {
                 JitDynasmOp::ReadWriteString { offset, .. } => {
                     let string_zero = ops.new_dynamic_label();
                     let string_store = ops.new_dynamic_label();
+                    let copy_qword_loop = ops.new_dynamic_label();
+                    let copy_tail_loop = ops.new_dynamic_label();
+                    let copy_done = ops.new_dynamic_label();
                     let utf8_loop = ops.new_dynamic_label();
                     let utf8_valid = ops.new_dynamic_label();
                     let utf8_scalar_start = ops.new_dynamic_label();
@@ -1374,15 +1371,25 @@ impl DynasmTrampoline {
                         ; .arch aarch64
                         ; b =>elem_fail_label
                         ; string_alloc_ok:
-                        ; mov x0, x14
-                        ; mov x1, x24
-                        ; mov x2, x23
-                    );
-                    emit_aarch64_load_u64(&mut ops, 16, helper_memcpy as u64);
-                    dynasm!(ops
-                        ; .arch aarch64
-                        ; blr x16
-                        ; mov x14, x0
+                        ; mov x9, #0
+                        ; cmp x23, #8
+                        ; b.lo =>copy_tail_loop
+                        ; =>copy_qword_loop
+                        ; add x10, x9, #8
+                        ; cmp x10, x23
+                        ; b.hi =>copy_tail_loop
+                        ; ldr x11, [x24, x9]
+                        ; str x11, [x14, x9]
+                        ; mov x9, x10
+                        ; b =>copy_qword_loop
+                        ; =>copy_tail_loop
+                        ; cmp x9, x23
+                        ; b.eq =>copy_done
+                        ; ldrb w10, [x24, x9]
+                        ; strb w10, [x14, x9]
+                        ; add x9, x9, #1
+                        ; b =>copy_tail_loop
+                        ; =>copy_done
                         ; b =>string_store
                         ; =>string_zero
                     );

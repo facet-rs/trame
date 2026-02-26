@@ -232,8 +232,8 @@ where
     T: Facet<'static>,
 {
     plan: PostcardVecStructPlan,
-    element: DynasmPrepared<T>,
     trampoline: DynasmTrampoline,
+    _marker: PhantomData<fn() -> T>,
 }
 
 #[cfg(feature = "dynasm-rt")]
@@ -373,12 +373,12 @@ impl PostcardVecStructPlan {
         T: Facet<'static>,
     {
         self.ensure_vec_shape::<T>().ok()?;
-        let element = self.element_plan.prepare_dynasm::<T>()?;
-        let trampoline = DynasmTrampoline::compile_vec::<T>(&element.trampoline)?;
+        let element_program = DynasmCompiledProgram::from_plan::<T>(&self.element_plan)?;
+        let trampoline = DynasmTrampoline::compile_vec::<T>(&element_program)?;
         Some(DynasmPreparedVec {
             plan: self.clone(),
-            element,
             trampoline,
+            _marker: PhantomData,
         })
     }
 
@@ -1055,44 +1055,45 @@ where
 }
 
 #[cfg(feature = "dynasm-rt")]
-unsafe extern "C" fn jit_op_vec_reset_element<T>(ctx: *mut c_void, _arg1: u64, _arg2: u64) -> i32
+unsafe extern "C" fn jit_op_read_string_to_ptr<T>(ctx: *mut c_void, arg1: u64, _arg2: u64) -> i32
 where
     T: Facet<'static>,
 {
     let ctx = unsafe { jit_ctx::<T>(ctx) };
-    for init in &mut ctx.field_inits {
-        *init = 0;
+    if ctx.failed {
+        return 1;
     }
+    let dst = arg1 as usize as *mut String;
+    let value = match jit_read_string(ctx) {
+        Ok(v) => v,
+        Err(e) => {
+            jit_set_error_from_error(ctx, e);
+            return 1;
+        }
+    };
+    unsafe { dst.write(value) };
     0
 }
 
 #[cfg(feature = "dynasm-rt")]
-unsafe extern "C" fn jit_op_drop_current_out<T>(ctx: *mut c_void, _arg1: u64, _arg2: u64) -> i32
+unsafe extern "C" fn jit_op_drop_string_ptr<T>(_: *mut c_void, arg1: u64, _arg2: u64) -> i32
 where
     T: Facet<'static>,
 {
-    let ctx = unsafe { jit_ctx::<T>(ctx) };
-    let field_plans =
-        unsafe { core::slice::from_raw_parts(ctx.field_plans_ptr, ctx.field_plans_len) };
+    let dst = arg1 as usize as *mut String;
     unsafe {
-        drop_initialized_fields(ctx.out.as_mut_ptr().cast(), field_plans, &ctx.field_inits);
+        core::ptr::drop_in_place(dst);
     }
     0
 }
 
 #[cfg(feature = "dynasm-rt")]
-unsafe extern "C" fn jit_op_vec_drop_partial<T>(ctx: *mut c_void, _arg1: u64, _arg2: u64) -> i32
+unsafe extern "C" fn jit_op_vec_dealloc_raw<T>(ctx: *mut c_void, _arg1: u64, _arg2: u64) -> i32
 where
     T: Facet<'static>,
 {
     let ctx = unsafe { jit_ctx::<T>(ctx) };
     if !ctx.vec_ptr.is_null() {
-        if ctx.vec_len != 0 {
-            unsafe {
-                let initialized = core::slice::from_raw_parts_mut(ctx.vec_ptr, ctx.vec_len);
-                core::ptr::drop_in_place(initialized);
-            }
-        }
         if core::mem::size_of::<T>() != 0 && ctx.vec_cap != 0 {
             if let Ok(layout) = Layout::array::<T>(ctx.vec_cap) {
                 unsafe {
@@ -1226,7 +1227,7 @@ impl DynasmTrampoline {
         }
     }
 
-    fn compile_vec<T>(element_trampoline: &DynasmTrampoline) -> Option<Self>
+    fn compile_vec<T>(element_program: &DynasmCompiledProgram) -> Option<Self>
     where
         T: Facet<'static>,
     {
@@ -1237,16 +1238,16 @@ impl DynasmTrampoline {
 
         #[cfg(target_arch = "aarch64")]
         {
-            Self::compile_vec_aarch64::<T>(element_trampoline)
+            Self::compile_vec_aarch64::<T>(element_program)
         }
         #[cfg(target_arch = "x86_64")]
         {
-            let _ = element_trampoline;
+            let _ = element_program;
             None
         }
         #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
         {
-            let _ = element_trampoline;
+            let _ = element_program;
             None
         }
     }
@@ -1405,7 +1406,7 @@ impl DynasmTrampoline {
     }
 
     #[cfg(target_arch = "aarch64")]
-    fn compile_vec_aarch64<T>(element_trampoline: &DynasmTrampoline) -> Option<Self>
+    fn compile_vec_aarch64<T>(element_program: &DynasmCompiledProgram) -> Option<Self>
     where
         T: Facet<'static>,
     {
@@ -1415,24 +1416,38 @@ impl DynasmTrampoline {
         let loop_label = ops.new_dynamic_label();
         let done_label = ops.new_dynamic_label();
         let elem_fail_label = ops.new_dynamic_label();
+        let err_elem_eof = ops.new_dynamic_label();
+        let err_elem_overflow = ops.new_dynamic_label();
+        let err_elem_invalid_bool = ops.new_dynamic_label();
         let err_eof = ops.new_dynamic_label();
         let err_overflow = ops.new_dynamic_label();
         let entry = ops.offset();
 
-        let element_entry = element_trampoline.entry as *const () as usize;
+        let string_helper = jit_op_read_string_to_ptr::<T> as *const () as usize;
+        let drop_string_helper = jit_op_drop_string_ptr::<T> as *const () as usize;
         let helper_alloc = jit_op_vec_alloc::<T> as *const () as usize;
-        let helper_reset = jit_op_vec_reset_element::<T> as *const () as usize;
-        let helper_drop_current = jit_op_drop_current_out::<T> as *const () as usize;
-        let helper_drop_partial = jit_op_vec_drop_partial::<T> as *const () as usize;
+        let helper_dealloc = jit_op_vec_dealloc_raw::<T> as *const () as usize;
         let helper_finalize = jit_op_vec_finalize::<T> as *const () as usize;
+        let stride = core::mem::size_of::<T>() as u64;
+
+        let mut string_fields = Vec::new();
+        for (idx, op) in element_program.ops.iter().enumerate() {
+            if let JitDynasmOp::ReadWriteString { offset, .. } = *op {
+                string_fields.push((idx as u64 + 1, offset as u64));
+            }
+        }
 
         dynasm!(ops
             ; .arch aarch64
-            ; sub sp, sp, #32
+            ; sub sp, sp, #64
             ; str x0, [sp]
             ; str x30, [sp, #8]
             ; str x19, [sp, #16]
             ; str x20, [sp, #24]
+            ; str x21, [sp, #32]
+            ; str x22, [sp, #40]
+            ; str x23, [sp, #48]
+            ; str x24, [sp, #56]
             ; ldr x8, [sp]
             ; ldr x5, [x8, #o.input_ptr]
             ; ldr x6, [x8, #o.input_len]
@@ -1454,31 +1469,112 @@ impl DynasmTrampoline {
             ; .arch aarch64
             ; blr x16
             ; cbnz w0, =>return_label
+            ; ldr x8, [sp]
+            ; ldr x5, [x8, #o.input_ptr]
+            ; ldr x6, [x8, #o.input_len]
+            ; ldr x7, [x8, #o.pos]
             ; mov x20, #0 // i
+            ; mov x21, #0 // current element stage
+            ; mov x22, #0 // current element ptr
             ; =>loop_label
             ; cmp x20, x19
             ; b.eq =>done_label
+        );
 
-            ; ldr x0, [sp]
-            ; mov x1, #0
-            ; mov x2, #0
-        );
-        emit_aarch64_load_u64(&mut ops, 16, helper_reset as u64);
         dynasm!(ops
             ; .arch aarch64
-            ; blr x16
+            ; ldr x8, [sp]
+            ; ldr x22, [x8, #o.vec_ptr]
+        );
+        if stride != 0 {
+            emit_aarch64_load_u64(&mut ops, 9, stride);
+            dynasm!(ops
+                ; .arch aarch64
+                ; mul x10, x20, x9
+                ; add x22, x22, x10
+            );
+        }
+        dynasm!(ops
+            ; .arch aarch64
+            ; mov x21, #0
+        );
 
-            ; ldr x0, [sp]
-        );
-        emit_aarch64_load_u64(&mut ops, 16, element_entry as u64);
+        for op in &element_program.ops {
+            match *op {
+                JitDynasmOp::ReadWriteU32 { offset, .. } => {
+                    emit_aarch64_decode_u32(&mut ops, err_elem_eof, err_elem_overflow);
+                    dynasm!(ops
+                        ; .arch aarch64
+                        ; mov x9, x22
+                    );
+                    emit_aarch64_load_u64(&mut ops, 10, offset as u64);
+                    dynasm!(ops
+                        ; .arch aarch64
+                        ; add x9, x9, x10
+                        ; str w11, [x9]
+                        ; add x21, x21, #1
+                    );
+                }
+                JitDynasmOp::ReadWriteBool { offset, .. } => {
+                    dynasm!(ops
+                        ; .arch aarch64
+                        ; mov x1, x7
+                        ; cmp x7, x6
+                        ; b.hs =>err_elem_eof
+                        ; ldrb w11, [x5, x7]
+                        ; add x7, x7, #1
+                        ; cmp w11, #0
+                        ; b.eq >bool_ok_vec
+                        ; cmp w11, #1
+                        ; b.eq >bool_ok_vec
+                        ; mov w2, w11
+                        ; b =>err_elem_invalid_bool
+                        ; bool_ok_vec:
+                        ; mov x9, x22
+                    );
+                    emit_aarch64_load_u64(&mut ops, 10, offset as u64);
+                    dynasm!(ops
+                        ; .arch aarch64
+                        ; add x9, x9, x10
+                        ; strb w11, [x9]
+                        ; add x21, x21, #1
+                    );
+                }
+                JitDynasmOp::ReadWriteString { offset, .. } => {
+                    dynasm!(ops
+                        ; .arch aarch64
+                        ; ldr x8, [sp]
+                        ; str x7, [x8, #o.pos]
+                        ; ldr x0, [sp]
+                        ; mov x1, x22
+                    );
+                    emit_aarch64_load_u64(&mut ops, 9, offset as u64);
+                    dynasm!(ops
+                        ; .arch aarch64
+                        ; add x1, x1, x9
+                        ; mov x2, #0
+                    );
+                    emit_aarch64_load_u64(&mut ops, 16, string_helper as u64);
+                    dynasm!(ops
+                        ; .arch aarch64
+                        ; blr x16
+                        ; cbnz w0, =>elem_fail_label
+                        ; ldr x8, [sp]
+                        ; ldr x5, [x8, #o.input_ptr]
+                        ; ldr x6, [x8, #o.input_len]
+                        ; ldr x7, [x8, #o.pos]
+                        ; add x21, x21, #1
+                    );
+                }
+            }
+        }
+
         dynasm!(ops
             ; .arch aarch64
-            ; blr x16
-            ; cbnz w0, =>elem_fail_label
-        );
-        emit_aarch64_move_out_to_vec_slot(&mut ops, o, core::mem::size_of::<T>() as u64);
-        dynasm!(ops
-            ; .arch aarch64
+            ; add x10, x20, #1
+            ; ldr x8, [sp]
+            ; str x7, [x8, #o.pos]
+            ; str x10, [x8, #o.vec_len]
             ; add x20, x20, #1
             ; b =>loop_label
 
@@ -1494,16 +1590,8 @@ impl DynasmTrampoline {
         emit_aarch64_write_failure(&mut ops, o, JitErrorTag::TrailingBytes);
         dynasm!(ops
             ; .arch aarch64
-            ; ldr x0, [sp]
-            ; mov x1, #0
-            ; mov x2, #0
-        );
-        emit_aarch64_load_u64(&mut ops, 16, helper_drop_partial as u64);
-        dynasm!(ops
-            ; .arch aarch64
-            ; blr x16
-            ; mov w0, #1
-            ; b =>return_label
+            ; mov x21, #0
+            ; b =>elem_fail_label
 
             ; vec_finalize:
             ; ldr x0, [sp]
@@ -1517,24 +1605,116 @@ impl DynasmTrampoline {
             ; b =>return_label
 
             ; =>elem_fail_label
-            ; ldr x0, [sp]
-            ; mov x1, #0
-            ; mov x2, #0
         );
-        emit_aarch64_load_u64(&mut ops, 16, helper_drop_current as u64);
+
+        for (stage_needed, offset) in &string_fields {
+            let skip = ops.new_dynamic_label();
+            emit_aarch64_load_u64(&mut ops, 9, *stage_needed);
+            dynasm!(ops
+                ; .arch aarch64
+                ; cmp x21, x9
+                ; b.lo =>skip
+                ; ldr x0, [sp]
+                ; mov x1, x22
+            );
+            emit_aarch64_load_u64(&mut ops, 10, *offset);
+            dynasm!(ops
+                ; .arch aarch64
+                ; add x1, x1, x10
+                ; mov x2, #0
+            );
+            emit_aarch64_load_u64(&mut ops, 16, drop_string_helper as u64);
+            dynasm!(ops
+                ; .arch aarch64
+                ; blr x16
+                ; =>skip
+            );
+        }
+
+        let drop_loop = ops.new_dynamic_label();
+        let drop_done = ops.new_dynamic_label();
         dynasm!(ops
             ; .arch aarch64
-            ; blr x16
+            ; mov x23, #0
+            ; =>drop_loop
+            ; cmp x23, x20
+            ; b.eq =>drop_done
+            ; ldr x8, [sp]
+            ; ldr x24, [x8, #o.vec_ptr]
+        );
+        if stride != 0 {
+            emit_aarch64_load_u64(&mut ops, 9, stride);
+            dynasm!(ops
+                ; .arch aarch64
+                ; mul x10, x23, x9
+                ; add x24, x24, x10
+            );
+        }
+        for (_, offset) in &string_fields {
+            dynasm!(ops
+                ; .arch aarch64
+                ; ldr x0, [sp]
+                ; mov x1, x24
+            );
+            emit_aarch64_load_u64(&mut ops, 10, *offset);
+            dynasm!(ops
+                ; .arch aarch64
+                ; add x1, x1, x10
+                ; mov x2, #0
+            );
+            emit_aarch64_load_u64(&mut ops, 16, drop_string_helper as u64);
+            dynasm!(ops
+                ; .arch aarch64
+                ; blr x16
+            );
+        }
+        dynasm!(ops
+            ; .arch aarch64
+            ; add x23, x23, #1
+            ; b =>drop_loop
+            ; =>drop_done
             ; ldr x0, [sp]
             ; mov x1, #0
             ; mov x2, #0
         );
-        emit_aarch64_load_u64(&mut ops, 16, helper_drop_partial as u64);
+        emit_aarch64_load_u64(&mut ops, 16, helper_dealloc as u64);
         dynasm!(ops
             ; .arch aarch64
             ; blr x16
             ; mov w0, #1
             ; b =>return_label
+        );
+
+        dynasm!(ops
+            ; .arch aarch64
+            ; =>err_elem_eof
+            ; mov w2, wzr
+        );
+        emit_aarch64_write_failure(&mut ops, o, JitErrorTag::UnexpectedEof);
+        dynasm!(ops
+            ; .arch aarch64
+            ; b =>elem_fail_label
+        );
+
+        dynasm!(ops
+            ; .arch aarch64
+            ; =>err_elem_overflow
+            ; mov w2, wzr
+        );
+        emit_aarch64_write_failure(&mut ops, o, JitErrorTag::VarintOverflow);
+        dynasm!(ops
+            ; .arch aarch64
+            ; b =>elem_fail_label
+        );
+
+        dynasm!(ops
+            ; .arch aarch64
+            ; =>err_elem_invalid_bool
+        );
+        emit_aarch64_write_failure(&mut ops, o, JitErrorTag::InvalidBool);
+        dynasm!(ops
+            ; .arch aarch64
+            ; b =>elem_fail_label
         );
 
         dynasm!(ops
@@ -1561,10 +1741,14 @@ impl DynasmTrampoline {
         dynasm!(ops
             ; .arch aarch64
             ; =>return_label
+            ; ldr x24, [sp, #56]
+            ; ldr x23, [sp, #48]
+            ; ldr x22, [sp, #40]
+            ; ldr x21, [sp, #32]
             ; ldr x20, [sp, #24]
             ; ldr x19, [sp, #16]
             ; ldr x30, [sp, #8]
-            ; add sp, sp, #32
+            ; add sp, sp, #64
             ; ret
         );
 
@@ -1624,70 +1808,6 @@ fn emit_aarch64_mark_field_init(
         ; add x9, x9, x10
         ; mov w10, #1
         ; strb w10, [x9]
-    );
-}
-
-#[cfg(all(feature = "dynasm-rt", target_arch = "aarch64"))]
-fn emit_aarch64_move_out_to_vec_slot(
-    ops: &mut dynasmrt::aarch64::Assembler,
-    o: JitContextOffsets,
-    type_size: u64,
-) {
-    dynasm!(ops
-        ; .arch aarch64
-        ; ldr x8, [sp]
-        ; ldr x9, [x8, #o.vec_ptr]
-    );
-    emit_aarch64_load_u64(ops, 11, type_size);
-    dynasm!(ops
-        ; .arch aarch64
-        ; mul x10, x20, x11
-        ; add x9, x9, x10
-        ; mov x12, x8
-    );
-    emit_aarch64_load_u64(ops, 11, o.out as u64);
-    dynasm!(ops
-        ; .arch aarch64
-        ; add x12, x12, x11
-    );
-
-    let mut remaining = type_size;
-    while remaining >= 8 {
-        dynasm!(ops
-            ; .arch aarch64
-            ; ldr x13, [x12], #8
-            ; str x13, [x9], #8
-        );
-        remaining -= 8;
-    }
-    if remaining >= 4 {
-        dynasm!(ops
-            ; .arch aarch64
-            ; ldr w13, [x12], #4
-            ; str w13, [x9], #4
-        );
-        remaining -= 4;
-    }
-    if remaining >= 2 {
-        dynasm!(ops
-            ; .arch aarch64
-            ; ldrh w13, [x12], #2
-            ; strh w13, [x9], #2
-        );
-        remaining -= 2;
-    }
-    if remaining >= 1 {
-        dynasm!(ops
-            ; .arch aarch64
-            ; ldrb w13, [x12]
-            ; strb w13, [x9]
-        );
-    }
-
-    dynasm!(ops
-        ; .arch aarch64
-        ; add x10, x20, #1
-        ; str x10, [x8, #o.vec_len]
     );
 }
 
@@ -1844,7 +1964,7 @@ fn decode_vec_with_dynasm_prepared<T>(
 where
     T: Facet<'static>,
 {
-    let plan = &prepared.element.plan;
+    let plan = &prepared.plan.element_plan;
     let mut ctx = JitCallContext::<T> {
         input_ptr: input.as_ptr(),
         input_len: input.len(),

@@ -10,7 +10,7 @@ use core::mem::MaybeUninit;
 #[cfg(all(feature = "dynasm-rt", test))]
 use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "dynasm-rt")]
-use dynasmrt::{AssemblyOffset, DynasmApi};
+use dynasmrt::{AssemblyOffset, DynasmApi, DynasmLabelApi, dynasm};
 
 const POSTCARD_DECODE_ABI_V1: u32 = 1;
 
@@ -262,7 +262,7 @@ impl PostcardStructPlan {
         T: Facet<'static>,
     {
         self.ensure_shape::<T>().ok()?;
-        let program = DynasmCompiledProgram::from_plan::<T>(self);
+        let program = DynasmCompiledProgram::from_plan::<T>(self)?;
         let trampoline = DynasmTrampoline::compile(&program)?;
         Some(DynasmPrepared {
             plan: self.clone(),
@@ -535,7 +535,7 @@ fn scalar_kind_for_shape(shape: &'static Shape) -> Option<ScalarKind> {
 fn write_field_from_reg(
     out_ptr: *mut u8,
     field_plans: &[StructFieldPlan],
-    field_inits: &mut [bool],
+    field_inits: &mut [u8],
     field_idx: usize,
     src_reg_idx: usize,
     reg: &mut RegValue,
@@ -556,7 +556,7 @@ fn write_field_from_reg(
             unsafe { (dst as *mut bool).write(*value) };
         }
         (ScalarKind::String, RegValue::String(value)) => {
-            if *init_flag {
+            if *init_flag != 0 {
                 unsafe { core::ptr::drop_in_place(dst as *mut String) };
             }
             unsafe { (dst as *mut String).write(core::mem::take(value)) };
@@ -564,17 +564,17 @@ fn write_field_from_reg(
         (_, RegValue::Unset) => return Err(Error::RegisterUnset { reg: src_reg_idx }),
         _ => return Err(Error::ShapeMismatch),
     }
-    *init_flag = true;
+    *init_flag = 1;
     Ok(())
 }
 
 unsafe fn drop_initialized_fields(
     out_ptr: *mut u8,
     field_plans: &[StructFieldPlan],
-    field_inits: &[bool],
+    field_inits: &[u8],
 ) {
     for (field, init) in field_plans.iter().zip(field_inits.iter()) {
-        if !*init {
+        if *init == 0 {
             continue;
         }
         if field.kind == ScalarKind::String {
@@ -642,7 +642,7 @@ where
     T: Facet<'static>,
 {
     let mut regs = vec![RegValue::Unset; plan.program.register_count];
-    let mut field_inits = vec![false; plan.field_plans.len()];
+    let mut field_inits = vec![0u8; plan.field_plans.len()];
     let mut out = core::mem::MaybeUninit::<T>::uninit();
     for instr in &plan.program.instructions {
         let step = match *instr {
@@ -692,7 +692,7 @@ where
             return Err(err);
         }
     }
-    if let Some(missing) = field_inits.iter().position(|init| !*init) {
+    if let Some(missing) = field_inits.iter().position(|init| *init == 0) {
         unsafe {
             drop_initialized_fields(out.as_mut_ptr().cast(), &plan.field_plans, &field_inits);
         }
@@ -739,39 +739,76 @@ struct JitCallContext<T> {
     input_ptr: *const u8,
     input_len: usize,
     pos: usize,
-    regs: Vec<RegValue>,
-    field_plans_ptr: *const StructFieldPlan,
-    field_plans_len: usize,
-    field_inits: Vec<bool>,
+    field_inits: Vec<u8>,
+    field_inits_ptr: *mut u8,
     failed: bool,
-    error: MaybeUninit<Error>,
+    error_tag: JitErrorTag,
+    error_offset: usize,
+    error_value: u32,
     out: MaybeUninit<T>,
 }
 
 #[cfg(feature = "dynasm-rt")]
-#[derive(Clone, Copy)]
-struct JitCall {
-    helper: usize,
-    arg1: u64,
-    arg2: u64,
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum JitErrorTag {
+    None = 0,
+    UnexpectedEof = 1,
+    VarintOverflow = 2,
+    InvalidUtf8 = 3,
+    InvalidBool = 4,
+    TrailingBytes = 5,
+    InvalidRegister = 6,
+    RegisterUnset = 7,
+    ShapeMismatch = 8,
 }
 
 #[cfg(feature = "dynasm-rt")]
-fn scalar_kind_tag(kind: ScalarKind) -> u64 {
-    match kind {
-        ScalarKind::U32 => 0,
-        ScalarKind::String => 1,
-        ScalarKind::Bool => 2,
+impl JitErrorTag {
+    fn from_byte(byte: u8) -> Self {
+        match byte {
+            1 => Self::UnexpectedEof,
+            2 => Self::VarintOverflow,
+            3 => Self::InvalidUtf8,
+            4 => Self::InvalidBool,
+            5 => Self::TrailingBytes,
+            6 => Self::InvalidRegister,
+            7 => Self::RegisterUnset,
+            8 => Self::ShapeMismatch,
+            _ => Self::None,
+        }
     }
 }
 
 #[cfg(feature = "dynasm-rt")]
-fn scalar_kind_from_tag(tag: u64) -> Option<ScalarKind> {
-    match tag {
-        0 => Some(ScalarKind::U32),
-        1 => Some(ScalarKind::String),
-        2 => Some(ScalarKind::Bool),
-        _ => None,
+#[derive(Clone, Copy)]
+struct JitContextOffsets {
+    input_ptr: u32,
+    input_len: u32,
+    pos: u32,
+    field_inits_ptr: u32,
+    failed: u32,
+    error_tag: u32,
+    error_offset: u32,
+    error_value: u32,
+    out: u32,
+}
+
+#[cfg(feature = "dynasm-rt")]
+fn jit_context_offsets<T>() -> JitContextOffsets
+where
+    T: Facet<'static>,
+{
+    JitContextOffsets {
+        input_ptr: core::mem::offset_of!(JitCallContext<T>, input_ptr) as u32,
+        input_len: core::mem::offset_of!(JitCallContext<T>, input_len) as u32,
+        pos: core::mem::offset_of!(JitCallContext<T>, pos) as u32,
+        field_inits_ptr: core::mem::offset_of!(JitCallContext<T>, field_inits_ptr) as u32,
+        failed: core::mem::offset_of!(JitCallContext<T>, failed) as u32,
+        error_tag: core::mem::offset_of!(JitCallContext<T>, error_tag) as u32,
+        error_offset: core::mem::offset_of!(JitCallContext<T>, error_offset) as u32,
+        error_value: core::mem::offset_of!(JitCallContext<T>, error_value) as u32,
+        out: core::mem::offset_of!(JitCallContext<T>, out) as u32,
     }
 }
 
@@ -784,13 +821,83 @@ where
 }
 
 #[cfg(feature = "dynasm-rt")]
-fn jit_set_error<T>(ctx: &mut JitCallContext<T>, error: Error)
+fn jit_set_failure<T>(ctx: &mut JitCallContext<T>, tag: JitErrorTag, offset: usize, value: u32)
 where
     T: Facet<'static>,
 {
     if !ctx.failed {
         ctx.failed = true;
-        ctx.error.write(error);
+        ctx.error_tag = tag;
+        ctx.error_offset = offset;
+        ctx.error_value = value;
+    }
+}
+
+#[cfg(feature = "dynasm-rt")]
+fn jit_set_error_from_error<T>(ctx: &mut JitCallContext<T>, error: Error)
+where
+    T: Facet<'static>,
+{
+    match error {
+        Error::UnexpectedEof { offset } => {
+            jit_set_failure(ctx, JitErrorTag::UnexpectedEof, offset, 0);
+        }
+        Error::VarintOverflow { offset } => {
+            jit_set_failure(ctx, JitErrorTag::VarintOverflow, offset, 0);
+        }
+        Error::InvalidUtf8 { offset } => {
+            jit_set_failure(ctx, JitErrorTag::InvalidUtf8, offset, 0);
+        }
+        Error::InvalidBool { offset, value } => {
+            jit_set_failure(ctx, JitErrorTag::InvalidBool, offset, value as u32);
+        }
+        Error::TrailingBytes { offset } => {
+            jit_set_failure(ctx, JitErrorTag::TrailingBytes, offset, 0);
+        }
+        Error::InvalidRegister { reg } => {
+            jit_set_failure(ctx, JitErrorTag::InvalidRegister, reg, 0);
+        }
+        Error::RegisterUnset { reg } => {
+            jit_set_failure(ctx, JitErrorTag::RegisterUnset, reg, 0);
+        }
+        Error::ShapeMismatch => {
+            jit_set_failure(ctx, JitErrorTag::ShapeMismatch, 0, 0);
+        }
+        Error::Compile(_) | Error::Trame(_) => {
+            jit_set_failure(ctx, JitErrorTag::ShapeMismatch, 0, 0);
+        }
+    }
+}
+
+#[cfg(feature = "dynasm-rt")]
+fn jit_error_from_context<T>(ctx: &JitCallContext<T>) -> Error
+where
+    T: Facet<'static>,
+{
+    match JitErrorTag::from_byte(ctx.error_tag as u8) {
+        JitErrorTag::UnexpectedEof => Error::UnexpectedEof {
+            offset: ctx.error_offset,
+        },
+        JitErrorTag::VarintOverflow => Error::VarintOverflow {
+            offset: ctx.error_offset,
+        },
+        JitErrorTag::InvalidUtf8 => Error::InvalidUtf8 {
+            offset: ctx.error_offset,
+        },
+        JitErrorTag::InvalidBool => Error::InvalidBool {
+            offset: ctx.error_offset,
+            value: ctx.error_value as u8,
+        },
+        JitErrorTag::TrailingBytes => Error::TrailingBytes {
+            offset: ctx.error_offset,
+        },
+        JitErrorTag::InvalidRegister => Error::InvalidRegister {
+            reg: ctx.error_offset,
+        },
+        JitErrorTag::RegisterUnset => Error::RegisterUnset {
+            reg: ctx.error_offset,
+        },
+        JitErrorTag::ShapeMismatch | JitErrorTag::None => Error::ShapeMismatch,
     }
 }
 
@@ -849,112 +956,6 @@ where
 }
 
 #[cfg(feature = "dynasm-rt")]
-fn jit_read_bool<T>(ctx: &mut JitCallContext<T>) -> Result<bool, Error>
-where
-    T: Facet<'static>,
-{
-    let offset = ctx.pos;
-    let value = jit_read_byte(ctx)?;
-    match value {
-        0 => Ok(false),
-        1 => Ok(true),
-        _ => Err(Error::InvalidBool { offset, value }),
-    }
-}
-
-#[cfg(feature = "dynasm-rt")]
-unsafe extern "C" fn jit_op_read_scalar<T>(ctx: *mut c_void, arg1: u64, arg2: u64) -> i32
-where
-    T: Facet<'static>,
-{
-    let ctx = unsafe { jit_ctx::<T>(ctx) };
-    if ctx.failed {
-        return 0;
-    }
-    let Some(kind) = scalar_kind_from_tag(arg1) else {
-        jit_set_error(ctx, Error::InvalidRegister { reg: arg1 as usize });
-        return 0;
-    };
-    let dst = arg2 as usize;
-    if ctx.regs.get(dst).is_none() {
-        jit_set_error(ctx, Error::InvalidRegister { reg: dst });
-        return 0;
-    }
-    let value = match kind {
-        ScalarKind::U32 => jit_read_u32(ctx).map(RegValue::U32),
-        ScalarKind::String => jit_read_string(ctx).map(RegValue::String),
-        ScalarKind::Bool => jit_read_bool(ctx).map(RegValue::Bool),
-    };
-    match value {
-        Ok(v) => {
-            if let Some(slot) = ctx.regs.get_mut(dst) {
-                *slot = v;
-            } else {
-                jit_set_error(ctx, Error::InvalidRegister { reg: dst });
-            }
-        }
-        Err(e) => jit_set_error(ctx, e),
-    }
-    0
-}
-
-#[cfg(feature = "dynasm-rt")]
-unsafe extern "C" fn jit_op_read_write_field_u32<T>(ctx: *mut c_void, arg1: u64, arg2: u64) -> i32
-where
-    T: Facet<'static>,
-{
-    let ctx = unsafe { jit_ctx::<T>(ctx) };
-    if ctx.failed {
-        return 0;
-    }
-    let field = arg1 as usize;
-    let offset = arg2 as usize;
-    if field >= ctx.field_inits.len() {
-        jit_set_error(ctx, Error::InvalidRegister { reg: field });
-        return 0;
-    }
-    let value = match jit_read_u32(ctx) {
-        Ok(v) => v,
-        Err(e) => {
-            jit_set_error(ctx, e);
-            return 0;
-        }
-    };
-    let dst = unsafe { ctx.out.as_mut_ptr().cast::<u8>().add(offset).cast::<u32>() };
-    unsafe { dst.write(value) };
-    ctx.field_inits[field] = true;
-    0
-}
-
-#[cfg(feature = "dynasm-rt")]
-unsafe extern "C" fn jit_op_read_write_field_bool<T>(ctx: *mut c_void, arg1: u64, arg2: u64) -> i32
-where
-    T: Facet<'static>,
-{
-    let ctx = unsafe { jit_ctx::<T>(ctx) };
-    if ctx.failed {
-        return 0;
-    }
-    let field = arg1 as usize;
-    let offset = arg2 as usize;
-    if field >= ctx.field_inits.len() {
-        jit_set_error(ctx, Error::InvalidRegister { reg: field });
-        return 0;
-    }
-    let value = match jit_read_bool(ctx) {
-        Ok(v) => v,
-        Err(e) => {
-            jit_set_error(ctx, e);
-            return 0;
-        }
-    };
-    let dst = unsafe { ctx.out.as_mut_ptr().cast::<u8>().add(offset).cast::<bool>() };
-    unsafe { dst.write(value) };
-    ctx.field_inits[field] = true;
-    0
-}
-
-#[cfg(feature = "dynasm-rt")]
 unsafe extern "C" fn jit_op_read_write_field_string<T>(
     ctx: *mut c_void,
     arg1: u64,
@@ -965,19 +966,19 @@ where
 {
     let ctx = unsafe { jit_ctx::<T>(ctx) };
     if ctx.failed {
-        return 0;
+        return 1;
     }
     let field = arg1 as usize;
     let offset = arg2 as usize;
     if field >= ctx.field_inits.len() {
-        jit_set_error(ctx, Error::InvalidRegister { reg: field });
-        return 0;
+        jit_set_failure(ctx, JitErrorTag::InvalidRegister, field, 0);
+        return 1;
     }
     let value = match jit_read_string(ctx) {
         Ok(v) => v,
         Err(e) => {
-            jit_set_error(ctx, e);
-            return 0;
+            jit_set_error_from_error(ctx, e);
+            return 1;
         }
     };
     let dst = unsafe {
@@ -987,154 +988,80 @@ where
             .add(offset)
             .cast::<String>()
     };
-    if ctx.field_inits[field] {
+    if ctx.field_inits[field] != 0 {
         unsafe { core::ptr::drop_in_place(dst) };
     }
     unsafe { dst.write(value) };
-    ctx.field_inits[field] = true;
+    ctx.field_inits[field] = 1;
     0
 }
 
 #[cfg(feature = "dynasm-rt")]
-unsafe extern "C" fn jit_op_write_field<T>(ctx: *mut c_void, arg1: u64, arg2: u64) -> i32
-where
-    T: Facet<'static>,
-{
-    let ctx = unsafe { jit_ctx::<T>(ctx) };
-    if ctx.failed {
-        return 0;
-    }
-    let field = arg1 as u32;
-    let src = arg2 as usize;
-    let Some(reg) = ctx.regs.get_mut(src) else {
-        jit_set_error(ctx, Error::InvalidRegister { reg: src });
-        return 0;
-    };
-    let field_plans =
-        unsafe { core::slice::from_raw_parts(ctx.field_plans_ptr, ctx.field_plans_len) };
-    let result = write_field_from_reg(
-        ctx.out.as_mut_ptr().cast(),
-        field_plans,
-        &mut ctx.field_inits,
-        field as usize,
-        src,
-        reg,
-    );
-    if let Err(e) = result {
-        jit_set_error(ctx, e);
-        return 0;
-    }
-    0
-}
-
-#[cfg(feature = "dynasm-rt")]
-unsafe extern "C" fn jit_op_require_eof<T>(ctx: *mut c_void, _arg1: u64, _arg2: u64) -> i32
-where
-    T: Facet<'static>,
-{
-    let ctx = unsafe { jit_ctx::<T>(ctx) };
-    if ctx.failed {
-        return 0;
-    }
-    if ctx.pos != ctx.input_len {
-        jit_set_error(ctx, Error::TrailingBytes { offset: ctx.pos });
-    }
-    0
-}
-
-#[cfg(feature = "dynasm-rt")]
-unsafe extern "C" fn jit_op_finish<T>(ctx: *mut c_void, _arg1: u64, _arg2: u64) -> i32
-where
-    T: Facet<'static>,
-{
-    let ctx = unsafe { jit_ctx::<T>(ctx) };
-    if ctx.failed {
-        return 1;
-    }
-    if let Some(missing) = ctx.field_inits.iter().position(|init| !*init) {
-        if !ctx.failed {
-            jit_set_error(ctx, Error::RegisterUnset { reg: missing });
-            1
-        } else {
-            1
-        }
-    } else {
-        0
-    }
+#[derive(Clone, Copy)]
+enum JitDynasmOp {
+    ReadWriteU32 { field: u32, offset: usize },
+    ReadWriteBool { field: u32, offset: usize },
+    ReadWriteString { field: u32, offset: usize },
 }
 
 #[cfg(feature = "dynasm-rt")]
 struct DynasmCompiledProgram {
-    calls: Vec<JitCall>,
-    finish: usize,
+    ops: Vec<JitDynasmOp>,
+    require_eof: bool,
+    string_helper: usize,
+    context_offsets: JitContextOffsets,
 }
 
 #[cfg(feature = "dynasm-rt")]
 impl DynasmCompiledProgram {
-    fn from_plan<T>(plan: &PostcardStructPlan) -> Self
+    fn from_plan<T>(plan: &PostcardStructPlan) -> Option<Self>
     where
         T: Facet<'static>,
     {
-        let mut calls = Vec::with_capacity(plan.program.instructions.len());
+        let mut ops = Vec::with_capacity(plan.field_plans.len());
+        let mut require_eof = false;
         let mut idx = 0usize;
         while let Some(instr) = plan.program.instructions.get(idx) {
-            if let (
-                DecodeInstr::ReadScalar { kind, dst },
-                Some(DecodeInstr::WriteFieldFromReg { field, src }),
-            ) = (*instr, plan.program.instructions.get(idx + 1).copied())
-            {
-                if dst == src {
+            match (*instr, plan.program.instructions.get(idx + 1).copied()) {
+                (
+                    DecodeInstr::ReadScalar { kind, dst },
+                    Some(DecodeInstr::WriteFieldFromReg { field, src }),
+                ) if dst == src => {
                     let field_idx = field as usize;
-                    let Some(field_plan) = plan.field_plans.get(field_idx) else {
-                        calls.push(JitCall {
-                            helper: jit_op_read_scalar::<T> as *const () as usize,
-                            arg1: scalar_kind_tag(kind),
-                            arg2: dst as u64,
-                        });
-                        idx += 1;
-                        continue;
+                    let field_plan = plan.field_plans.get(field_idx)?;
+                    if field_plan.kind != kind {
+                        return None;
+                    }
+                    let op = match kind {
+                        ScalarKind::U32 => JitDynasmOp::ReadWriteU32 {
+                            field,
+                            offset: field_plan.offset,
+                        },
+                        ScalarKind::Bool => JitDynasmOp::ReadWriteBool {
+                            field,
+                            offset: field_plan.offset,
+                        },
+                        ScalarKind::String => JitDynasmOp::ReadWriteString {
+                            field,
+                            offset: field_plan.offset,
+                        },
                     };
-                    let helper = match kind {
-                        ScalarKind::U32 => jit_op_read_write_field_u32::<T> as *const () as usize,
-                        ScalarKind::String => {
-                            jit_op_read_write_field_string::<T> as *const () as usize
-                        }
-                        ScalarKind::Bool => jit_op_read_write_field_bool::<T> as *const () as usize,
-                    };
-                    calls.push(JitCall {
-                        helper,
-                        arg1: field as u64,
-                        arg2: field_plan.offset as u64,
-                    });
+                    ops.push(op);
                     idx += 2;
-                    continue;
                 }
+                (DecodeInstr::RequireEof, _) => {
+                    require_eof = true;
+                    idx += 1;
+                }
+                _ => return None,
             }
-
-            let call = match *instr {
-                DecodeInstr::ReadScalar { kind, dst } => JitCall {
-                    helper: jit_op_read_scalar::<T> as *const () as usize,
-                    arg1: scalar_kind_tag(kind),
-                    arg2: dst as u64,
-                },
-                DecodeInstr::WriteFieldFromReg { field, src } => JitCall {
-                    helper: jit_op_write_field::<T> as *const () as usize,
-                    arg1: field as u64,
-                    arg2: src as u64,
-                },
-                DecodeInstr::RequireEof => JitCall {
-                    helper: jit_op_require_eof::<T> as *const () as usize,
-                    arg1: 0,
-                    arg2: 0,
-                },
-            };
-            calls.push(call);
-            idx += 1;
         }
-        Self {
-            calls,
-            finish: jit_op_finish::<T> as *const () as usize,
-        }
+        Some(Self {
+            ops,
+            require_eof,
+            string_helper: jit_op_read_write_field_string::<T> as *const () as usize,
+            context_offsets: jit_context_offsets::<T>(),
+        })
     }
 }
 
@@ -1170,41 +1097,154 @@ impl DynasmTrampoline {
     #[cfg(target_arch = "aarch64")]
     fn compile_aarch64(program: &DynasmCompiledProgram) -> Option<Self> {
         let mut ops = dynasmrt::aarch64::Assembler::new().ok()?;
+        let o = program.context_offsets;
+        let return_label = ops.new_dynamic_label();
+        let err_eof = ops.new_dynamic_label();
+        let err_overflow = ops.new_dynamic_label();
+        let err_invalid_bool = ops.new_dynamic_label();
+        let err_trailing = ops.new_dynamic_label();
         let entry = ops.offset();
-        ops.push_u32(0xD10043FF); // sub sp, sp, #16
-        ops.push_u32(0xF90003E0); // str x0, [sp]
-        ops.push_u32(0xF90007FE); // str x30, [sp, #8]
+        dynasm!(ops
+            ; .arch aarch64
+            ; sub sp, sp, #16
+            ; str x0, [sp]
+            ; str x30, [sp, #8]
+            ; ldr x8, [sp]
+            ; ldr x5, [x8, #o.input_ptr]
+            ; ldr x6, [x8, #o.input_len]
+            ; ldr x7, [x8, #o.pos]
+        );
 
-        for call in &program.calls {
-            emit_aarch64_call(&mut ops, call.helper as u64, call.arg1, call.arg2);
+        for op in &program.ops {
+            match *op {
+                JitDynasmOp::ReadWriteU32 { field, offset } => {
+                    emit_aarch64_decode_u32(&mut ops, err_eof, err_overflow);
+                    emit_aarch64_store_field_u32(&mut ops, o.out as usize + offset);
+                    emit_aarch64_mark_field_init(&mut ops, o, field as usize);
+                }
+                JitDynasmOp::ReadWriteBool { field, offset } => {
+                    dynasm!(ops
+                        ; .arch aarch64
+                        ; mov x1, x7
+                        ; cmp x7, x6
+                        ; b.hs =>err_eof
+                        ; ldrb w11, [x5, x7]
+                        ; add x7, x7, #1
+                        ; cmp w11, #0
+                        ; b.eq >bool_ok
+                        ; cmp w11, #1
+                        ; b.eq >bool_ok
+                        ; mov w2, w11
+                        ; b =>err_invalid_bool
+                        ; bool_ok:
+                    );
+                    emit_aarch64_store_field_bool(&mut ops, o.out as usize + offset);
+                    emit_aarch64_mark_field_init(&mut ops, o, field as usize);
+                }
+                JitDynasmOp::ReadWriteString { field, offset } => {
+                    dynasm!(ops
+                        ; .arch aarch64
+                        ; ldr x8, [sp]
+                        ; str x7, [x8, #o.pos]
+                        ; ldr x0, [sp]
+                    );
+                    emit_aarch64_load_u64(&mut ops, 1, field as u64);
+                    emit_aarch64_load_u64(&mut ops, 2, offset as u64);
+                    emit_aarch64_load_u64(&mut ops, 16, program.string_helper as u64);
+                    dynasm!(ops
+                        ; .arch aarch64
+                        ; blr x16
+                        ; cbnz w0, =>return_label
+                        ; ldr x8, [sp]
+                        ; ldr x5, [x8, #o.input_ptr]
+                        ; ldr x6, [x8, #o.input_len]
+                        ; ldr x7, [x8, #o.pos]
+                    );
+                }
+            }
         }
-        emit_aarch64_call(&mut ops, program.finish as u64, 0, 0);
 
-        ops.push_u32(0xF94007FE); // ldr x30, [sp, #8]
-        ops.push_u32(0x910043FF); // add sp, sp, #16
-        ops.push_u32(0xD65F03C0); // ret
+        if program.require_eof {
+            dynasm!(ops
+                ; .arch aarch64
+                ; cmp x7, x6
+                ; b.eq >eof_ok
+                ; mov x1, x7
+                ; b =>err_trailing
+                ; eof_ok:
+            );
+        }
+
+        dynasm!(ops
+            ; .arch aarch64
+            ; ldr x8, [sp]
+            ; str x7, [x8, #o.pos]
+            ; mov w0, #0
+            ; b =>return_label
+        );
+
+        dynasm!(ops
+            ; .arch aarch64
+            ; =>err_eof
+            ; mov w2, wzr
+        );
+        emit_aarch64_write_failure(&mut ops, o, JitErrorTag::UnexpectedEof);
+        dynasm!(ops
+            ; .arch aarch64
+            ; mov w0, #1
+            ; b =>return_label
+        );
+
+        dynasm!(ops
+            ; .arch aarch64
+            ; =>err_overflow
+            ; mov w2, wzr
+        );
+        emit_aarch64_write_failure(&mut ops, o, JitErrorTag::VarintOverflow);
+        dynasm!(ops
+            ; .arch aarch64
+            ; mov w0, #1
+            ; b =>return_label
+        );
+
+        dynasm!(ops
+            ; .arch aarch64
+            ; =>err_invalid_bool
+        );
+        emit_aarch64_write_failure(&mut ops, o, JitErrorTag::InvalidBool);
+        dynasm!(ops
+            ; .arch aarch64
+            ; mov w0, #1
+            ; b =>return_label
+        );
+
+        dynasm!(ops
+            ; .arch aarch64
+            ; =>err_trailing
+            ; mov w2, wzr
+        );
+        emit_aarch64_write_failure(&mut ops, o, JitErrorTag::TrailingBytes);
+        dynasm!(ops
+            ; .arch aarch64
+            ; mov w0, #1
+            ; b =>return_label
+        );
+
+        dynasm!(ops
+            ; .arch aarch64
+            ; =>return_label
+            ; ldr x30, [sp, #8]
+            ; add sp, sp, #16
+            ; ret
+        );
         let buffer = ops.finalize().ok()?;
         Some(Self::from_buffer(buffer, entry))
     }
 
     #[cfg(target_arch = "x86_64")]
     fn compile_x64(program: &DynasmCompiledProgram) -> Option<Self> {
-        let mut ops = dynasmrt::x64::Assembler::new().ok()?;
-        let entry = ops.offset();
-        ops.push(0x57); // push rdi
-
-        for call in &program.calls {
-            emit_x64_call(&mut ops, call.helper as u64, call.arg1, call.arg2);
-        }
-        emit_x64_call(&mut ops, program.finish as u64, 0, 0);
-
-        ops.push(0x48); // add rsp, 8
-        ops.push(0x83);
-        ops.push(0xC4);
-        ops.push(0x08);
-        ops.push(0xC3); // ret
-        let buffer = ops.finalize().ok()?;
-        Some(Self::from_buffer(buffer, entry))
+        let _ = program;
+        None
     }
 
     fn from_buffer(buffer: dynasmrt::ExecutableBuffer, entry: AssemblyOffset) -> Self {
@@ -1224,35 +1264,143 @@ impl DynasmTrampoline {
 }
 
 #[cfg(all(feature = "dynasm-rt", target_arch = "aarch64"))]
-fn emit_aarch64_call(ops: &mut dynasmrt::aarch64::Assembler, func: u64, arg1: u64, arg2: u64) {
-    ops.push_u32(0xF94003E0); // ldr x0, [sp]
-    emit_aarch64_load_u64(ops, 1, arg1);
-    emit_aarch64_load_u64(ops, 2, arg2);
-    emit_aarch64_load_u64(ops, 16, func);
-    ops.push_u32(0xD63F0200); // blr x16
+fn emit_aarch64_write_failure(
+    ops: &mut dynasmrt::aarch64::Assembler,
+    o: JitContextOffsets,
+    tag: JitErrorTag,
+) {
+    let tag = tag as u32;
+    dynasm!(ops
+        ; .arch aarch64
+        ; ldr x8, [sp]
+        ; mov w9, #1
+        ; strb w9, [x8, #o.failed]
+        ; mov w9, #tag
+        ; strb w9, [x8, #o.error_tag]
+        ; str x1, [x8, #o.error_offset]
+        ; str w2, [x8, #o.error_value]
+    );
 }
 
-#[cfg(all(feature = "dynasm-rt", target_arch = "x86_64"))]
-fn emit_x64_call(ops: &mut dynasmrt::x64::Assembler, func: u64, arg1: u64, arg2: u64) {
-    ops.push(0x48); // mov rdi, [rsp]
-    ops.push(0x8B);
-    ops.push(0x3C);
-    ops.push(0x24);
+#[cfg(all(feature = "dynasm-rt", target_arch = "aarch64"))]
+fn emit_aarch64_mark_field_init(
+    ops: &mut dynasmrt::aarch64::Assembler,
+    o: JitContextOffsets,
+    field: usize,
+) {
+    dynasm!(ops
+        ; .arch aarch64
+        ; ldr x8, [sp]
+        ; ldr x9, [x8, #o.field_inits_ptr]
+    );
+    emit_aarch64_load_u64(ops, 10, field as u64);
+    dynasm!(ops
+        ; .arch aarch64
+        ; add x9, x9, x10
+        ; mov w10, #1
+        ; strb w10, [x9]
+    );
+}
 
-    ops.push(0x48); // mov rsi, imm64
-    ops.push(0xBE);
-    ops.push_u64(arg1);
+#[cfg(all(feature = "dynasm-rt", target_arch = "aarch64"))]
+fn emit_aarch64_store_field_u32(ops: &mut dynasmrt::aarch64::Assembler, offset: usize) {
+    dynasm!(ops
+        ; .arch aarch64
+        ; ldr x8, [sp]
+    );
+    emit_aarch64_load_u64(ops, 9, offset as u64);
+    dynasm!(ops
+        ; .arch aarch64
+        ; add x8, x8, x9
+        ; str w11, [x8]
+    );
+}
 
-    ops.push(0x48); // mov rdx, imm64
-    ops.push(0xBA);
-    ops.push_u64(arg2);
+#[cfg(all(feature = "dynasm-rt", target_arch = "aarch64"))]
+fn emit_aarch64_store_field_bool(ops: &mut dynasmrt::aarch64::Assembler, offset: usize) {
+    dynasm!(ops
+        ; .arch aarch64
+        ; ldr x8, [sp]
+    );
+    emit_aarch64_load_u64(ops, 9, offset as u64);
+    dynasm!(ops
+        ; .arch aarch64
+        ; add x8, x8, x9
+        ; strb w11, [x8]
+    );
+}
 
-    ops.push(0x48); // mov rax, imm64
-    ops.push(0xB8);
-    ops.push_u64(func);
+#[cfg(all(feature = "dynasm-rt", target_arch = "aarch64"))]
+fn emit_aarch64_decode_u32(
+    ops: &mut dynasmrt::aarch64::Assembler,
+    err_eof: dynasmrt::DynamicLabel,
+    err_overflow: dynasmrt::DynamicLabel,
+) {
+    let done = ops.new_dynamic_label();
+    let byte5_ok_nibble = ops.new_dynamic_label();
+    dynasm!(ops
+        ; .arch aarch64
+        ; mov x15, x7
+        ; mov w11, wzr
 
-    ops.push(0xFF); // call rax
-    ops.push(0xD0);
+        ; mov x1, x7
+        ; cmp x7, x6
+        ; b.hs =>err_eof
+        ; ldrb w10, [x5, x7]
+        ; add x7, x7, #1
+        ; and w12, w10, #0x7f
+        ; orr w11, w11, w12
+        ; tbz w10, #7, =>done
+
+        ; mov x1, x7
+        ; cmp x7, x6
+        ; b.hs =>err_eof
+        ; ldrb w10, [x5, x7]
+        ; add x7, x7, #1
+        ; and w12, w10, #0x7f
+        ; lsl w12, w12, #7
+        ; orr w11, w11, w12
+        ; tbz w10, #7, =>done
+
+        ; mov x1, x7
+        ; cmp x7, x6
+        ; b.hs =>err_eof
+        ; ldrb w10, [x5, x7]
+        ; add x7, x7, #1
+        ; and w12, w10, #0x7f
+        ; lsl w12, w12, #14
+        ; orr w11, w11, w12
+        ; tbz w10, #7, =>done
+
+        ; mov x1, x7
+        ; cmp x7, x6
+        ; b.hs =>err_eof
+        ; ldrb w10, [x5, x7]
+        ; add x7, x7, #1
+        ; and w12, w10, #0x7f
+        ; lsl w12, w12, #21
+        ; orr w11, w11, w12
+        ; tbz w10, #7, =>done
+
+        ; mov x1, x7
+        ; cmp x7, x6
+        ; b.hs =>err_eof
+        ; ldrb w10, [x5, x7]
+        ; add x7, x7, #1
+        ; and w12, w10, #0x7f
+        ; tst w12, #0xf0
+        ; b.eq =>byte5_ok_nibble
+        ; mov x1, x15
+        ; b =>err_overflow
+        ; =>byte5_ok_nibble
+        ; lsl w12, w12, #28
+        ; orr w11, w11, w12
+        ; tbz w10, #7, =>done
+        ; mov x1, x15
+        ; b =>err_overflow
+
+        ; =>done
+    );
 }
 
 #[cfg(all(feature = "dynasm-rt", target_arch = "aarch64"))]
@@ -1309,17 +1457,17 @@ where
 {
     let mut reader = Reader::new(input);
     let len = reader.read_u32()? as usize;
-    let mut out = Vec::with_capacity(len);
+    let mut out = RawVecBuilder::<T>::with_capacity(len);
     let mut pos = reader.offset();
     for _ in 0..len {
         let (value, next_pos) = prepared.decode_at(input, pos)?;
-        out.push(value);
+        unsafe { out.push_unchecked(value) };
         pos = next_pos;
     }
     if pos != input.len() {
         return Err(Error::TrailingBytes { offset: pos });
     }
-    Ok(out)
+    Ok(out.finish())
 }
 
 #[cfg(feature = "dynasm-rt")]
@@ -1336,14 +1484,15 @@ where
         input_ptr: input.as_ptr(),
         input_len: input.len(),
         pos: start_pos,
-        regs: vec![RegValue::Unset; plan.program.register_count],
-        field_plans_ptr: plan.field_plans.as_ptr(),
-        field_plans_len: plan.field_plans.len(),
-        field_inits: vec![false; plan.field_plans.len()],
+        field_inits: vec![0u8; plan.field_plans.len()],
+        field_inits_ptr: core::ptr::null_mut(),
         failed: false,
-        error: MaybeUninit::uninit(),
+        error_tag: JitErrorTag::None,
+        error_offset: 0,
+        error_value: 0,
         out: MaybeUninit::uninit(),
     };
+    ctx.field_inits_ptr = ctx.field_inits.as_mut_ptr();
 
     let status = unsafe { trampoline.call((&mut ctx as *mut JitCallContext<T>).cast()) };
     match status {
@@ -1356,7 +1505,7 @@ where
                     &ctx.field_inits,
                 );
             }
-            Err(unsafe { ctx.error.assume_init() })
+            Err(jit_error_from_context(&ctx))
         }
         _ => {
             unsafe {
@@ -1369,6 +1518,52 @@ where
             let mut reader = Reader::new(&input[start_pos..]);
             let value = decode_struct_with_reader::<T>(plan, &mut reader)?;
             Ok((value, start_pos + reader.offset()))
+        }
+    }
+}
+
+#[cfg(feature = "dynasm-rt")]
+struct RawVecBuilder<T> {
+    ptr: *mut T,
+    len: usize,
+    cap: usize,
+}
+
+#[cfg(feature = "dynasm-rt")]
+impl<T> RawVecBuilder<T> {
+    fn with_capacity(cap: usize) -> Self {
+        let mut vec = Vec::<T>::with_capacity(cap);
+        let ptr = vec.as_mut_ptr();
+        let cap = vec.capacity();
+        core::mem::forget(vec);
+        Self { ptr, len: 0, cap }
+    }
+
+    unsafe fn push_unchecked(&mut self, value: T) {
+        debug_assert!(self.len < self.cap);
+        unsafe { self.ptr.add(self.len).write(value) };
+        self.len += 1;
+    }
+
+    fn finish(mut self) -> Vec<T> {
+        let ptr = self.ptr;
+        let len = self.len;
+        let cap = self.cap;
+        self.ptr = core::ptr::null_mut();
+        self.len = 0;
+        self.cap = 0;
+        unsafe { Vec::from_raw_parts(ptr, len, cap) }
+    }
+}
+
+#[cfg(feature = "dynasm-rt")]
+impl<T> Drop for RawVecBuilder<T> {
+    fn drop(&mut self) {
+        if self.ptr.is_null() {
+            return;
+        }
+        unsafe {
+            drop(Vec::from_raw_parts(self.ptr, self.len, self.cap));
         }
     }
 }

@@ -227,7 +227,9 @@ pub struct DynasmPreparedVec<T>
 where
     T: Facet<'static>,
 {
+    plan: PostcardVecStructPlan,
     element: DynasmPrepared<T>,
+    trampoline: DynasmTrampoline,
 }
 
 #[cfg(feature = "dynasm-rt")]
@@ -236,7 +238,7 @@ where
     T: Facet<'static>,
 {
     pub fn decode(&self, input: &[u8]) -> Result<Vec<T>, Error> {
-        decode_vec_with_dynasm_prepared(&self.element, input)
+        decode_vec_with_dynasm_prepared(self, input)
     }
 }
 
@@ -368,7 +370,12 @@ impl PostcardVecStructPlan {
     {
         self.ensure_vec_shape::<T>().ok()?;
         let element = self.element_plan.prepare_dynasm::<T>()?;
-        Some(DynasmPreparedVec { element })
+        let trampoline = DynasmTrampoline::compile_vec::<T>(&element.trampoline)?;
+        Some(DynasmPreparedVec {
+            plan: self.clone(),
+            element,
+            trampoline,
+        })
     }
 
     fn ensure_vec_shape<T>(&self) -> Result<(), Error>
@@ -739,13 +746,19 @@ struct JitCallContext<T> {
     input_ptr: *const u8,
     input_len: usize,
     pos: usize,
+    field_plans_ptr: *const StructFieldPlan,
+    field_plans_len: usize,
     field_inits: Vec<u8>,
     field_inits_ptr: *mut u8,
     failed: bool,
     error_tag: JitErrorTag,
     error_offset: usize,
     error_value: u32,
+    vec_ptr: *mut T,
+    vec_cap: usize,
+    vec_len: usize,
     out: MaybeUninit<T>,
+    out_vec: MaybeUninit<Vec<T>>,
 }
 
 #[cfg(feature = "dynasm-rt")]
@@ -997,6 +1010,109 @@ where
 }
 
 #[cfg(feature = "dynasm-rt")]
+unsafe extern "C" fn jit_op_vec_alloc<T>(ctx: *mut c_void, arg1: u64, _arg2: u64) -> i32
+where
+    T: Facet<'static>,
+{
+    let ctx = unsafe { jit_ctx::<T>(ctx) };
+    if ctx.failed {
+        return 1;
+    }
+    let len = arg1 as usize;
+    let mut vec = Vec::<T>::with_capacity(len);
+    ctx.vec_ptr = vec.as_mut_ptr();
+    ctx.vec_cap = vec.capacity();
+    ctx.vec_len = 0;
+    core::mem::forget(vec);
+    0
+}
+
+#[cfg(feature = "dynasm-rt")]
+unsafe extern "C" fn jit_op_vec_reset_element<T>(ctx: *mut c_void, _arg1: u64, _arg2: u64) -> i32
+where
+    T: Facet<'static>,
+{
+    let ctx = unsafe { jit_ctx::<T>(ctx) };
+    for init in &mut ctx.field_inits {
+        *init = 0;
+    }
+    0
+}
+
+#[cfg(feature = "dynasm-rt")]
+unsafe extern "C" fn jit_op_vec_write_from_out<T>(ctx: *mut c_void, arg1: u64, _arg2: u64) -> i32
+where
+    T: Facet<'static>,
+{
+    let ctx = unsafe { jit_ctx::<T>(ctx) };
+    if ctx.failed {
+        return 1;
+    }
+    let idx = arg1 as usize;
+    if idx >= ctx.vec_cap {
+        jit_set_failure(ctx, JitErrorTag::InvalidRegister, idx, 0);
+        return 1;
+    }
+    let dst = unsafe { ctx.vec_ptr.add(idx) };
+    let value = unsafe { ctx.out.as_ptr().read() };
+    unsafe { dst.write(value) };
+    ctx.vec_len = idx + 1;
+    0
+}
+
+#[cfg(feature = "dynasm-rt")]
+unsafe extern "C" fn jit_op_drop_current_out<T>(ctx: *mut c_void, _arg1: u64, _arg2: u64) -> i32
+where
+    T: Facet<'static>,
+{
+    let ctx = unsafe { jit_ctx::<T>(ctx) };
+    let field_plans =
+        unsafe { core::slice::from_raw_parts(ctx.field_plans_ptr, ctx.field_plans_len) };
+    unsafe {
+        drop_initialized_fields(ctx.out.as_mut_ptr().cast(), field_plans, &ctx.field_inits);
+    }
+    0
+}
+
+#[cfg(feature = "dynasm-rt")]
+unsafe extern "C" fn jit_op_vec_drop_partial<T>(ctx: *mut c_void, _arg1: u64, _arg2: u64) -> i32
+where
+    T: Facet<'static>,
+{
+    let ctx = unsafe { jit_ctx::<T>(ctx) };
+    if !ctx.vec_ptr.is_null() {
+        unsafe {
+            drop(Vec::from_raw_parts(ctx.vec_ptr, ctx.vec_len, ctx.vec_cap));
+        }
+        ctx.vec_ptr = core::ptr::null_mut();
+        ctx.vec_cap = 0;
+        ctx.vec_len = 0;
+    }
+    0
+}
+
+#[cfg(feature = "dynasm-rt")]
+unsafe extern "C" fn jit_op_vec_finalize<T>(ctx: *mut c_void, _arg1: u64, _arg2: u64) -> i32
+where
+    T: Facet<'static>,
+{
+    let ctx = unsafe { jit_ctx::<T>(ctx) };
+    if ctx.failed {
+        return 1;
+    }
+    if ctx.vec_ptr.is_null() {
+        jit_set_failure(ctx, JitErrorTag::ShapeMismatch, 0, 0);
+        return 1;
+    }
+    let vec = unsafe { Vec::from_raw_parts(ctx.vec_ptr, ctx.vec_len, ctx.vec_cap) };
+    ctx.out_vec.write(vec);
+    ctx.vec_ptr = core::ptr::null_mut();
+    ctx.vec_cap = 0;
+    ctx.vec_len = 0;
+    0
+}
+
+#[cfg(feature = "dynasm-rt")]
 #[derive(Clone, Copy)]
 enum JitDynasmOp {
     ReadWriteU32 { field: u32, offset: usize },
@@ -1090,6 +1206,31 @@ impl DynasmTrampoline {
         #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
         {
             let _ = program;
+            None
+        }
+    }
+
+    fn compile_vec<T>(element_trampoline: &DynasmTrampoline) -> Option<Self>
+    where
+        T: Facet<'static>,
+    {
+        #[cfg(test)]
+        if FORCE_DYNASM_COMPILE_FAIL.load(Ordering::Relaxed) {
+            return None;
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            Self::compile_vec_aarch64::<T>(element_trampoline)
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            let _ = element_trampoline;
+            None
+        }
+        #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+        {
+            let _ = element_trampoline;
             None
         }
     }
@@ -1245,6 +1386,182 @@ impl DynasmTrampoline {
     fn compile_x64(program: &DynasmCompiledProgram) -> Option<Self> {
         let _ = program;
         None
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn compile_vec_aarch64<T>(element_trampoline: &DynasmTrampoline) -> Option<Self>
+    where
+        T: Facet<'static>,
+    {
+        let mut ops = dynasmrt::aarch64::Assembler::new().ok()?;
+        let o = jit_context_offsets::<T>();
+        let return_label = ops.new_dynamic_label();
+        let loop_label = ops.new_dynamic_label();
+        let done_label = ops.new_dynamic_label();
+        let elem_fail_label = ops.new_dynamic_label();
+        let err_eof = ops.new_dynamic_label();
+        let err_overflow = ops.new_dynamic_label();
+        let entry = ops.offset();
+
+        let element_entry = element_trampoline.entry as *const () as usize;
+        let helper_alloc = jit_op_vec_alloc::<T> as *const () as usize;
+        let helper_reset = jit_op_vec_reset_element::<T> as *const () as usize;
+        let helper_write = jit_op_vec_write_from_out::<T> as *const () as usize;
+        let helper_drop_current = jit_op_drop_current_out::<T> as *const () as usize;
+        let helper_drop_partial = jit_op_vec_drop_partial::<T> as *const () as usize;
+        let helper_finalize = jit_op_vec_finalize::<T> as *const () as usize;
+
+        dynasm!(ops
+            ; .arch aarch64
+            ; sub sp, sp, #32
+            ; str x0, [sp]
+            ; str x30, [sp, #8]
+            ; str x19, [sp, #16]
+            ; str x20, [sp, #24]
+            ; ldr x8, [sp]
+            ; ldr x5, [x8, #o.input_ptr]
+            ; ldr x6, [x8, #o.input_len]
+            ; ldr x7, [x8, #o.pos]
+        );
+
+        emit_aarch64_decode_u32(&mut ops, err_eof, err_overflow);
+        dynasm!(ops
+            ; .arch aarch64
+            ; ldr x8, [sp]
+            ; str x7, [x8, #o.pos]
+            ; mov x19, x11 // target len
+            ; ldr x0, [sp]
+            ; mov x1, x19
+            ; mov x2, #0
+        );
+        emit_aarch64_load_u64(&mut ops, 16, helper_alloc as u64);
+        dynasm!(ops
+            ; .arch aarch64
+            ; blr x16
+            ; cbnz w0, =>return_label
+            ; mov x20, #0 // i
+            ; =>loop_label
+            ; cmp x20, x19
+            ; b.eq =>done_label
+
+            ; ldr x0, [sp]
+            ; mov x1, #0
+            ; mov x2, #0
+        );
+        emit_aarch64_load_u64(&mut ops, 16, helper_reset as u64);
+        dynasm!(ops
+            ; .arch aarch64
+            ; blr x16
+
+            ; ldr x0, [sp]
+        );
+        emit_aarch64_load_u64(&mut ops, 16, element_entry as u64);
+        dynasm!(ops
+            ; .arch aarch64
+            ; blr x16
+            ; cbnz w0, =>elem_fail_label
+
+            ; ldr x0, [sp]
+            ; mov x1, x20
+            ; mov x2, #0
+        );
+        emit_aarch64_load_u64(&mut ops, 16, helper_write as u64);
+        dynasm!(ops
+            ; .arch aarch64
+            ; blr x16
+            ; cbnz w0, =>elem_fail_label
+
+            ; add x20, x20, #1
+            ; b =>loop_label
+
+            ; =>done_label
+            ; ldr x8, [sp]
+            ; ldr x7, [x8, #o.pos]
+            ; ldr x6, [x8, #o.input_len]
+            ; cmp x7, x6
+            ; b.eq >vec_finalize
+            ; mov x1, x7
+            ; mov w2, wzr
+        );
+        emit_aarch64_write_failure(&mut ops, o, JitErrorTag::TrailingBytes);
+        dynasm!(ops
+            ; .arch aarch64
+            ; ldr x0, [sp]
+            ; mov x1, #0
+            ; mov x2, #0
+        );
+        emit_aarch64_load_u64(&mut ops, 16, helper_drop_partial as u64);
+        dynasm!(ops
+            ; .arch aarch64
+            ; blr x16
+            ; mov w0, #1
+            ; b =>return_label
+
+            ; vec_finalize:
+            ; ldr x0, [sp]
+            ; mov x1, #0
+            ; mov x2, #0
+        );
+        emit_aarch64_load_u64(&mut ops, 16, helper_finalize as u64);
+        dynasm!(ops
+            ; .arch aarch64
+            ; blr x16
+            ; b =>return_label
+
+            ; =>elem_fail_label
+            ; ldr x0, [sp]
+            ; mov x1, #0
+            ; mov x2, #0
+        );
+        emit_aarch64_load_u64(&mut ops, 16, helper_drop_current as u64);
+        dynasm!(ops
+            ; .arch aarch64
+            ; blr x16
+            ; ldr x0, [sp]
+            ; mov x1, #0
+            ; mov x2, #0
+        );
+        emit_aarch64_load_u64(&mut ops, 16, helper_drop_partial as u64);
+        dynasm!(ops
+            ; .arch aarch64
+            ; blr x16
+            ; mov w0, #1
+            ; b =>return_label
+        );
+
+        dynasm!(ops
+            ; .arch aarch64
+            ; =>err_eof
+            ; mov w2, wzr
+        );
+        emit_aarch64_write_failure(&mut ops, o, JitErrorTag::UnexpectedEof);
+        dynasm!(ops
+            ; .arch aarch64
+            ; mov w0, #1
+            ; b =>return_label
+
+            ; =>err_overflow
+            ; mov w2, wzr
+        );
+        emit_aarch64_write_failure(&mut ops, o, JitErrorTag::VarintOverflow);
+        dynasm!(ops
+            ; .arch aarch64
+            ; mov w0, #1
+            ; b =>return_label
+        );
+
+        dynasm!(ops
+            ; .arch aarch64
+            ; =>return_label
+            ; ldr x20, [sp, #24]
+            ; ldr x19, [sp, #16]
+            ; ldr x30, [sp, #8]
+            ; add sp, sp, #32
+            ; ret
+        );
+
+        let buffer = ops.finalize().ok()?;
+        Some(Self::from_buffer(buffer, entry))
     }
 
     fn from_buffer(buffer: dynasmrt::ExecutableBuffer, entry: AssemblyOffset) -> Self {
@@ -1444,30 +1761,48 @@ where
     let Some(prepared) = plan.prepare_dynasm::<T>() else {
         return decode_vec_with_interpreter(plan, input);
     };
-    decode_vec_with_dynasm_prepared(&prepared.element, input)
+    decode_vec_with_dynasm_prepared(&prepared, input)
 }
 
 #[cfg(feature = "dynasm-rt")]
 fn decode_vec_with_dynasm_prepared<T>(
-    prepared: &DynasmPrepared<T>,
+    prepared: &DynasmPreparedVec<T>,
     input: &[u8],
 ) -> Result<Vec<T>, Error>
 where
     T: Facet<'static>,
 {
-    let mut reader = Reader::new(input);
-    let len = reader.read_u32()? as usize;
-    let mut out = RawVecBuilder::<T>::with_capacity(len);
-    let mut pos = reader.offset();
-    for _ in 0..len {
-        let (value, next_pos) = prepared.decode_at(input, pos)?;
-        unsafe { out.push_unchecked(value) };
-        pos = next_pos;
+    let plan = &prepared.element.plan;
+    let mut ctx = JitCallContext::<T> {
+        input_ptr: input.as_ptr(),
+        input_len: input.len(),
+        pos: 0,
+        field_plans_ptr: plan.field_plans.as_ptr(),
+        field_plans_len: plan.field_plans.len(),
+        field_inits: vec![0u8; plan.field_plans.len()],
+        field_inits_ptr: core::ptr::null_mut(),
+        failed: false,
+        error_tag: JitErrorTag::None,
+        error_offset: 0,
+        error_value: 0,
+        vec_ptr: core::ptr::null_mut(),
+        vec_cap: 0,
+        vec_len: 0,
+        out: MaybeUninit::uninit(),
+        out_vec: MaybeUninit::uninit(),
+    };
+    ctx.field_inits_ptr = ctx.field_inits.as_mut_ptr();
+
+    let status = unsafe {
+        prepared
+            .trampoline
+            .call((&mut ctx as *mut JitCallContext<T>).cast())
+    };
+    match status {
+        0 => Ok(unsafe { ctx.out_vec.assume_init() }),
+        1 => Err(jit_error_from_context(&ctx)),
+        _ => decode_vec_with_interpreter(&prepared.plan, input),
     }
-    if pos != input.len() {
-        return Err(Error::TrailingBytes { offset: pos });
-    }
-    Ok(out.finish())
 }
 
 #[cfg(feature = "dynasm-rt")]
@@ -1484,13 +1819,19 @@ where
         input_ptr: input.as_ptr(),
         input_len: input.len(),
         pos: start_pos,
+        field_plans_ptr: plan.field_plans.as_ptr(),
+        field_plans_len: plan.field_plans.len(),
         field_inits: vec![0u8; plan.field_plans.len()],
         field_inits_ptr: core::ptr::null_mut(),
         failed: false,
         error_tag: JitErrorTag::None,
         error_offset: 0,
         error_value: 0,
+        vec_ptr: core::ptr::null_mut(),
+        vec_cap: 0,
+        vec_len: 0,
         out: MaybeUninit::uninit(),
+        out_vec: MaybeUninit::uninit(),
     };
     ctx.field_inits_ptr = ctx.field_inits.as_mut_ptr();
 
@@ -1518,52 +1859,6 @@ where
             let mut reader = Reader::new(&input[start_pos..]);
             let value = decode_struct_with_reader::<T>(plan, &mut reader)?;
             Ok((value, start_pos + reader.offset()))
-        }
-    }
-}
-
-#[cfg(feature = "dynasm-rt")]
-struct RawVecBuilder<T> {
-    ptr: *mut T,
-    len: usize,
-    cap: usize,
-}
-
-#[cfg(feature = "dynasm-rt")]
-impl<T> RawVecBuilder<T> {
-    fn with_capacity(cap: usize) -> Self {
-        let mut vec = Vec::<T>::with_capacity(cap);
-        let ptr = vec.as_mut_ptr();
-        let cap = vec.capacity();
-        core::mem::forget(vec);
-        Self { ptr, len: 0, cap }
-    }
-
-    unsafe fn push_unchecked(&mut self, value: T) {
-        debug_assert!(self.len < self.cap);
-        unsafe { self.ptr.add(self.len).write(value) };
-        self.len += 1;
-    }
-
-    fn finish(mut self) -> Vec<T> {
-        let ptr = self.ptr;
-        let len = self.len;
-        let cap = self.cap;
-        self.ptr = core::ptr::null_mut();
-        self.len = 0;
-        self.cap = 0;
-        unsafe { Vec::from_raw_parts(ptr, len, cap) }
-    }
-}
-
-#[cfg(feature = "dynasm-rt")]
-impl<T> Drop for RawVecBuilder<T> {
-    fn drop(&mut self) {
-        if self.ptr.is_null() {
-            return;
-        }
-        unsafe {
-            drop(Vec::from_raw_parts(self.ptr, self.len, self.cap));
         }
     }
 }

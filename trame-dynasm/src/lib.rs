@@ -673,14 +673,22 @@ impl DynasmCompiledProgram {
         start: usize,
     ) -> Option<(JitDynasmOp, usize)> {
         let (len_reg, mut idx) = Self::parse_lowered_varint_seq(plan, start)?;
-        let DecodeInstr::ReadUtf8BytesFromLenReg {
-            dst,
+        let DecodeInstr::CaptureInputRangeByLenReg {
+            dst: range_reg,
             len_reg: ir_len_reg,
         } = *plan.program.instructions.get(idx)?
         else {
             return None;
         };
         if ir_len_reg != len_reg {
+            return None;
+        }
+        idx += 1;
+        let DecodeInstr::Utf8RangeToString { dst, src } = *plan.program.instructions.get(idx)?
+        else {
+            return None;
+        };
+        if src != range_reg {
             return None;
         }
         idx += 1;

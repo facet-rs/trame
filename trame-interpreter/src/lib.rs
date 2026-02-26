@@ -7,6 +7,7 @@ use trame_ir::{
 enum RegValue {
     Unset,
     U32(u32),
+    InputRange { offset: usize, len: usize },
     String(String),
     Bool(bool),
 }
@@ -143,6 +144,15 @@ fn read_reg_u32(regs: &[RegValue], idx: usize) -> Result<u32, Error> {
     }
 }
 
+fn read_input_range(regs: &[RegValue], idx: usize) -> Result<(usize, usize), Error> {
+    let reg = regs.get(idx).ok_or(Error::InvalidRegister { reg: idx })?;
+    match reg {
+        RegValue::InputRange { offset, len } => Ok((*offset, *len)),
+        RegValue::Unset => Err(Error::RegisterUnset { reg: idx }),
+        _ => Err(Error::ShapeMismatch),
+    }
+}
+
 unsafe fn drop_initialized_fields(
     out_ptr: *mut u8,
     field_plans: &[StructFieldPlan],
@@ -183,12 +193,27 @@ where
                 *slot = RegValue::U32(reader.read_byte()? as u32);
                 Ok(())
             }
-            DecodeInstr::ReadUtf8BytesFromLenReg { dst, len_reg } => {
+            DecodeInstr::CaptureInputRangeByLenReg { dst, len_reg } => {
                 let len = read_reg_u32(&regs, len_reg as usize)? as usize;
-                let str_offset = reader.offset();
-                let str_bytes = reader.read_bytes(len)?;
-                let value = core::str::from_utf8(str_bytes)
-                    .map_err(|_| Error::InvalidUtf8 { offset: str_offset })?
+                let offset = reader.offset();
+                let _ = reader.read_bytes(len)?;
+                let slot = regs
+                    .get_mut(dst as usize)
+                    .ok_or(Error::InvalidRegister { reg: dst as usize })?;
+                *slot = RegValue::InputRange { offset, len };
+                Ok(())
+            }
+            DecodeInstr::Utf8RangeToString { dst, src } => {
+                let (offset, len) = read_input_range(&regs, src as usize)?;
+                let end = offset
+                    .checked_add(len)
+                    .ok_or(Error::UnexpectedEof { offset })?;
+                let bytes = reader
+                    .input
+                    .get(offset..end)
+                    .ok_or(Error::UnexpectedEof { offset })?;
+                let value = core::str::from_utf8(bytes)
+                    .map_err(|_| Error::InvalidUtf8 { offset })?
                     .to_owned();
                 let slot = regs
                     .get_mut(dst as usize)

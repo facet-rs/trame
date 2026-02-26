@@ -424,6 +424,8 @@ unsafe extern "C" fn jit_op_write_string_len_to_ptr<T>(
     ctx: *mut c_void,
     arg1: u64,
     arg2: u64,
+    arg3: u64,
+    arg4: u64,
 ) -> i32
 where
     T: Facet<'static>,
@@ -433,11 +435,14 @@ where
         return 1;
     }
     let dst = arg1 as usize as *mut String;
-    let len = arg2 as usize;
-    let value = match jit_read_string_with_len(ctx, len) {
-        Ok(v) => v,
-        Err(e) => {
-            jit_set_error_from_error(ctx, e);
+    let src = arg2 as usize as *const u8;
+    let len = arg3 as usize;
+    let start = arg4 as usize;
+    let bytes = unsafe { core::slice::from_raw_parts(src, len) };
+    let value = match core::str::from_utf8(bytes) {
+        Ok(v) => v.to_owned(),
+        Err(_) => {
+            jit_set_failure(ctx, JitErrorTag::InvalidUtf8, start, 0);
             return 1;
         }
     };
@@ -1148,8 +1153,13 @@ impl DynasmTrampoline {
                     emit_aarch64_decode_u32(&mut ops, err_elem_eof, err_elem_overflow);
                     dynasm!(ops
                         ; .arch aarch64
+                        ; mov x1, x7
+                        ; adds x12, x7, x11
+                        ; b.cs =>err_elem_eof
+                        ; cmp x12, x6
+                        ; b.hi =>err_elem_eof
                         ; ldr x8, [sp]
-                        ; str x7, [x8, #o.pos]
+                        ; str x12, [x8, #o.pos]
                         ; ldr x0, [sp]
                         ; mov x1, x22
                     );
@@ -1157,7 +1167,10 @@ impl DynasmTrampoline {
                     dynasm!(ops
                         ; .arch aarch64
                         ; add x1, x1, x9
-                        ; mov x2, x11
+                        ; add x2, x5, x7
+                        ; mov x3, x11
+                        ; mov x4, x7
+                        ; mov x7, x12
                     );
                     emit_aarch64_load_u64(&mut ops, 16, string_helper as u64);
                     dynasm!(ops

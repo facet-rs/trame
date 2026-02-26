@@ -1,5 +1,7 @@
 use facet_core::Facet;
-use trame_ir::{DecodeInstr, Error, ScalarKind, StructFieldPlan, StructPlan, VecStructPlan};
+use trame_ir::{
+    DecodeInstr, Error, ReadScalarOp, ScalarKind, StructFieldPlan, StructPlan, VecStructPlan,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RegValue {
@@ -148,20 +150,21 @@ where
 
     for instr in &plan.program.instructions {
         let step = match *instr {
-            DecodeInstr::ReadScalar { kind, dst } => {
+            DecodeInstr::ReadScalar { op, dst } => {
                 let slot = regs
                     .get_mut(dst as usize)
                     .ok_or(Error::InvalidRegister { reg: dst as usize })?;
-                *slot = match kind {
-                    ScalarKind::U32 => RegValue::U32(reader.read_u32()?),
-                    ScalarKind::String => {
+                *slot = match op {
+                    ReadScalarOp::VarintU32 => RegValue::U32(reader.read_u32()?),
+                    ReadScalarOp::LenPrefixedUtf8 => {
                         let (str_offset, str_bytes) = reader.read_string_bytes()?;
                         let value = core::str::from_utf8(str_bytes)
                             .map_err(|_| Error::InvalidUtf8 { offset: str_offset })?
                             .to_owned();
                         RegValue::String(value)
                     }
-                    ScalarKind::Bool => RegValue::Bool(reader.read_bool()?),
+                    ReadScalarOp::BoolByte01 => RegValue::Bool(reader.read_bool()?),
+                    _ => return Err(Error::UnsupportedReadOp { op }),
                 };
                 Ok(())
             }
@@ -210,7 +213,9 @@ pub fn decode<T>(plan: &StructPlan, input: &[u8]) -> Result<T, Error>
 where
     T: Facet<'static>,
 {
-    plan.ensure_shape::<T>()?;
+    if plan.shape_id != T::SHAPE.id || plan.program.shape_id != T::SHAPE.id {
+        return Err(Error::ShapeMismatch);
+    }
     let mut reader = Reader::new(input);
     decode_struct_with_reader::<T>(plan, &mut reader)
 }
@@ -219,7 +224,10 @@ pub fn decode_vec<T>(plan: &VecStructPlan, input: &[u8]) -> Result<Vec<T>, Error
 where
     T: Facet<'static>,
 {
-    plan.ensure_vec_shape::<T>()?;
+    if plan.vec_shape_id != <Vec<T>>::SHAPE.id || plan.element_plan.program.shape_id != T::SHAPE.id
+    {
+        return Err(Error::ShapeMismatch);
+    }
     let mut reader = Reader::new(input);
     let len = reader.read_u32()? as usize;
     let mut out = Vec::with_capacity(len);

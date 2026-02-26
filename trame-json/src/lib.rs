@@ -1,7 +1,7 @@
 use facet_core::{Def, Facet, Shape, Type, UserType};
 use trame_ir::{
-    DECODE_ABI_V1, DecodeInstr, DecodeProgram, ScalarKind, StructFieldPlan, StructPlan,
-    VecStructPlan,
+    DECODE_ABI_V1, DecodeInstr, DecodeProgram, ReadScalarOp, ScalarKind, StructFieldPlan,
+    StructPlan, VecStructPlan,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,15 +59,15 @@ where
     compile_vec(T::SHAPE)
 }
 
-fn scalar_kind_for_shape(shape: &'static Shape) -> Option<ScalarKind> {
+fn scalar_meta_for_shape(shape: &'static Shape) -> Option<(ScalarKind, ReadScalarOp)> {
     if shape.type_identifier == "u32" {
-        return Some(ScalarKind::U32);
+        return Some((ScalarKind::U32, ReadScalarOp::DecimalU32));
     }
     if shape.type_identifier == "String" {
-        return Some(ScalarKind::String);
+        return Some((ScalarKind::String, ReadScalarOp::QuotedUtf8String));
     }
     if shape.type_identifier == "bool" {
-        return Some(ScalarKind::Bool);
+        return Some((ScalarKind::Bool, ReadScalarOp::BoolLiteral));
     }
     None
 }
@@ -86,17 +86,14 @@ fn compile_struct_plan(
     let mut field_plans = Vec::with_capacity(st.fields.len());
     for (idx, field) in st.fields.iter().enumerate() {
         let field_shape = field.shape.get();
-        let Some(kind) = scalar_kind_for_shape(field_shape) else {
+        let Some((kind, op)) = scalar_meta_for_shape(field_shape) else {
             return Err(CompileError::UnsupportedFieldType {
                 field_index: idx,
                 field_name: field.name,
                 type_name: field_shape.type_identifier,
             });
         };
-        instructions.push(DecodeInstr::ReadScalar {
-            kind,
-            dst: idx as u8,
-        });
+        instructions.push(DecodeInstr::ReadScalar { op, dst: idx as u8 });
         instructions.push(DecodeInstr::WriteFieldFromReg {
             field: idx as u32,
             src: idx as u8,
@@ -168,7 +165,7 @@ mod tests {
     fn compile_matches_postcard_generator_for_scalar_subset() {
         let from_json = compile_for::<Demo3>().expect("json compile");
         let from_postcard = trame_postcard::compile_for::<Demo3>().expect("postcard compile");
-        assert_eq!(from_json.program, from_postcard.program);
+        assert_ne!(from_json.program, from_postcard.program);
         assert_eq!(from_json.field_plans, from_postcard.field_plans);
     }
 
@@ -177,7 +174,7 @@ mod tests {
         let from_json = compile_vec_for::<Vec<Demo3>>().expect("json compile");
         let from_postcard =
             trame_postcard::compile_vec_for::<Vec<Demo3>>().expect("postcard compile");
-        assert_eq!(
+        assert_ne!(
             from_json.element_plan.program,
             from_postcard.element_plan.program
         );

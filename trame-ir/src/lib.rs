@@ -1,4 +1,4 @@
-use facet_core::{ConstTypeId, Facet};
+use facet_core::ConstTypeId;
 
 pub const DECODE_ABI_V1: u32 = 1;
 
@@ -12,6 +12,7 @@ pub enum Error {
     TrailingBytes { offset: usize },
     InvalidRegister { reg: usize },
     RegisterUnset { reg: usize },
+    UnsupportedReadOp { op: ReadScalarOp },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,8 +33,39 @@ impl ScalarKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadScalarOp {
+    VarintU32,
+    LenPrefixedUtf8,
+    BoolByte01,
+    DecimalU32,
+    QuotedUtf8String,
+    BoolLiteral,
+}
+
+impl ReadScalarOp {
+    pub fn as_symbol(self) -> &'static str {
+        match self {
+            ReadScalarOp::VarintU32 => "varint-u32",
+            ReadScalarOp::LenPrefixedUtf8 => "len-prefixed-utf8",
+            ReadScalarOp::BoolByte01 => "bool-byte-01",
+            ReadScalarOp::DecimalU32 => "decimal-u32",
+            ReadScalarOp::QuotedUtf8String => "quoted-utf8-string",
+            ReadScalarOp::BoolLiteral => "bool-literal",
+        }
+    }
+
+    pub fn result_kind(self) -> ScalarKind {
+        match self {
+            ReadScalarOp::VarintU32 | ReadScalarOp::DecimalU32 => ScalarKind::U32,
+            ReadScalarOp::LenPrefixedUtf8 | ReadScalarOp::QuotedUtf8String => ScalarKind::String,
+            ReadScalarOp::BoolByte01 | ReadScalarOp::BoolLiteral => ScalarKind::Bool,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodeInstr {
-    ReadScalar { kind: ScalarKind, dst: u8 },
+    ReadScalar { op: ReadScalarOp, dst: u8 },
     WriteFieldFromReg { field: u32, src: u8 },
     RequireEof,
 }
@@ -58,11 +90,11 @@ impl DecodeProgram {
         let _ = writeln!(&mut out, "  (instructions");
         for instr in &self.instructions {
             match *instr {
-                DecodeInstr::ReadScalar { kind, dst } => {
+                DecodeInstr::ReadScalar { op, dst } => {
                     let _ = writeln!(
                         &mut out,
-                        "    (read-scalar (kind {}) (dst r{}))",
-                        kind.as_symbol(),
+                        "    (read-scalar (op {}) (dst r{}))",
+                        op.as_symbol(),
                         dst
                     );
                 }
@@ -97,34 +129,8 @@ pub struct StructPlan {
     pub field_plans: Vec<StructFieldPlan>,
 }
 
-impl StructPlan {
-    pub fn ensure_shape<T>(&self) -> Result<(), Error>
-    where
-        T: Facet<'static>,
-    {
-        if self.shape_id != T::SHAPE.id || self.program.shape_id != T::SHAPE.id {
-            return Err(Error::ShapeMismatch);
-        }
-        Ok(())
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct VecStructPlan {
     pub vec_shape_id: ConstTypeId,
     pub element_plan: StructPlan,
-}
-
-impl VecStructPlan {
-    pub fn ensure_vec_shape<T>(&self) -> Result<(), Error>
-    where
-        T: Facet<'static>,
-    {
-        if self.vec_shape_id != <Vec<T>>::SHAPE.id
-            || self.element_plan.program.shape_id != T::SHAPE.id
-        {
-            return Err(Error::ShapeMismatch);
-        }
-        Ok(())
-    }
 }

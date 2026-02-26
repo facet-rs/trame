@@ -7,7 +7,9 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use dynasmrt::{AssemblyOffset, DynasmApi, DynasmLabelApi, dynasm};
 use facet_core::Facet;
 use std::alloc::{Layout, alloc, dealloc};
-use trame_ir::{DecodeInstr, Error, ScalarKind, StructFieldPlan, StructPlan, VecStructPlan};
+use trame_ir::{
+    DecodeInstr, Error, ReadScalarOp, ScalarKind, StructFieldPlan, StructPlan, VecStructPlan,
+};
 
 #[cfg(test)]
 static FORCE_DYNASM_COMPILE_FAIL: AtomicBool = AtomicBool::new(false);
@@ -57,7 +59,9 @@ pub fn prepare<T>(plan: &StructPlan) -> Option<DynasmPrepared<T>>
 where
     T: Facet<'static>,
 {
-    plan.ensure_shape::<T>().ok()?;
+    if plan.shape_id != T::SHAPE.id || plan.program.shape_id != T::SHAPE.id {
+        return None;
+    }
     let program = DynasmCompiledProgram::from_plan::<T>(plan)?;
     let trampoline = DynasmTrampoline::compile(&program)?;
     Some(DynasmPrepared {
@@ -71,7 +75,10 @@ pub fn prepare_vec<T>(plan: &VecStructPlan) -> Option<DynasmPreparedVec<T>>
 where
     T: Facet<'static>,
 {
-    plan.ensure_vec_shape::<T>().ok()?;
+    if plan.vec_shape_id != <Vec<T>>::SHAPE.id || plan.element_plan.program.shape_id != T::SHAPE.id
+    {
+        return None;
+    }
     let element_program = DynasmCompiledProgram::from_plan::<T>(&plan.element_plan)?;
     let trampoline = DynasmTrampoline::compile_vec::<T>(&element_program)?;
     Some(DynasmPreparedVec {
@@ -224,6 +231,9 @@ where
             jit_set_failure(ctx, JitErrorTag::RegisterUnset, reg, 0);
         }
         Error::ShapeMismatch => {
+            jit_set_failure(ctx, JitErrorTag::ShapeMismatch, 0, 0);
+        }
+        Error::UnsupportedReadOp { .. } => {
             jit_set_failure(ctx, JitErrorTag::ShapeMismatch, 0, 0);
         }
     }
@@ -496,27 +506,28 @@ impl DynasmCompiledProgram {
         while let Some(instr) = plan.program.instructions.get(idx) {
             match (*instr, plan.program.instructions.get(idx + 1).copied()) {
                 (
-                    DecodeInstr::ReadScalar { kind, dst },
+                    DecodeInstr::ReadScalar { op, dst },
                     Some(DecodeInstr::WriteFieldFromReg { field, src }),
                 ) if dst == src => {
                     let field_idx = field as usize;
                     let field_plan = plan.field_plans.get(field_idx)?;
-                    if field_plan.kind != kind {
+                    if field_plan.kind != op.result_kind() {
                         return None;
                     }
-                    let op = match kind {
-                        ScalarKind::U32 => JitDynasmOp::ReadWriteU32 {
+                    let op = match op {
+                        ReadScalarOp::VarintU32 => JitDynasmOp::ReadWriteU32 {
                             field,
                             offset: field_plan.offset,
                         },
-                        ScalarKind::Bool => JitDynasmOp::ReadWriteBool {
+                        ReadScalarOp::BoolByte01 => JitDynasmOp::ReadWriteBool {
                             field,
                             offset: field_plan.offset,
                         },
-                        ScalarKind::String => JitDynasmOp::ReadWriteString {
+                        ReadScalarOp::LenPrefixedUtf8 => JitDynasmOp::ReadWriteString {
                             field,
                             offset: field_plan.offset,
                         },
+                        _ => return None,
                     };
                     ops.push(op);
                     idx += 2;

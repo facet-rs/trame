@@ -9,7 +9,10 @@ specs (
                 name rust
                 include (
                     trame/**/*.rs
-                    trame-toy-postcard/**/*.rs
+                    trame-ir/**/*.rs
+                    trame-postcard/**/*.rs
+                    trame-interpreter/**/*.rs
+                    trame-dynasm/**/*.rs
                 )
                 exclude (target/**)
             }

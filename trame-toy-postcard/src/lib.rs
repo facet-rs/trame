@@ -7,10 +7,14 @@ use core::ffi::c_void;
 use core::marker::PhantomData;
 #[cfg(feature = "dynasm-rt")]
 use core::mem::MaybeUninit;
+#[cfg(feature = "dynasm-rt")]
+use core::ptr::NonNull;
 #[cfg(all(feature = "dynasm-rt", test))]
 use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "dynasm-rt")]
 use dynasmrt::{AssemblyOffset, DynasmApi, DynasmLabelApi, dynasm};
+#[cfg(feature = "dynasm-rt")]
+use std::alloc::{Layout, alloc, dealloc};
 
 const POSTCARD_DECODE_ABI_V1: u32 = 1;
 
@@ -804,6 +808,8 @@ struct JitContextOffsets {
     error_tag: u32,
     error_offset: u32,
     error_value: u32,
+    vec_ptr: u32,
+    vec_len: u32,
     out: u32,
 }
 
@@ -821,6 +827,8 @@ where
         error_tag: core::mem::offset_of!(JitCallContext<T>, error_tag) as u32,
         error_offset: core::mem::offset_of!(JitCallContext<T>, error_offset) as u32,
         error_value: core::mem::offset_of!(JitCallContext<T>, error_value) as u32,
+        vec_ptr: core::mem::offset_of!(JitCallContext<T>, vec_ptr) as u32,
+        vec_len: core::mem::offset_of!(JitCallContext<T>, vec_len) as u32,
         out: core::mem::offset_of!(JitCallContext<T>, out) as u32,
     }
 }
@@ -1019,11 +1027,30 @@ where
         return 1;
     }
     let len = arg1 as usize;
-    let mut vec = Vec::<T>::with_capacity(len);
-    ctx.vec_ptr = vec.as_mut_ptr();
-    ctx.vec_cap = vec.capacity();
+    if core::mem::size_of::<T>() == 0 {
+        ctx.vec_ptr = NonNull::<T>::dangling().as_ptr();
+        ctx.vec_cap = len;
+        ctx.vec_len = 0;
+        return 0;
+    }
+    let Ok(layout) = Layout::array::<T>(len) else {
+        jit_set_failure(ctx, JitErrorTag::ShapeMismatch, 0, 0);
+        return 1;
+    };
+    if layout.size() == 0 {
+        ctx.vec_ptr = NonNull::<T>::dangling().as_ptr();
+        ctx.vec_cap = len;
+        ctx.vec_len = 0;
+        return 0;
+    }
+    let ptr = unsafe { alloc(layout) }.cast::<T>();
+    if ptr.is_null() {
+        jit_set_failure(ctx, JitErrorTag::ShapeMismatch, 0, 0);
+        return 1;
+    }
+    ctx.vec_ptr = ptr;
+    ctx.vec_cap = len;
     ctx.vec_len = 0;
-    core::mem::forget(vec);
     0
 }
 
@@ -1036,27 +1063,6 @@ where
     for init in &mut ctx.field_inits {
         *init = 0;
     }
-    0
-}
-
-#[cfg(feature = "dynasm-rt")]
-unsafe extern "C" fn jit_op_vec_write_from_out<T>(ctx: *mut c_void, arg1: u64, _arg2: u64) -> i32
-where
-    T: Facet<'static>,
-{
-    let ctx = unsafe { jit_ctx::<T>(ctx) };
-    if ctx.failed {
-        return 1;
-    }
-    let idx = arg1 as usize;
-    if idx >= ctx.vec_cap {
-        jit_set_failure(ctx, JitErrorTag::InvalidRegister, idx, 0);
-        return 1;
-    }
-    let dst = unsafe { ctx.vec_ptr.add(idx) };
-    let value = unsafe { ctx.out.as_ptr().read() };
-    unsafe { dst.write(value) };
-    ctx.vec_len = idx + 1;
     0
 }
 
@@ -1081,8 +1087,18 @@ where
 {
     let ctx = unsafe { jit_ctx::<T>(ctx) };
     if !ctx.vec_ptr.is_null() {
-        unsafe {
-            drop(Vec::from_raw_parts(ctx.vec_ptr, ctx.vec_len, ctx.vec_cap));
+        if ctx.vec_len != 0 {
+            unsafe {
+                let initialized = core::slice::from_raw_parts_mut(ctx.vec_ptr, ctx.vec_len);
+                core::ptr::drop_in_place(initialized);
+            }
+        }
+        if core::mem::size_of::<T>() != 0 && ctx.vec_cap != 0 {
+            if let Ok(layout) = Layout::array::<T>(ctx.vec_cap) {
+                unsafe {
+                    dealloc(ctx.vec_ptr.cast::<u8>(), layout);
+                }
+            }
         }
         ctx.vec_ptr = core::ptr::null_mut();
         ctx.vec_cap = 0;
@@ -1406,7 +1422,6 @@ impl DynasmTrampoline {
         let element_entry = element_trampoline.entry as *const () as usize;
         let helper_alloc = jit_op_vec_alloc::<T> as *const () as usize;
         let helper_reset = jit_op_vec_reset_element::<T> as *const () as usize;
-        let helper_write = jit_op_vec_write_from_out::<T> as *const () as usize;
         let helper_drop_current = jit_op_drop_current_out::<T> as *const () as usize;
         let helper_drop_partial = jit_op_vec_drop_partial::<T> as *const () as usize;
         let helper_finalize = jit_op_vec_finalize::<T> as *const () as usize;
@@ -1460,17 +1475,10 @@ impl DynasmTrampoline {
             ; .arch aarch64
             ; blr x16
             ; cbnz w0, =>elem_fail_label
-
-            ; ldr x0, [sp]
-            ; mov x1, x20
-            ; mov x2, #0
         );
-        emit_aarch64_load_u64(&mut ops, 16, helper_write as u64);
+        emit_aarch64_move_out_to_vec_slot(&mut ops, o, core::mem::size_of::<T>() as u64);
         dynasm!(ops
             ; .arch aarch64
-            ; blr x16
-            ; cbnz w0, =>elem_fail_label
-
             ; add x20, x20, #1
             ; b =>loop_label
 
@@ -1616,6 +1624,70 @@ fn emit_aarch64_mark_field_init(
         ; add x9, x9, x10
         ; mov w10, #1
         ; strb w10, [x9]
+    );
+}
+
+#[cfg(all(feature = "dynasm-rt", target_arch = "aarch64"))]
+fn emit_aarch64_move_out_to_vec_slot(
+    ops: &mut dynasmrt::aarch64::Assembler,
+    o: JitContextOffsets,
+    type_size: u64,
+) {
+    dynasm!(ops
+        ; .arch aarch64
+        ; ldr x8, [sp]
+        ; ldr x9, [x8, #o.vec_ptr]
+    );
+    emit_aarch64_load_u64(ops, 11, type_size);
+    dynasm!(ops
+        ; .arch aarch64
+        ; mul x10, x20, x11
+        ; add x9, x9, x10
+        ; mov x12, x8
+    );
+    emit_aarch64_load_u64(ops, 11, o.out as u64);
+    dynasm!(ops
+        ; .arch aarch64
+        ; add x12, x12, x11
+    );
+
+    let mut remaining = type_size;
+    while remaining >= 8 {
+        dynasm!(ops
+            ; .arch aarch64
+            ; ldr x13, [x12], #8
+            ; str x13, [x9], #8
+        );
+        remaining -= 8;
+    }
+    if remaining >= 4 {
+        dynasm!(ops
+            ; .arch aarch64
+            ; ldr w13, [x12], #4
+            ; str w13, [x9], #4
+        );
+        remaining -= 4;
+    }
+    if remaining >= 2 {
+        dynasm!(ops
+            ; .arch aarch64
+            ; ldrh w13, [x12], #2
+            ; strh w13, [x9], #2
+        );
+        remaining -= 2;
+    }
+    if remaining >= 1 {
+        dynasm!(ops
+            ; .arch aarch64
+            ; ldrb w13, [x12]
+            ; strb w13, [x9]
+        );
+    }
+
+    dynasm!(ops
+        ; .arch aarch64
+        ; add x10, x20, #1
+        ; str x10, [x8, #o.vec_len]
     );
 }
 

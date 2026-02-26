@@ -308,6 +308,13 @@ where
     T: Facet<'static>,
 {
     let len = jit_read_u32(ctx)? as usize;
+    jit_read_string_with_len(ctx, len)
+}
+
+fn jit_read_string_with_len<T>(ctx: &mut JitCallContext<T>, len: usize) -> Result<String, Error>
+where
+    T: Facet<'static>,
+{
     let start = ctx.pos;
     let end = start
         .checked_add(len)
@@ -413,7 +420,11 @@ where
     0
 }
 
-unsafe extern "C" fn jit_op_read_string_to_ptr<T>(ctx: *mut c_void, arg1: u64, _arg2: u64) -> i32
+unsafe extern "C" fn jit_op_write_string_len_to_ptr<T>(
+    ctx: *mut c_void,
+    arg1: u64,
+    arg2: u64,
+) -> i32
 where
     T: Facet<'static>,
 {
@@ -422,7 +433,8 @@ where
         return 1;
     }
     let dst = arg1 as usize as *mut String;
-    let value = match jit_read_string(ctx) {
+    let len = arg2 as usize;
+    let value = match jit_read_string_with_len(ctx, len) {
         Ok(v) => v,
         Err(e) => {
             jit_set_error_from_error(ctx, e);
@@ -684,11 +696,22 @@ impl DynasmCompiledProgram {
             return None;
         }
         idx += 1;
+        let DecodeInstr::ValidateUtf8Range {
+            dst: validated_reg,
+            src: validate_src,
+        } = *plan.program.instructions.get(idx)?
+        else {
+            return None;
+        };
+        if validate_src != range_reg {
+            return None;
+        }
+        idx += 1;
         let DecodeInstr::Utf8RangeToString { dst, src } = *plan.program.instructions.get(idx)?
         else {
             return None;
         };
-        if src != range_reg {
+        if src != validated_reg {
             return None;
         }
         idx += 1;
@@ -1004,7 +1027,7 @@ impl DynasmTrampoline {
         let err_overflow = ops.new_dynamic_label();
         let entry = ops.offset();
 
-        let string_helper = jit_op_read_string_to_ptr::<T> as *const () as usize;
+        let string_helper = jit_op_write_string_len_to_ptr::<T> as *const () as usize;
         let drop_string_helper = jit_op_drop_string_ptr as *const () as usize;
         let helper_alloc = jit_op_vec_alloc::<T> as *const () as usize;
         let helper_dealloc = jit_op_vec_dealloc_raw::<T> as *const () as usize;
@@ -1122,6 +1145,7 @@ impl DynasmTrampoline {
                     );
                 }
                 JitDynasmOp::ReadWriteString { offset, .. } => {
+                    emit_aarch64_decode_u32(&mut ops, err_elem_eof, err_elem_overflow);
                     dynasm!(ops
                         ; .arch aarch64
                         ; ldr x8, [sp]
@@ -1133,7 +1157,7 @@ impl DynasmTrampoline {
                     dynasm!(ops
                         ; .arch aarch64
                         ; add x1, x1, x9
-                        ; mov x2, #0
+                        ; mov x2, x11
                     );
                     emit_aarch64_load_u64(&mut ops, 16, string_helper as u64);
                     dynasm!(ops

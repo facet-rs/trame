@@ -69,6 +69,7 @@ pub enum DecodeInstr {
     MoveRegU32 { dst: u8, src: u8 },
     ReadInputByte { dst: u8 },
     CaptureInputRangeByLenReg { dst: u8, len_reg: u8 },
+    ValidateUtf8Range { dst: u8, src: u8 },
     Utf8RangeToString { dst: u8, src: u8 },
     AndImmU32 { dst: u8, src: u8, imm: u32 },
     ShlImmU32 { dst: u8, src: u8, shift: u8 },
@@ -119,6 +120,13 @@ impl DecodeProgram {
                         &mut out,
                         "    (capture-input-range-by-len-reg (dst r{}) (len-reg r{}))",
                         dst, len_reg
+                    );
+                }
+                DecodeInstr::ValidateUtf8Range { dst, src } => {
+                    let _ = writeln!(
+                        &mut out,
+                        "    (validate-utf8-range (dst r{}) (src r{}))",
+                        dst, src
                     );
                 }
                 DecodeInstr::Utf8RangeToString { dst, src } => {

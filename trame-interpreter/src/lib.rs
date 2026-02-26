@@ -8,6 +8,7 @@ enum RegValue {
     Unset,
     U32(u32),
     InputRange { offset: usize, len: usize },
+    ValidatedInputRange { offset: usize, len: usize },
     String(String),
     Bool(bool),
 }
@@ -144,13 +145,109 @@ fn read_reg_u32(regs: &[RegValue], idx: usize) -> Result<u32, Error> {
     }
 }
 
-fn read_input_range(regs: &[RegValue], idx: usize) -> Result<(usize, usize), Error> {
+fn read_input_range(regs: &[RegValue], idx: usize) -> Result<(usize, usize, bool), Error> {
     let reg = regs.get(idx).ok_or(Error::InvalidRegister { reg: idx })?;
     match reg {
-        RegValue::InputRange { offset, len } => Ok((*offset, *len)),
+        RegValue::InputRange { offset, len } => Ok((*offset, *len, false)),
+        RegValue::ValidatedInputRange { offset, len } => Ok((*offset, *len, true)),
         RegValue::Unset => Err(Error::RegisterUnset { reg: idx }),
         _ => Err(Error::ShapeMismatch),
     }
+}
+
+fn is_valid_utf8(bytes: &[u8]) -> bool {
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b0 = bytes[i];
+        if b0 < 0x80 {
+            i += 1;
+            continue;
+        }
+        if (0xC2..=0xDF).contains(&b0) {
+            if i + 1 >= bytes.len() || (bytes[i + 1] & 0xC0) != 0x80 {
+                return false;
+            }
+            i += 2;
+            continue;
+        }
+        if b0 == 0xE0 {
+            if i + 2 >= bytes.len() {
+                return false;
+            }
+            let b1 = bytes[i + 1];
+            let b2 = bytes[i + 2];
+            if !(0xA0..=0xBF).contains(&b1) || (b2 & 0xC0) != 0x80 {
+                return false;
+            }
+            i += 3;
+            continue;
+        }
+        if (0xE1..=0xEC).contains(&b0) || (0xEE..=0xEF).contains(&b0) {
+            if i + 2 >= bytes.len() {
+                return false;
+            }
+            let b1 = bytes[i + 1];
+            let b2 = bytes[i + 2];
+            if (b1 & 0xC0) != 0x80 || (b2 & 0xC0) != 0x80 {
+                return false;
+            }
+            i += 3;
+            continue;
+        }
+        if b0 == 0xED {
+            if i + 2 >= bytes.len() {
+                return false;
+            }
+            let b1 = bytes[i + 1];
+            let b2 = bytes[i + 2];
+            if !(0x80..=0x9F).contains(&b1) || (b2 & 0xC0) != 0x80 {
+                return false;
+            }
+            i += 3;
+            continue;
+        }
+        if b0 == 0xF0 {
+            if i + 3 >= bytes.len() {
+                return false;
+            }
+            let b1 = bytes[i + 1];
+            let b2 = bytes[i + 2];
+            let b3 = bytes[i + 3];
+            if !(0x90..=0xBF).contains(&b1) || (b2 & 0xC0) != 0x80 || (b3 & 0xC0) != 0x80 {
+                return false;
+            }
+            i += 4;
+            continue;
+        }
+        if (0xF1..=0xF3).contains(&b0) {
+            if i + 3 >= bytes.len() {
+                return false;
+            }
+            let b1 = bytes[i + 1];
+            let b2 = bytes[i + 2];
+            let b3 = bytes[i + 3];
+            if (b1 & 0xC0) != 0x80 || (b2 & 0xC0) != 0x80 || (b3 & 0xC0) != 0x80 {
+                return false;
+            }
+            i += 4;
+            continue;
+        }
+        if b0 == 0xF4 {
+            if i + 3 >= bytes.len() {
+                return false;
+            }
+            let b1 = bytes[i + 1];
+            let b2 = bytes[i + 2];
+            let b3 = bytes[i + 3];
+            if !(0x80..=0x8F).contains(&b1) || (b2 & 0xC0) != 0x80 || (b3 & 0xC0) != 0x80 {
+                return false;
+            }
+            i += 4;
+            continue;
+        }
+        return false;
+    }
+    true
 }
 
 unsafe fn drop_initialized_fields(
@@ -203,8 +300,8 @@ where
                 *slot = RegValue::InputRange { offset, len };
                 Ok(())
             }
-            DecodeInstr::Utf8RangeToString { dst, src } => {
-                let (offset, len) = read_input_range(&regs, src as usize)?;
+            DecodeInstr::ValidateUtf8Range { dst, src } => {
+                let (offset, len, _) = read_input_range(&regs, src as usize)?;
                 let end = offset
                     .checked_add(len)
                     .ok_or(Error::UnexpectedEof { offset })?;
@@ -212,9 +309,31 @@ where
                     .input
                     .get(offset..end)
                     .ok_or(Error::UnexpectedEof { offset })?;
-                let value = core::str::from_utf8(bytes)
-                    .map_err(|_| Error::InvalidUtf8 { offset })?
-                    .to_owned();
+                if !is_valid_utf8(bytes) {
+                    return Err(Error::InvalidUtf8 { offset });
+                }
+                let slot = regs
+                    .get_mut(dst as usize)
+                    .ok_or(Error::InvalidRegister { reg: dst as usize })?;
+                *slot = RegValue::ValidatedInputRange { offset, len };
+                Ok(())
+            }
+            DecodeInstr::Utf8RangeToString { dst, src } => {
+                let (offset, len, is_validated) = read_input_range(&regs, src as usize)?;
+                let end = offset
+                    .checked_add(len)
+                    .ok_or(Error::UnexpectedEof { offset })?;
+                let bytes = reader
+                    .input
+                    .get(offset..end)
+                    .ok_or(Error::UnexpectedEof { offset })?;
+                let value = if is_validated {
+                    unsafe { core::str::from_utf8_unchecked(bytes) }.to_owned()
+                } else {
+                    core::str::from_utf8(bytes)
+                        .map_err(|_| Error::InvalidUtf8 { offset })?
+                        .to_owned()
+                };
                 let slot = regs
                     .get_mut(dst as usize)
                     .ok_or(Error::InvalidRegister { reg: dst as usize })?;

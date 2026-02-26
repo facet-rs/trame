@@ -105,9 +105,13 @@ fn compile_struct_plan(
                     dst: tmp_byte_reg,
                     len_reg: idx as u8,
                 });
+                instructions.push(DecodeInstr::ValidateUtf8Range {
+                    dst: tmp_data_reg,
+                    src: tmp_byte_reg,
+                });
                 instructions.push(DecodeInstr::Utf8RangeToString {
                     dst: idx as u8,
-                    src: tmp_byte_reg,
+                    src: tmp_data_reg,
                 });
             }
             ReadScalarOp::BoolByte01 => {
@@ -239,14 +243,14 @@ mod tests {
     fn compile_emits_program() {
         let plan = compile_for::<Demo>().expect("compile should succeed");
         assert_eq!(plan.program.register_count, 4);
-        assert_eq!(plan.program.instructions.len(), 55);
+        assert_eq!(plan.program.instructions.len(), 56);
     }
 
     #[test]
     fn compile_is_shape_driven_for_multiple_fields() {
         let plan = compile_for::<Demo3>().expect("compile should succeed");
         assert_eq!(plan.program.register_count, 5);
-        assert_eq!(plan.program.instructions.len(), 61);
+        assert_eq!(plan.program.instructions.len(), 62);
     }
 
     #[test]

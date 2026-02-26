@@ -30,7 +30,6 @@ trame-solver = { path = "trame-solver", version = "0.1.0" }
 trame-ir = { path = "trame-ir", version = "0.1.0" }
 trame-postcard = { path = "trame-postcard", version = "0.1.0" }
 trame-interpreter = { path = "trame-interpreter", version = "0.1.0" }
-trame-dynasm = { path = "trame-dynasm", version = "0.1.0" }
 # third-party deps
 creusot-std = { git = "https://github.com/creusot-rs/creusot", package = "creusot-std", version = "0.10.0-dev" }
 facet-core = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43.2" }

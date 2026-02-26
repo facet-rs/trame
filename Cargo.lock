@@ -968,6 +968,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "trame-exec"
+version = "0.1.0"
+dependencies = [
+ "facet",
+ "facet-core",
+ "facet-postcard",
+ "trame-dynasm",
+ "trame-interpreter",
+ "trame-ir",
+ "trame-postcard",
+]
+
+[[package]]
 name = "trame-fuzz"
 version = "0.0.0"
 dependencies = [
@@ -995,6 +1008,16 @@ name = "trame-ir"
 version = "0.1.0"
 dependencies = [
  "facet-core",
+]
+
+[[package]]
+name = "trame-json"
+version = "0.1.0"
+dependencies = [
+ "facet",
+ "facet-core",
+ "trame-ir",
+ "trame-postcard",
 ]
 
 [[package]]

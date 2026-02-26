@@ -1,7 +1,7 @@
 use facet_core::{Def, Facet, Shape, Type, UserType};
 use trame_ir::{
     DECODE_ABI_V1, DecodeInstr, DecodeProgram, ReadScalarOp, ScalarKind, StructFieldPlan,
-    StructPlan, VecStructPlan,
+    StructPlan, VecFraming, VecStructPlan,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +48,7 @@ pub fn compile_vec(shape: &'static Shape) -> Result<VecStructPlan, CompileError>
     let element_plan = compile_struct_plan(element_shape, false)?;
     Ok(VecStructPlan {
         vec_shape_id: shape.id,
+        framing: VecFraming::JsonArray,
         element_plan,
     })
 }
@@ -226,6 +227,28 @@ mod tests {
                 id: 7,
                 name: "héllo".into()
             }
+        );
+    }
+
+    #[test]
+    fn interpreter_decodes_json_array_for_vec_plan() {
+        let plan = compile_vec_for::<Vec<Demo3>>().expect("json vec compile");
+        let input = br#"[{"id":1,"name":"alice","ok":true},{"id":2,"name":"bob","ok":false}]"#;
+        let decoded = trame_interpreter::decode_vec::<Demo3>(&plan, input).expect("decode");
+        assert_eq!(
+            decoded,
+            vec![
+                Demo3 {
+                    id: 1,
+                    name: "alice".into(),
+                    ok: true,
+                },
+                Demo3 {
+                    id: 2,
+                    name: "bob".into(),
+                    ok: false,
+                },
+            ]
         );
     }
 }

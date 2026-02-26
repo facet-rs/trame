@@ -8,7 +8,8 @@ use dynasmrt::{AssemblyOffset, DynasmApi, DynasmLabelApi, dynasm};
 use facet_core::Facet;
 use std::alloc::{Layout, alloc, dealloc};
 use trame_ir::{
-    DecodeInstr, Error, ReadScalarOp, ScalarKind, StructFieldPlan, StructPlan, VecStructPlan,
+    DecodeInstr, Error, ReadScalarOp, ScalarKind, StructFieldPlan, StructPlan, VecFraming,
+    VecStructPlan,
 };
 
 #[cfg(test)]
@@ -77,6 +78,9 @@ where
 {
     if plan.vec_shape_id != <Vec<T>>::SHAPE.id || plan.element_plan.program.shape_id != T::SHAPE.id
     {
+        return None;
+    }
+    if plan.framing != VecFraming::LengthPrefixed {
         return None;
     }
     let element_program = DynasmCompiledProgram::from_plan::<T>(&plan.element_plan)?;
@@ -176,15 +180,21 @@ struct StringWordOffsets {
 
 #[cfg(target_arch = "aarch64")]
 #[derive(Clone, Copy)]
-struct VecStringEmitConfig {
+struct StringMaterializeConfig {
     o: JitContextOffsets,
-    field_offset: usize,
     helper_alloc_bytes: usize,
     dangling_u8_ptr: u64,
+    err_eof: dynasmrt::DynamicLabel,
+    err_invalid_utf8: dynasmrt::DynamicLabel,
+    fail_label: dynasmrt::DynamicLabel,
+}
+
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy)]
+struct VecStringEmitConfig {
+    field_offset: usize,
     string_word_offsets: StringWordOffsets,
-    err_elem_eof: dynasmrt::DynamicLabel,
-    err_elem_invalid_utf8: dynasmrt::DynamicLabel,
-    elem_fail_label: dynasmrt::DynamicLabel,
+    materialize: StringMaterializeConfig,
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -454,85 +464,6 @@ where
     0
 }
 
-unsafe extern "C" fn jit_op_read_write_field_json_string<T>(
-    ctx: *mut c_void,
-    arg1: u64,
-    arg2: u64,
-) -> i32
-where
-    T: Facet<'static>,
-{
-    let ctx = unsafe { jit_ctx::<T>(ctx) };
-    if ctx.failed {
-        return 1;
-    }
-    let field = arg1 as usize;
-    let offset = arg2 as usize;
-    if field >= ctx.field_inits.len() {
-        jit_set_failure(ctx, JitErrorTag::InvalidRegister, field, 0);
-        return 1;
-    }
-
-    while ctx.pos < ctx.input_len {
-        let byte = unsafe { *ctx.input_ptr.add(ctx.pos) };
-        if matches!(byte, b' ' | b'\t' | b'\n' | b'\r') {
-            ctx.pos += 1;
-            continue;
-        }
-        break;
-    }
-    if ctx.pos >= ctx.input_len {
-        jit_set_failure(ctx, JitErrorTag::UnexpectedEof, ctx.pos, 0);
-        return 1;
-    }
-    let opening = unsafe { *ctx.input_ptr.add(ctx.pos) };
-    if opening != b'"' {
-        jit_set_failure(ctx, JitErrorTag::ShapeMismatch, ctx.pos, 0);
-        return 1;
-    }
-    ctx.pos += 1;
-    let start = ctx.pos;
-    while ctx.pos < ctx.input_len {
-        let byte = unsafe { *ctx.input_ptr.add(ctx.pos) };
-        match byte {
-            b'"' => {
-                let len = ctx.pos - start;
-                let bytes = unsafe { core::slice::from_raw_parts(ctx.input_ptr.add(start), len) };
-                let value = match core::str::from_utf8(bytes) {
-                    Ok(v) => v.to_owned(),
-                    Err(_) => {
-                        jit_set_failure(ctx, JitErrorTag::InvalidUtf8, start, 0);
-                        return 1;
-                    }
-                };
-                ctx.pos += 1;
-                let dst = unsafe {
-                    ctx.out
-                        .as_mut_ptr()
-                        .cast::<u8>()
-                        .add(offset)
-                        .cast::<String>()
-                };
-                if ctx.field_inits[field] != 0 {
-                    unsafe { core::ptr::drop_in_place(dst) };
-                }
-                unsafe { dst.write(value) };
-                ctx.field_inits[field] = 1;
-                return 0;
-            }
-            b'\\' => {
-                jit_set_failure(ctx, JitErrorTag::ShapeMismatch, ctx.pos, 0);
-                return 1;
-            }
-            _ => {
-                ctx.pos += 1;
-            }
-        }
-    }
-    jit_set_failure(ctx, JitErrorTag::UnexpectedEof, start, 0);
-    1
-}
-
 unsafe extern "C" fn jit_op_vec_alloc<T>(ctx: *mut c_void, arg1: u64, _arg2: u64) -> i32
 where
     T: Facet<'static>,
@@ -646,7 +577,6 @@ struct DynasmCompiledProgram {
     ops: Vec<JitDynasmOp>,
     require_eof: bool,
     postcard_string_helper: usize,
-    json_string_helper: usize,
     context_offsets: JitContextOffsets,
 }
 
@@ -732,7 +662,6 @@ impl DynasmCompiledProgram {
             ops,
             require_eof,
             postcard_string_helper: jit_op_read_write_field_string::<T> as *const () as usize,
-            json_string_helper: jit_op_read_write_field_json_string::<T> as *const () as usize,
             context_offsets: jit_context_offsets::<T>(),
         })
     }
@@ -1026,15 +955,27 @@ impl DynasmTrampoline {
         let return_label = ops.new_dynamic_label();
         let err_eof = ops.new_dynamic_label();
         let err_overflow = ops.new_dynamic_label();
+        let err_invalid_utf8 = ops.new_dynamic_label();
         let err_invalid_bool = ops.new_dynamic_label();
         let err_shape = ops.new_dynamic_label();
         let err_trailing = ops.new_dynamic_label();
+        let err_alloc = ops.new_dynamic_label();
         let entry = ops.offset();
+        let drop_string_helper = jit_op_drop_string_ptr as *const () as usize;
+        let helper_alloc_bytes = jit_alloc_bytes as *const () as usize;
+        let string_word_offsets = jit_string_word_offsets()?;
+        let string_ptr_off = string_word_offsets.ptr;
+        let string_len_off = string_word_offsets.len;
+        let string_cap_off = string_word_offsets.cap;
+        let dangling_u8_ptr = NonNull::<u8>::dangling().as_ptr() as usize as u64;
+
         dynasm!(ops
             ; .arch aarch64
-            ; sub sp, sp, #16
+            ; sub sp, sp, #32
             ; str x0, [sp]
             ; str x30, [sp, #8]
+            ; str x23, [sp, #16]
+            ; str x24, [sp, #24]
             ; ldr x8, [sp]
             ; ldr x5, [x8, #o.input_ptr]
             ; ldr x6, [x8, #o.input_len]
@@ -1121,23 +1062,59 @@ impl DynasmTrampoline {
                     );
                 }
                 JitDynasmOp::ReadWriteQuotedString { field, offset } => {
+                    emit_aarch64_decode_quoted_utf8_span(&mut ops, err_eof, err_shape);
+                    emit_aarch64_materialize_string_from_span(
+                        &mut ops,
+                        StringMaterializeConfig {
+                            o,
+                            helper_alloc_bytes,
+                            dangling_u8_ptr,
+                            err_eof,
+                            err_invalid_utf8,
+                            fail_label: err_alloc,
+                        },
+                    );
                     dynasm!(ops
                         ; .arch aarch64
+                        ; mov x24, x14
                         ; ldr x8, [sp]
-                        ; str x7, [x8, #o.pos]
-                        ; ldr x0, [sp]
+                        ; mov x9, x8
                     );
-                    emit_aarch64_load_u64(&mut ops, 1, field as u64);
-                    emit_aarch64_load_u64(&mut ops, 2, offset as u64);
-                    emit_aarch64_load_u64(&mut ops, 16, program.json_string_helper as u64);
+                    emit_aarch64_load_u64(&mut ops, 10, (o.out as usize + offset) as u64);
+                    dynasm!(ops
+                        ; .arch aarch64
+                        ; add x9, x9, x10
+                        ; ldr x8, [sp]
+                        ; ldr x12, [x8, #o.field_inits_ptr]
+                    );
+                    emit_aarch64_load_u64(&mut ops, 10, field as u64);
+                    dynasm!(ops
+                        ; .arch aarch64
+                        ; add x12, x12, x10
+                        ; ldrb w11, [x12]
+                        ; cbz w11, >quoted_no_drop
+                        ; ldr x0, [sp]
+                        ; mov x1, x9
+                        ; mov x2, #0
+                    );
+                    emit_aarch64_load_u64(&mut ops, 16, drop_string_helper as u64);
                     dynasm!(ops
                         ; .arch aarch64
                         ; blr x16
-                        ; cbnz w0, =>return_label
+                        ; quoted_no_drop:
+                        ; str x24, [x9, #string_ptr_off]
+                        ; str x23, [x9, #string_len_off]
+                        ; str x23, [x9, #string_cap_off]
+                    );
+                    emit_aarch64_mark_field_init(&mut ops, o, field as usize);
+                    dynasm!(ops
+                        ; .arch aarch64
                         ; ldr x8, [sp]
+                        ; ldr x7, [x8, #o.pos]
+                        ; add x7, x7, #1
+                        ; str x7, [x8, #o.pos]
                         ; ldr x5, [x8, #o.input_ptr]
                         ; ldr x6, [x8, #o.input_len]
-                        ; ldr x7, [x8, #o.pos]
                     );
                 }
             }
@@ -1188,6 +1165,17 @@ impl DynasmTrampoline {
 
         dynasm!(ops
             ; .arch aarch64
+            ; =>err_invalid_utf8
+        );
+        emit_aarch64_write_failure(&mut ops, o, JitErrorTag::InvalidUtf8);
+        dynasm!(ops
+            ; .arch aarch64
+            ; mov w0, #1
+            ; b =>return_label
+        );
+
+        dynasm!(ops
+            ; .arch aarch64
             ; =>err_invalid_bool
         );
         emit_aarch64_write_failure(&mut ops, o, JitErrorTag::InvalidBool);
@@ -1223,9 +1211,18 @@ impl DynasmTrampoline {
 
         dynasm!(ops
             ; .arch aarch64
+            ; =>err_alloc
+            ; mov w0, #1
+            ; b =>return_label
+        );
+
+        dynasm!(ops
+            ; .arch aarch64
             ; =>return_label
+            ; ldr x24, [sp, #24]
+            ; ldr x23, [sp, #16]
             ; ldr x30, [sp, #8]
-            ; add sp, sp, #16
+            ; add sp, sp, #32
             ; ret
         );
         let buffer = ops.finalize().ok()?;
@@ -1384,18 +1381,20 @@ impl DynasmTrampoline {
                     emit_aarch64_vec_write_string_from_len(
                         &mut ops,
                         VecStringEmitConfig {
-                            o,
                             field_offset: offset,
-                            helper_alloc_bytes,
-                            dangling_u8_ptr,
                             string_word_offsets: StringWordOffsets {
                                 ptr: string_ptr_off,
                                 len: string_len_off,
                                 cap: string_cap_off,
                             },
-                            err_elem_eof,
-                            err_elem_invalid_utf8,
-                            elem_fail_label,
+                            materialize: StringMaterializeConfig {
+                                o,
+                                helper_alloc_bytes,
+                                dangling_u8_ptr,
+                                err_eof: err_elem_eof,
+                                err_invalid_utf8: err_elem_invalid_utf8,
+                                fail_label: elem_fail_label,
+                            },
                         },
                     );
                 }
@@ -1914,23 +1913,68 @@ fn emit_aarch64_decode_u32(
 }
 
 #[cfg(target_arch = "aarch64")]
-fn emit_aarch64_vec_write_string_from_len(
+fn emit_aarch64_decode_quoted_utf8_span(
     ops: &mut dynasmrt::aarch64::Assembler,
-    cfg: VecStringEmitConfig,
+    err_eof: dynasmrt::DynamicLabel,
+    err_shape: dynasmrt::DynamicLabel,
+) {
+    let scan_loop = ops.new_dynamic_label();
+    let scan_done = ops.new_dynamic_label();
+    let not_quoted = ops.new_dynamic_label();
+    let escaped = ops.new_dynamic_label();
+    let unterminated = ops.new_dynamic_label();
+
+    emit_aarch64_skip_json_ws(ops);
+    dynasm!(ops
+        ; .arch aarch64
+        ; mov x1, x7
+        ; cmp x7, x6
+        ; b.hs =>err_eof
+        ; ldrb w9, [x5, x7]
+        ; cmp w9, #34
+        ; b.ne =>not_quoted
+        ; add x7, x7, #1
+        ; mov x1, x7
+        ; =>scan_loop
+        ; cmp x7, x6
+        ; b.hs =>unterminated
+        ; ldrb w9, [x5, x7]
+        ; cmp w9, #34
+        ; b.eq =>scan_done
+        ; cmp w9, #92
+        ; b.eq =>escaped
+        ; add x7, x7, #1
+        ; b =>scan_loop
+        ; =>escaped
+        ; mov x1, x7
+        ; mov w2, wzr
+        ; b =>err_shape
+        ; =>unterminated
+        ; mov w2, wzr
+        ; b =>err_eof
+        ; =>not_quoted
+        ; mov w2, wzr
+        ; b =>err_shape
+        ; =>scan_done
+        ; sub x11, x7, x1
+        ; mov x7, x1
+    );
+}
+
+#[cfg(target_arch = "aarch64")]
+fn emit_aarch64_materialize_string_from_span(
+    ops: &mut dynasmrt::aarch64::Assembler,
+    cfg: StringMaterializeConfig,
 ) {
     let o = cfg.o;
-    let field_offset = cfg.field_offset;
     let helper_alloc_bytes = cfg.helper_alloc_bytes;
     let dangling_u8_ptr = cfg.dangling_u8_ptr;
-    let string_ptr_off = cfg.string_word_offsets.ptr;
-    let string_len_off = cfg.string_word_offsets.len;
-    let string_cap_off = cfg.string_word_offsets.cap;
-    let err_elem_eof = cfg.err_elem_eof;
-    let err_elem_invalid_utf8 = cfg.err_elem_invalid_utf8;
-    let elem_fail_label = cfg.elem_fail_label;
+    let err_eof = cfg.err_eof;
+    let err_invalid_utf8 = cfg.err_invalid_utf8;
+    let fail_label = cfg.fail_label;
 
     let string_zero = ops.new_dynamic_label();
-    let string_store = ops.new_dynamic_label();
+    let string_done = ops.new_dynamic_label();
     let copy_qword_loop = ops.new_dynamic_label();
     let copy_tail_loop = ops.new_dynamic_label();
     let copy_done = ops.new_dynamic_label();
@@ -1954,9 +1998,9 @@ fn emit_aarch64_vec_write_string_from_len(
         ; .arch aarch64
         ; mov x13, x7
         ; adds x12, x7, x11
-        ; b.cs =>err_elem_eof
+        ; b.cs =>err_eof
         ; cmp x12, x6
-        ; b.hi =>err_elem_eof
+        ; b.hi =>err_eof
         ; mov x14, x12
         ; mov x23, x11
         ; add x24, x5, x7
@@ -2080,7 +2124,7 @@ fn emit_aarch64_vec_write_string_from_len(
         ; =>utf8_invalid
         ; mov x1, x13
         ; mov w2, wzr
-        ; b =>err_elem_invalid_utf8
+        ; b =>err_invalid_utf8
 
         ; =>utf8_valid
         ; mov x7, x14
@@ -2102,7 +2146,7 @@ fn emit_aarch64_vec_write_string_from_len(
     emit_aarch64_write_failure(ops, o, JitErrorTag::ShapeMismatch);
     dynasm!(ops
         ; .arch aarch64
-        ; b =>elem_fail_label
+        ; b =>fail_label
         ; string_alloc_ok:
         ; mov x9, #0
         ; cmp x23, #8
@@ -2123,13 +2167,32 @@ fn emit_aarch64_vec_write_string_from_len(
         ; add x9, x9, #1
         ; b =>copy_tail_loop
         ; =>copy_done
-        ; b =>string_store
+        ; b =>string_done
         ; =>string_zero
     );
     emit_aarch64_load_u64(ops, 14, dangling_u8_ptr);
     dynasm!(ops
         ; .arch aarch64
-        ; =>string_store
+        ; =>string_done
+        ; ldr x8, [sp]
+        ; ldr x5, [x8, #o.input_ptr]
+        ; ldr x6, [x8, #o.input_len]
+        ; ldr x7, [x8, #o.pos]
+    );
+}
+
+#[cfg(target_arch = "aarch64")]
+fn emit_aarch64_vec_write_string_from_len(
+    ops: &mut dynasmrt::aarch64::Assembler,
+    cfg: VecStringEmitConfig,
+) {
+    let field_offset = cfg.field_offset;
+    let string_ptr_off = cfg.string_word_offsets.ptr;
+    let string_len_off = cfg.string_word_offsets.len;
+    let string_cap_off = cfg.string_word_offsets.cap;
+    emit_aarch64_materialize_string_from_span(ops, cfg.materialize);
+    dynasm!(ops
+        ; .arch aarch64
         ; mov x9, x22
     );
     emit_aarch64_load_u64(ops, 10, field_offset as u64);
@@ -2139,10 +2202,6 @@ fn emit_aarch64_vec_write_string_from_len(
         ; str x14, [x9, #string_ptr_off]
         ; str x23, [x9, #string_len_off]
         ; str x23, [x9, #string_cap_off]
-        ; ldr x8, [sp]
-        ; ldr x5, [x8, #o.input_ptr]
-        ; ldr x6, [x8, #o.input_len]
-        ; ldr x7, [x8, #o.pos]
         ; add x21, x21, #1
     );
 }
@@ -2417,6 +2476,39 @@ mod tests {
         let plan = trame_json::compile_for::<Demo3>().expect("compile should succeed");
         let from_interpreter: Demo3 = trame_interpreter::decode(&plan, input).expect("interp");
         let from_dynasm: Demo3 = decode(&plan, input).expect("dynasm");
+        assert_eq!(from_dynasm, from_interpreter);
+    }
+
+    #[test]
+    fn decode_json_struct_dynasm_rejects_invalid_utf8() {
+        let mut input = br#"{ "id": 11, "name": ""#.to_vec();
+        input.push(0xFF);
+        input.extend_from_slice(br#"", "ok": false }"#);
+        let plan = trame_json::compile_for::<Demo3>().expect("compile should succeed");
+        let from_interpreter =
+            trame_interpreter::decode::<Demo3>(&plan, &input).expect_err("interp");
+        let from_dynasm = decode::<Demo3>(&plan, &input).expect_err("dynasm");
+        assert_eq!(from_dynasm, from_interpreter);
+    }
+
+    #[test]
+    fn decode_json_struct_dynasm_rejects_escaped_strings_like_interpreter() {
+        let input = br#"{ "id": 11, "name": "tr\"ent", "ok": false }"#;
+        let plan = trame_json::compile_for::<Demo3>().expect("compile should succeed");
+        let from_interpreter =
+            trame_interpreter::decode::<Demo3>(&plan, input).expect_err("interp");
+        let from_dynasm = decode::<Demo3>(&plan, input).expect_err("dynasm");
+        assert_eq!(from_dynasm, from_interpreter);
+    }
+
+    #[test]
+    fn decode_json_vec_dynasm_and_interpreter_are_equivalent() {
+        let input =
+            br#"[{"id":10,"name":"mallory","ok":true},{"id":11,"name":"trent","ok":false}]"#;
+        let plan = trame_json::compile_vec_for::<Vec<Demo3>>().expect("compile should succeed");
+        let from_interpreter =
+            trame_interpreter::decode_vec::<Demo3>(&plan, input).expect("interp");
+        let from_dynasm = decode_vec::<Demo3>(&plan, input).expect("dynasm");
         assert_eq!(from_dynasm, from_interpreter);
     }
 }

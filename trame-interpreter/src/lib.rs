@@ -1,6 +1,7 @@
 use facet_core::Facet;
 use trame_ir::{
-    DecodeInstr, Error, ReadScalarOp, ScalarKind, StructFieldPlan, StructPlan, VecStructPlan,
+    DecodeInstr, Error, ReadScalarOp, ScalarKind, StructFieldPlan, StructPlan, VecFraming,
+    VecStructPlan,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -563,18 +564,74 @@ where
         return Err(Error::ShapeMismatch);
     }
     let mut reader = Reader::new(input);
-    let len = reader.read_u32()? as usize;
-    let mut out = Vec::with_capacity(len);
-    for _ in 0..len {
-        out.push(decode_struct_with_reader::<T>(
-            &plan.element_plan,
-            &mut reader,
-        )?);
-    }
-    if !reader.is_eof() {
-        return Err(Error::TrailingBytes {
-            offset: reader.offset(),
-        });
+    let mut out = Vec::new();
+    match plan.framing {
+        VecFraming::LengthPrefixed => {
+            let len = reader.read_u32()? as usize;
+            out = Vec::with_capacity(len);
+            for _ in 0..len {
+                out.push(decode_struct_with_reader::<T>(
+                    &plan.element_plan,
+                    &mut reader,
+                )?);
+            }
+            if !reader.is_eof() {
+                return Err(Error::TrailingBytes {
+                    offset: reader.offset(),
+                });
+            }
+        }
+        VecFraming::JsonArray => {
+            reader.skip_json_ws();
+            if reader.read_byte()? != b'[' {
+                return Err(Error::ShapeMismatch);
+            }
+
+            loop {
+                reader.skip_json_ws();
+                let Some(next) = reader.input.get(reader.pos).copied() else {
+                    return Err(Error::UnexpectedEof {
+                        offset: reader.offset(),
+                    });
+                };
+                if next == b']' {
+                    reader.pos += 1;
+                    reader.skip_json_ws();
+                    if !reader.is_eof() {
+                        return Err(Error::TrailingBytes {
+                            offset: reader.offset(),
+                        });
+                    }
+                    break;
+                }
+
+                out.push(decode_struct_with_reader::<T>(
+                    &plan.element_plan,
+                    &mut reader,
+                )?);
+
+                reader.skip_json_ws();
+                let Some(sep) = reader.input.get(reader.pos).copied() else {
+                    return Err(Error::UnexpectedEof {
+                        offset: reader.offset(),
+                    });
+                };
+                match sep {
+                    b',' => reader.pos += 1,
+                    b']' => {
+                        reader.pos += 1;
+                        reader.skip_json_ws();
+                        if !reader.is_eof() {
+                            return Err(Error::TrailingBytes {
+                                offset: reader.offset(),
+                            });
+                        }
+                        break;
+                    }
+                    _ => return Err(Error::ShapeMismatch),
+                }
+            }
+        }
     }
     Ok(out)
 }

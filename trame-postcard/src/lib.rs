@@ -1,7 +1,7 @@
 use facet_core::{Def, Facet, Shape, Type, UserType};
 use trame_ir::{
     DECODE_ABI_V1, DecodeInstr, DecodeProgram, ReadScalarOp, ScalarKind, StructFieldPlan,
-    StructPlan, VecStructPlan,
+    StructPlan, VecFraming, VecStructPlan,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +48,7 @@ pub fn compile_vec(shape: &'static Shape) -> Result<VecStructPlan, CompileError>
     let element_plan = compile_struct_plan(element_shape, false)?;
     Ok(VecStructPlan {
         vec_shape_id: shape.id,
+        framing: VecFraming::LengthPrefixed,
         element_plan,
     })
 }

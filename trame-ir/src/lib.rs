@@ -228,5 +228,12 @@ pub struct StructPlan {
 #[derive(Clone, Debug)]
 pub struct VecStructPlan {
     pub vec_shape_id: ConstTypeId,
+    pub framing: VecFraming,
     pub element_plan: StructPlan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VecFraming {
+    LengthPrefixed,
+    JsonArray,
 }

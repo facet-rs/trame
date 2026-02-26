@@ -1076,10 +1076,7 @@ where
 }
 
 #[cfg(feature = "dynasm-rt")]
-unsafe extern "C" fn jit_op_drop_string_ptr<T>(_: *mut c_void, arg1: u64, _arg2: u64) -> i32
-where
-    T: Facet<'static>,
-{
+unsafe extern "C" fn jit_op_drop_string_ptr(_: *mut c_void, arg1: u64, _arg2: u64) -> i32 {
     let dst = arg1 as usize as *mut String;
     unsafe {
         core::ptr::drop_in_place(dst);
@@ -1424,7 +1421,7 @@ impl DynasmTrampoline {
         let entry = ops.offset();
 
         let string_helper = jit_op_read_string_to_ptr::<T> as *const () as usize;
-        let drop_string_helper = jit_op_drop_string_ptr::<T> as *const () as usize;
+        let drop_string_helper = jit_op_drop_string_ptr as *const () as usize;
         let helper_alloc = jit_op_vec_alloc::<T> as *const () as usize;
         let helper_dealloc = jit_op_vec_dealloc_raw::<T> as *const () as usize;
         let helper_finalize = jit_op_vec_finalize::<T> as *const () as usize;

@@ -20,6 +20,7 @@ trame-solver = { path = "trame-solver", version = "0.1.0" }
 creusot-std = { git = "https://github.com/creusot-rs/creusot", package = "creusot-std", version = "0.10.0-dev" }
 facet-core = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43.2" }
 facet = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43.2" }
+facet-postcard = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43.2" }
 smallvec = "2.0.0-alpha.12"
 afl = "0.17"
 arbitrary = { version = "1", features = ["derive"] }

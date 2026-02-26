@@ -1,8 +1,10 @@
 ---
 source: trame-toy-postcard/src/lib.rs
-expression: plan.program().to_sexp()
+expression: snapshot_program(plan.program())
 ---
 (postcard-decode-program
+  (abi 1)
+  (shape-id TypeId(<opaque>))
   (register-count 2)
   (instructions
     (read-scalar (kind u32) (dst r0))

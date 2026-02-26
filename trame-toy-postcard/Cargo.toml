@@ -12,13 +12,26 @@ description = "Toy postcard deserializer built on trame primitives"
 [package.metadata."docs.rs"]
 rustdoc-args = ["--html-in-header", "arborium-header.html"]
 
+[features]
+default = []
+dynasm-rt = ["dep:dynasmrt"]
+
 [dependencies]
 trame.workspace = true
 facet-core.workspace = true
+dynasmrt = { version = "5", optional = true }
 
 [dev-dependencies]
 facet.workspace = true
+facet-postcard.workspace = true
+divan = "0.1"
 insta = "1"
+postcard = { version = "1", features = ["alloc"] }
+serde = { version = "1", features = ["derive"] }
+
+[[bench]]
+name = "decode"
+harness = false
 
 [lints]
 workspace = true

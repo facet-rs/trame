@@ -1,11 +1,11 @@
 [package]
-name = "trame-toy-postcard"
+name = "trame-ir"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Toy postcard deserializer built on trame primitives"
+description = "Format-independent decode IR for trame"
 
 [package.metadata]
 
@@ -13,12 +13,7 @@ description = "Toy postcard deserializer built on trame primitives"
 rustdoc-args = ["--html-in-header", "arborium-header.html"]
 
 [dependencies]
-trame.workspace = true
 facet-core.workspace = true
-
-[dev-dependencies]
-facet.workspace = true
-insta = "1"
 
 [lints]
 workspace = true

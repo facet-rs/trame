@@ -1,0 +1,32 @@
+[package]
+name = "trame-exec"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Backend selector for executing trame-ir decode programs"
+
+[package.metadata]
+
+[package.metadata."docs.rs"]
+rustdoc-args = ["--html-in-header", "arborium-header.html"]
+
+[features]
+default = []
+dynasm-rt = ["dep:trame-dynasm"]
+
+[dependencies]
+facet-core.workspace = true
+trame-ir.workspace = true
+trame-interpreter.workspace = true
+trame-dynasm = { workspace = true, optional = true }
+
+[dev-dependencies]
+facet.workspace = true
+facet-postcard.workspace = true
+trame-postcard.workspace = true
+trame-json.workspace = true
+
+[lints]
+workspace = true

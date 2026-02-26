@@ -7,7 +7,15 @@ specs (
         impls (
             {
                 name rust
-                include (trame/**/*.rs)
+                include (
+                    trame/**/*.rs
+                    trame-ir/**/*.rs
+                    trame-postcard/**/*.rs
+                    trame-json/**/*.rs
+                    trame-interpreter/**/*.rs
+                    trame-dynasm/**/*.rs
+                    trame-exec/**/*.rs
+                )
                 exclude (target/**)
             }
         )

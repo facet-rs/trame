@@ -82,8 +82,10 @@ fn compile_struct_plan(
         });
     };
 
-    let mut instructions = Vec::with_capacity(st.fields.len() * 2 + 1);
+    let mut instructions = Vec::with_capacity(st.fields.len() * 12 + 1);
     let mut field_plans = Vec::with_capacity(st.fields.len());
+    let tmp_byte_reg = st.fields.len() as u8;
+    let tmp_data_reg = tmp_byte_reg.saturating_add(1);
     for (idx, field) in st.fields.iter().enumerate() {
         let field_shape = field.shape.get();
         let Some((kind, op)) = scalar_meta_for_shape(field_shape) else {
@@ -93,7 +95,12 @@ fn compile_struct_plan(
                 type_name: field_shape.type_identifier,
             });
         };
-        instructions.push(DecodeInstr::ReadScalar { op, dst: idx as u8 });
+        match op {
+            ReadScalarOp::VarintU32 => {
+                emit_varint_u32_read(&mut instructions, idx as u8, tmp_byte_reg, tmp_data_reg);
+            }
+            _ => instructions.push(DecodeInstr::ReadScalar { op, dst: idx as u8 }),
+        }
         instructions.push(DecodeInstr::WriteFieldFromReg {
             field: idx as u32,
             src: idx as u8,
@@ -109,7 +116,7 @@ fn compile_struct_plan(
     let program = DecodeProgram {
         abi_version: DECODE_ABI_V1,
         shape_id: shape.id,
-        register_count: st.fields.len(),
+        register_count: st.fields.len() + 2,
         instructions,
     };
     Ok(StructPlan {
@@ -117,6 +124,43 @@ fn compile_struct_plan(
         program,
         field_plans,
     })
+}
+
+fn emit_varint_u32_read(instructions: &mut Vec<DecodeInstr>, dst: u8, tmp_byte: u8, tmp_data: u8) {
+    instructions.push(DecodeInstr::SetRegU32 { dst, value: 0 });
+    let mut done_jumps = Vec::with_capacity(5);
+    for shift in [0u8, 7, 14, 21, 28] {
+        instructions.push(DecodeInstr::ReadInputByte { dst: tmp_byte });
+        instructions.push(DecodeInstr::AndImmU32 {
+            dst: tmp_data,
+            src: tmp_byte,
+            imm: 0x7f,
+        });
+        if shift != 0 {
+            instructions.push(DecodeInstr::ShlImmU32 {
+                dst: tmp_data,
+                src: tmp_data,
+                shift,
+            });
+        }
+        instructions.push(DecodeInstr::OrU32 {
+            dst,
+            lhs: dst,
+            rhs: tmp_data,
+        });
+        done_jumps.push(instructions.len());
+        instructions.push(DecodeInstr::JumpIfByteHighBitClear {
+            src: tmp_byte,
+            target: usize::MAX,
+        });
+    }
+    let done_target = instructions.len();
+    for jump_idx in done_jumps {
+        match &mut instructions[jump_idx] {
+            DecodeInstr::JumpIfByteHighBitClear { target, .. } => *target = done_target,
+            _ => unreachable!("jump slot should always point to JumpIfByteHighBitClear"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -157,15 +201,15 @@ mod tests {
     #[test]
     fn compile_emits_program() {
         let plan = compile_for::<Demo>().expect("compile should succeed");
-        assert_eq!(plan.program.register_count, 2);
-        assert_eq!(plan.program.instructions.len(), 5);
+        assert_eq!(plan.program.register_count, 4);
+        assert_eq!(plan.program.instructions.len(), 29);
     }
 
     #[test]
     fn compile_is_shape_driven_for_multiple_fields() {
         let plan = compile_for::<Demo3>().expect("compile should succeed");
-        assert_eq!(plan.program.register_count, 3);
-        assert_eq!(plan.program.instructions.len(), 7);
+        assert_eq!(plan.program.register_count, 5);
+        assert_eq!(plan.program.instructions.len(), 31);
     }
 
     #[test]

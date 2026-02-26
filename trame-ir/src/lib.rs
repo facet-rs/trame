@@ -65,6 +65,12 @@ impl ReadScalarOp {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodeInstr {
+    SetRegU32 { dst: u8, value: u32 },
+    ReadInputByte { dst: u8 },
+    AndImmU32 { dst: u8, src: u8, imm: u32 },
+    ShlImmU32 { dst: u8, src: u8, shift: u8 },
+    OrU32 { dst: u8, lhs: u8, rhs: u8 },
+    JumpIfByteHighBitClear { src: u8, target: usize },
     ReadScalar { op: ReadScalarOp, dst: u8 },
     WriteFieldFromReg { field: u32, src: u8 },
     RequireEof,
@@ -90,6 +96,44 @@ impl DecodeProgram {
         let _ = writeln!(&mut out, "  (instructions");
         for instr in &self.instructions {
             match *instr {
+                DecodeInstr::SetRegU32 { dst, value } => {
+                    let _ = writeln!(
+                        &mut out,
+                        "    (set-reg-u32 (dst r{}) (value {}))",
+                        dst, value
+                    );
+                }
+                DecodeInstr::ReadInputByte { dst } => {
+                    let _ = writeln!(&mut out, "    (read-input-byte (dst r{}))", dst);
+                }
+                DecodeInstr::AndImmU32 { dst, src, imm } => {
+                    let _ = writeln!(
+                        &mut out,
+                        "    (and-imm-u32 (dst r{}) (src r{}) (imm {}))",
+                        dst, src, imm
+                    );
+                }
+                DecodeInstr::ShlImmU32 { dst, src, shift } => {
+                    let _ = writeln!(
+                        &mut out,
+                        "    (shl-imm-u32 (dst r{}) (src r{}) (shift {}))",
+                        dst, src, shift
+                    );
+                }
+                DecodeInstr::OrU32 { dst, lhs, rhs } => {
+                    let _ = writeln!(
+                        &mut out,
+                        "    (or-u32 (dst r{}) (lhs r{}) (rhs r{}))",
+                        dst, lhs, rhs
+                    );
+                }
+                DecodeInstr::JumpIfByteHighBitClear { src, target } => {
+                    let _ = writeln!(
+                        &mut out,
+                        "    (jump-if-byte-high-bit-clear (src r{}) (target {}))",
+                        src, target
+                    );
+                }
                 DecodeInstr::ReadScalar { op, dst } => {
                     let _ = writeln!(
                         &mut out,

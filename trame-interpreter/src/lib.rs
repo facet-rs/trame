@@ -124,6 +124,15 @@ fn write_field_from_reg(
     Ok(())
 }
 
+fn read_reg_u32(regs: &[RegValue], idx: usize) -> Result<u32, Error> {
+    let reg = regs.get(idx).ok_or(Error::InvalidRegister { reg: idx })?;
+    match reg {
+        RegValue::U32(value) => Ok(*value),
+        RegValue::Unset => Err(Error::RegisterUnset { reg: idx }),
+        _ => Err(Error::ShapeMismatch),
+    }
+}
+
 unsafe fn drop_initialized_fields(
     out_ptr: *mut u8,
     field_plans: &[StructFieldPlan],
@@ -147,9 +156,58 @@ where
     let mut regs = vec![RegValue::Unset; plan.program.register_count];
     let mut field_inits = vec![0u8; plan.field_plans.len()];
     let mut out = core::mem::MaybeUninit::<T>::uninit();
-
-    for instr in &plan.program.instructions {
-        let step = match *instr {
+    let mut pc = 0usize;
+    while let Some(instr) = plan.program.instructions.get(pc).copied() {
+        let step = match instr {
+            DecodeInstr::SetRegU32 { dst, value } => {
+                let slot = regs
+                    .get_mut(dst as usize)
+                    .ok_or(Error::InvalidRegister { reg: dst as usize })?;
+                *slot = RegValue::U32(value);
+                Ok(())
+            }
+            DecodeInstr::ReadInputByte { dst } => {
+                let slot = regs
+                    .get_mut(dst as usize)
+                    .ok_or(Error::InvalidRegister { reg: dst as usize })?;
+                *slot = RegValue::U32(reader.read_byte()? as u32);
+                Ok(())
+            }
+            DecodeInstr::AndImmU32 { dst, src, imm } => {
+                let out = read_reg_u32(&regs, src as usize)? & imm;
+                let slot = regs
+                    .get_mut(dst as usize)
+                    .ok_or(Error::InvalidRegister { reg: dst as usize })?;
+                *slot = RegValue::U32(out);
+                Ok(())
+            }
+            DecodeInstr::ShlImmU32 { dst, src, shift } => {
+                let out = read_reg_u32(&regs, src as usize)? << shift;
+                let slot = regs
+                    .get_mut(dst as usize)
+                    .ok_or(Error::InvalidRegister { reg: dst as usize })?;
+                *slot = RegValue::U32(out);
+                Ok(())
+            }
+            DecodeInstr::OrU32 { dst, lhs, rhs } => {
+                let out = read_reg_u32(&regs, lhs as usize)? | read_reg_u32(&regs, rhs as usize)?;
+                let slot = regs
+                    .get_mut(dst as usize)
+                    .ok_or(Error::InvalidRegister { reg: dst as usize })?;
+                *slot = RegValue::U32(out);
+                Ok(())
+            }
+            DecodeInstr::JumpIfByteHighBitClear { src, target } => {
+                if target > plan.program.instructions.len() {
+                    return Err(Error::ShapeMismatch);
+                }
+                let value = read_reg_u32(&regs, src as usize)?;
+                if (value & 0x80) == 0 {
+                    pc = target;
+                    continue;
+                }
+                Ok(())
+            }
             DecodeInstr::ReadScalar { op, dst } => {
                 let slot = regs
                     .get_mut(dst as usize)
@@ -197,6 +255,7 @@ where
             }
             return Err(err);
         }
+        pc += 1;
     }
 
     if let Some(missing) = field_inits.iter().position(|init| *init == 0) {

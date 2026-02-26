@@ -504,6 +504,11 @@ impl DynasmCompiledProgram {
         let mut require_eof = false;
         let mut idx = 0usize;
         while let Some(instr) = plan.program.instructions.get(idx) {
+            if let Some((op, next_idx)) = Self::match_lowered_varint_u32(plan, idx) {
+                ops.push(op);
+                idx = next_idx;
+                continue;
+            }
             match (*instr, plan.program.instructions.get(idx + 1).copied()) {
                 (
                     DecodeInstr::ReadScalar { op, dst },
@@ -545,6 +550,107 @@ impl DynasmCompiledProgram {
             string_helper: jit_op_read_write_field_string::<T> as *const () as usize,
             context_offsets: jit_context_offsets::<T>(),
         })
+    }
+
+    fn match_lowered_varint_u32(plan: &StructPlan, start: usize) -> Option<(JitDynasmOp, usize)> {
+        let DecodeInstr::SetRegU32 { dst, value } = *plan.program.instructions.get(start)? else {
+            return None;
+        };
+        if value != 0 {
+            return None;
+        }
+        let mut idx = start + 1;
+        let mut done_target = None::<usize>;
+
+        for shift in [0u8, 7, 14, 21, 28] {
+            let DecodeInstr::ReadInputByte { dst: byte_reg } =
+                *plan.program.instructions.get(idx)?
+            else {
+                return None;
+            };
+            idx += 1;
+
+            let DecodeInstr::AndImmU32 {
+                dst: data_reg,
+                src,
+                imm,
+            } = *plan.program.instructions.get(idx)?
+            else {
+                return None;
+            };
+            if src != byte_reg || imm != 0x7f {
+                return None;
+            }
+            idx += 1;
+
+            if shift != 0 {
+                let DecodeInstr::ShlImmU32 {
+                    dst: shl_dst,
+                    src: shl_src,
+                    shift: shl_shift,
+                } = *plan.program.instructions.get(idx)?
+                else {
+                    return None;
+                };
+                if shl_dst != data_reg || shl_src != data_reg || shl_shift != shift {
+                    return None;
+                }
+                idx += 1;
+            }
+
+            let DecodeInstr::OrU32 {
+                dst: or_dst,
+                lhs,
+                rhs,
+            } = *plan.program.instructions.get(idx)?
+            else {
+                return None;
+            };
+            if or_dst != dst || lhs != dst || rhs != data_reg {
+                return None;
+            }
+            idx += 1;
+
+            let DecodeInstr::JumpIfByteHighBitClear { src, target } =
+                *plan.program.instructions.get(idx)?
+            else {
+                return None;
+            };
+            if src != byte_reg {
+                return None;
+            }
+            match done_target {
+                Some(existing) if existing != target => return None,
+                None => done_target = Some(target),
+                _ => {}
+            }
+            idx += 1;
+        }
+
+        let done_target = done_target?;
+        if done_target != idx {
+            return None;
+        }
+
+        let DecodeInstr::WriteFieldFromReg { field, src } = *plan.program.instructions.get(idx)?
+        else {
+            return None;
+        };
+        if src != dst {
+            return None;
+        }
+        let field_plan = plan.field_plans.get(field as usize)?;
+        if field_plan.kind != ScalarKind::U32 {
+            return None;
+        }
+
+        Some((
+            JitDynasmOp::ReadWriteU32 {
+                field,
+                offset: field_plan.offset,
+            },
+            idx + 1,
+        ))
     }
 }
 

@@ -1,31 +1,28 @@
 [package]
-name = "trame-toy-postcard"
+name = "trame-dynasm"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Toy postcard deserializer built on trame primitives"
+description = "dynasm-rt backend for trame-ir decode programs"
 
 [package.metadata]
 
 [package.metadata."docs.rs"]
 rustdoc-args = ["--html-in-header", "arborium-header.html"]
 
-[features]
-default = []
-dynasm-rt = ["dep:dynasmrt"]
-
 [dependencies]
-trame.workspace = true
 facet-core.workspace = true
-dynasmrt = { version = "5", optional = true }
+trame-ir.workspace = true
+trame-interpreter.workspace = true
+dynasmrt = "5"
 
 [dev-dependencies]
 facet.workspace = true
 facet-postcard.workspace = true
+trame-postcard.workspace = true
 divan = "0.1"
-insta = "1"
 postcard = { version = "1", features = ["alloc"] }
 serde = { version = "1", features = ["derive"] }
 

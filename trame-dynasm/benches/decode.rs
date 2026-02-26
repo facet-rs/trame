@@ -2,9 +2,7 @@ use divan::{Bencher, black_box};
 use facet::Facet;
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
-#[cfg(feature = "dynasm-rt")]
-use trame_toy_postcard::DynasmPreparedVec;
-use trame_toy_postcard::{BackendKind, PostcardVecStructPlan};
+use trame_dynasm::{DynasmPreparedVec, decode_vec as decode_vec_dynasm, prepare_vec};
 
 #[derive(Debug, Clone, PartialEq, Eq, Facet, Serialize, Deserialize)]
 struct SampleStruct {
@@ -28,14 +26,11 @@ fn make_samples() -> Vec<SampleStruct> {
 static SAMPLES: LazyLock<Vec<SampleStruct>> = LazyLock::new(make_samples);
 static ENCODED_VEC: LazyLock<Vec<u8>> =
     LazyLock::new(|| postcard::to_allocvec(&*SAMPLES).expect("batch serialization should work"));
-static VEC_PLAN: LazyLock<PostcardVecStructPlan> = LazyLock::new(|| {
-    PostcardVecStructPlan::compile_for::<Vec<SampleStruct>>().expect("vec plan compile")
+static VEC_PLAN: LazyLock<trame_ir::VecStructPlan> = LazyLock::new(|| {
+    trame_postcard::compile_vec_for::<Vec<SampleStruct>>().expect("vec plan compile")
 });
-#[cfg(feature = "dynasm-rt")]
 static DYNASM_VEC: LazyLock<DynasmPreparedVec<SampleStruct>> = LazyLock::new(|| {
-    VEC_PLAN
-        .prepare_dynasm::<SampleStruct>()
-        .expect("dynasm vec prepare should succeed")
+    prepare_vec::<SampleStruct>(&VEC_PLAN).expect("dynasm vec prepare should succeed")
 });
 
 #[divan::bench]
@@ -44,13 +39,12 @@ fn trame_interpreter_vec_program(bencher: Bencher) {
     let plan = &*VEC_PLAN;
     bencher.bench(|| {
         black_box(
-            plan.decode_vec_on::<SampleStruct>(black_box(wire), BackendKind::Interpreter)
+            trame_interpreter::decode_vec::<SampleStruct>(plan, black_box(wire))
                 .expect("decode should succeed"),
         )
     });
 }
 
-#[cfg(feature = "dynasm-rt")]
 #[divan::bench]
 fn trame_dynasm_rt_vec_program(bencher: Bencher) {
     let wire = &*ENCODED_VEC;
@@ -59,6 +53,18 @@ fn trame_dynasm_rt_vec_program(bencher: Bencher) {
         black_box(
             dynasm
                 .decode(black_box(wire))
+                .expect("decode should succeed"),
+        )
+    });
+}
+
+#[divan::bench]
+fn trame_dynasm_rt_vec_program_no_prepare_cache(bencher: Bencher) {
+    let wire = &*ENCODED_VEC;
+    let plan = &*VEC_PLAN;
+    bencher.bench(|| {
+        black_box(
+            decode_vec_dynasm::<SampleStruct>(plan, black_box(wire))
                 .expect("decode should succeed"),
         )
     });

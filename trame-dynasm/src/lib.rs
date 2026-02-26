@@ -482,30 +482,6 @@ where
     0
 }
 
-unsafe extern "C" fn jit_op_validate_utf8_range<T>(
-    ctx: *mut c_void,
-    arg1: u64,
-    arg2: u64,
-    arg3: u64,
-) -> i32
-where
-    T: Facet<'static>,
-{
-    let ctx = unsafe { jit_ctx::<T>(ctx) };
-    if ctx.failed {
-        return 1;
-    }
-    let src = arg1 as usize as *const u8;
-    let len = arg2 as usize;
-    let start = arg3 as usize;
-    let bytes = unsafe { core::slice::from_raw_parts(src, len) };
-    if core::str::from_utf8(bytes).is_err() {
-        jit_set_failure(ctx, JitErrorTag::InvalidUtf8, start, 0);
-        return 1;
-    }
-    0
-}
-
 #[cfg(target_arch = "aarch64")]
 unsafe extern "C" fn jit_alloc_bytes(arg1: u64, arg2: u64) -> *mut u8 {
     let size = arg1 as usize;
@@ -1097,11 +1073,11 @@ impl DynasmTrampoline {
         let err_elem_eof = ops.new_dynamic_label();
         let err_elem_overflow = ops.new_dynamic_label();
         let err_elem_invalid_bool = ops.new_dynamic_label();
+        let err_elem_invalid_utf8 = ops.new_dynamic_label();
         let err_eof = ops.new_dynamic_label();
         let err_overflow = ops.new_dynamic_label();
         let entry = ops.offset();
 
-        let string_validate_helper = jit_op_validate_utf8_range::<T> as *const () as usize;
         let drop_string_helper = jit_op_drop_string_ptr as *const () as usize;
         let helper_alloc = jit_op_vec_alloc::<T> as *const () as usize;
         let helper_dealloc = jit_op_vec_dealloc_raw::<T> as *const () as usize;
@@ -1228,7 +1204,22 @@ impl DynasmTrampoline {
                 JitDynasmOp::ReadWriteString { offset, .. } => {
                     let string_zero = ops.new_dynamic_label();
                     let string_store = ops.new_dynamic_label();
+                    let utf8_loop = ops.new_dynamic_label();
+                    let utf8_valid = ops.new_dynamic_label();
+                    let utf8_scalar_start = ops.new_dynamic_label();
+                    let utf8_ascii8_loop = ops.new_dynamic_label();
+                    let utf8_ascii_tail_loop = ops.new_dynamic_label();
+                    let utf8_ascii = ops.new_dynamic_label();
+                    let utf8_two = ops.new_dynamic_label();
+                    let utf8_three = ops.new_dynamic_label();
+                    let utf8_four = ops.new_dynamic_label();
+                    let utf8_three_not_e0 = ops.new_dynamic_label();
+                    let utf8_three_after_ed = ops.new_dynamic_label();
+                    let utf8_four_not_f0 = ops.new_dynamic_label();
+                    let utf8_four_after_f4 = ops.new_dynamic_label();
+                    let utf8_invalid = ops.new_dynamic_label();
                     emit_aarch64_decode_u32(&mut ops, err_elem_eof, err_elem_overflow);
+                    emit_aarch64_load_u64(&mut ops, 17, 0x8080_8080_8080_8080);
                     dynasm!(ops
                         ; .arch aarch64
                         ; mov x13, x7
@@ -1236,21 +1227,135 @@ impl DynasmTrampoline {
                         ; b.cs =>err_elem_eof
                         ; cmp x12, x6
                         ; b.hi =>err_elem_eof
+                        ; mov x14, x12
                         ; mov x23, x11
                         ; add x24, x5, x7
-                        ; mov x7, x12
+                        ; cbz x23, =>utf8_valid
+                        ; mov x15, #0
+                        ; cmp x23, #8
+                        ; b.lo =>utf8_scalar_start
+                        ; =>utf8_ascii8_loop
+                        ; add x10, x15, #8
+                        ; cmp x10, x23
+                        ; b.hi =>utf8_ascii_tail_loop
+                        ; ldr x9, [x24, x15]
+                        ; and x9, x9, x17
+                        ; cbnz x9, =>utf8_scalar_start
+                        ; mov x15, x10
+                        ; b =>utf8_ascii8_loop
+                        ; =>utf8_ascii_tail_loop
+                        ; cmp x15, x23
+                        ; b.eq =>utf8_valid
+                        ; ldrb w9, [x24, x15]
+                        ; tbnz w9, #7, =>utf8_scalar_start
+                        ; add x15, x15, #1
+                        ; b =>utf8_ascii_tail_loop
+                        ; =>utf8_scalar_start
+                        ; mov x15, #0
+                        ; =>utf8_loop
+                        ; cmp x15, x23
+                        ; b.eq =>utf8_valid
+                        ; ldrb w9, [x24, x15]
+                        ; cmp w9, #0x7f
+                        ; b.ls =>utf8_ascii
+                        ; and w10, w9, #0xE0
+                        ; cmp w10, #0xC0
+                        ; b.eq =>utf8_two
+                        ; and w10, w9, #0xF0
+                        ; cmp w10, #0xE0
+                        ; b.eq =>utf8_three
+                        ; and w10, w9, #0xF8
+                        ; cmp w10, #0xF0
+                        ; b.eq =>utf8_four
+                        ; b =>utf8_invalid
+
+                        ; =>utf8_ascii
+                        ; add x15, x15, #1
+                        ; b =>utf8_loop
+
+                        ; =>utf8_two
+                        ; add x10, x15, #1
+                        ; cmp x10, x23
+                        ; b.hs =>utf8_invalid
+                        ; ldrb w11, [x24, x10]
+                        ; and w12, w11, #0xC0
+                        ; cmp w12, #0x80
+                        ; b.ne =>utf8_invalid
+                        ; cmp w9, #0xC2
+                        ; b.lo =>utf8_invalid
+                        ; add x15, x15, #2
+                        ; b =>utf8_loop
+
+                        ; =>utf8_three
+                        ; add x10, x15, #2
+                        ; cmp x10, x23
+                        ; b.hs =>utf8_invalid
+                        ; add x10, x15, #1
+                        ; ldrb w11, [x24, x10]
+                        ; add x12, x15, #2
+                        ; ldrb w17, [x24, x12]
+                        ; and w10, w11, #0xC0
+                        ; cmp w10, #0x80
+                        ; b.ne =>utf8_invalid
+                        ; and w10, w17, #0xC0
+                        ; cmp w10, #0x80
+                        ; b.ne =>utf8_invalid
+                        ; cmp w9, #0xE0
+                        ; b.ne =>utf8_three_not_e0
+                        ; cmp w11, #0xA0
+                        ; b.lo =>utf8_invalid
+                        ; =>utf8_three_not_e0
+                        ; cmp w9, #0xED
+                        ; b.ne =>utf8_three_after_ed
+                        ; cmp w11, #0xA0
+                        ; b.hs =>utf8_invalid
+                        ; =>utf8_three_after_ed
+                        ; add x15, x15, #3
+                        ; b =>utf8_loop
+
+                        ; =>utf8_four
+                        ; add x10, x15, #3
+                        ; cmp x10, x23
+                        ; b.hs =>utf8_invalid
+                        ; cmp w9, #0xF4
+                        ; b.hi =>utf8_invalid
+                        ; add x10, x15, #1
+                        ; ldrb w11, [x24, x10]
+                        ; add x12, x15, #2
+                        ; ldrb w17, [x24, x12]
+                        ; add x10, x15, #3
+                        ; ldrb w12, [x24, x10]
+                        ; and w10, w11, #0xC0
+                        ; cmp w10, #0x80
+                        ; b.ne =>utf8_invalid
+                        ; and w10, w17, #0xC0
+                        ; cmp w10, #0x80
+                        ; b.ne =>utf8_invalid
+                        ; and w10, w12, #0xC0
+                        ; cmp w10, #0x80
+                        ; b.ne =>utf8_invalid
+                        ; cmp w9, #0xF0
+                        ; b.ne =>utf8_four_not_f0
+                        ; cmp w11, #0x90
+                        ; b.lo =>utf8_invalid
+                        ; =>utf8_four_not_f0
+                        ; cmp w9, #0xF4
+                        ; b.ne =>utf8_four_after_f4
+                        ; cmp w11, #0x90
+                        ; b.hs =>utf8_invalid
+                        ; =>utf8_four_after_f4
+                        ; add x15, x15, #4
+                        ; b =>utf8_loop
+
+                        ; =>utf8_invalid
+                        ; mov x1, x13
+                        ; mov w2, wzr
+                        ; b =>err_elem_invalid_utf8
+
+                        ; =>utf8_valid
+                        ; mov x7, x14
                         ; ldr x8, [sp]
-                        ; str x12, [x8, #o.pos]
-                        ; ldr x0, [sp]
-                        ; mov x1, x24
-                        ; mov x2, x23
-                        ; mov x3, x13
-                    );
-                    emit_aarch64_load_u64(&mut ops, 16, string_validate_helper as u64);
-                    dynasm!(ops
-                        ; .arch aarch64
-                        ; blr x16
-                        ; cbnz w0, =>elem_fail_label
+                        ; str x14, [x8, #o.pos]
                         ; cbz x23, =>string_zero
                         ; mov x0, x23
                         ; mov x1, #1
@@ -1447,6 +1552,16 @@ impl DynasmTrampoline {
             ; =>err_elem_invalid_bool
         );
         emit_aarch64_write_failure(&mut ops, o, JitErrorTag::InvalidBool);
+        dynasm!(ops
+            ; .arch aarch64
+            ; b =>elem_fail_label
+        );
+
+        dynasm!(ops
+            ; .arch aarch64
+            ; =>err_elem_invalid_utf8
+        );
+        emit_aarch64_write_failure(&mut ops, o, JitErrorTag::InvalidUtf8);
         dynasm!(ops
             ; .arch aarch64
             ; b =>elem_fail_label
@@ -1877,5 +1992,37 @@ mod tests {
             .expect("interpreter should succeed");
         let from_dynasm = decode_vec::<Demo3>(&plan, &wire).expect("dynasm should succeed");
         assert_eq!(from_dynasm, from_interpreter);
+    }
+
+    #[test]
+    fn decode_vec_dynasm_handles_non_ascii_strings() {
+        let expected = vec![
+            Demo3 {
+                id: 10,
+                name: "héllo".into(),
+                ok: true,
+            },
+            Demo3 {
+                id: 11,
+                name: "🙂🚀".into(),
+                ok: false,
+            },
+        ];
+        let wire = facet_postcard::to_vec(&expected).expect("encode should succeed");
+        let plan = trame_postcard::compile_vec_for::<Vec<Demo3>>().expect("compile should succeed");
+        let from_dynasm = decode_vec::<Demo3>(&plan, &wire).expect("dynasm should succeed");
+        assert_eq!(from_dynasm, expected);
+    }
+
+    #[test]
+    fn decode_vec_dynasm_rejects_invalid_utf8() {
+        let mut wire = encode_u32(1);
+        wire.extend(encode_u32(7));
+        wire.extend(encode_u32(1));
+        wire.push(0xFF);
+        wire.push(1);
+        let plan = trame_postcard::compile_vec_for::<Vec<Demo3>>().expect("compile should succeed");
+        let err = decode_vec::<Demo3>(&plan, &wire).expect_err("dynasm should fail");
+        assert_eq!(err, Error::InvalidUtf8 { offset: 3 });
     }
 }

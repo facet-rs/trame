@@ -20,8 +20,8 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(creusot)'] }
 
 [workspace.dependencies]
 # workspace deps
-trame = { path = "trame", version = "0.1.0" }
-trame-runtime = { path = "trame-runtime", version = "0.1.0" }
+trame = { path = "trame", version = "0.2.0" }
+trame-runtime = { path = "trame-runtime", version = "0.2.0" }
 trame-solver = { path = "trame-solver", version = "0.1.0" }
 # third-party deps
 creusot-std = { git = "https://github.com/creusot-rs/creusot", package = "creusot-std", version = "0.10.0-dev" }

@@ -30,6 +30,6 @@ facet = { git = "https://github.com/facet-rs/facet", branch = "main", version = 
 facet-postcard = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43.2" }
 facet-json = { git = "https://github.com/facet-rs/facet", branch = "main", version = "0.43.2" }
 smallvec = "2.0.0-alpha.12"
-afl = "0.17"
+afl = "0.18"
 arbitrary = { version = "1", features = ["derive"] }
 proptest = "1"

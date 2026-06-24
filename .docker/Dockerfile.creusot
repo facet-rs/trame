@@ -1,5 +1,5 @@
 # Build stage: install Creusot from source
-FROM debian:13 AS builder
+FROM debian:trixie-20260623 AS builder
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
 # Install build dependencies
@@ -45,7 +45,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
     opam clean --all-switches --download-cache --logs --repo-cache
 
 # ---- Final stage ----
-FROM debian:13
+FROM debian:trixie-20260623
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
 # Install runtime dependencies
